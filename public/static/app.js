@@ -1,0 +1,1729 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ *  AccessEye — Eye + Gesture Control System (MVP)
+ *  app.js — Core Engine
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ *  Layers implemented:
+ *   1. Vision Input Layer     — MediaPipe FaceMesh + Hands
+ *   2. Gaze Mapping Engine    — Kalman filter + EMA smoothing
+ *   3. Gaze Calibration       — 5-point polynomial regression
+ *   4. UI Target Detection    — Bounding box registry + dwell timer
+ *   5. Gesture Engine         — Pinch / Air-tap / Open palm
+ *   6. Accessibility Layer    — TTS audio feedback
+ *   7. Navigation + Demo App  — Full interactive demo
+ */
+
+'use strict';
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   UTILITY HELPERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const $ = (sel, ctx = document) => ctx.querySelector(sel);
+const $$ = (sel, ctx = document) => [...ctx.querySelectorAll(sel)];
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const dist2D = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+const now = () => performance.now();
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   KALMAN FILTER (2D — position + velocity state)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class KalmanFilter2D {
+  /**
+   * Simplified scalar Kalman applied independently to X and Y.
+   * State: [position, velocity]
+   * @param {number} R  Measurement noise (higher = smoother, less responsive)
+   * @param {number} Q  Process noise (higher = more responsive, less smooth)
+   */
+  constructor(R = 0.005, Q = 0.0001) {
+    this.R = R; this.Q = Q;
+    this._init('x'); this._init('y');
+  }
+
+  _init(axis) {
+    this[`${axis}_x`]  = 0;   // state: position
+    this[`${axis}_v`]  = 0;   // state: velocity
+    this[`${axis}_p`]  = 1;   // error covariance
+  }
+
+  _update(axis, measurement) {
+    const dt = 1; // normalized step
+    // Predict
+    let pred_x = this[`${axis}_x`] + this[`${axis}_v`] * dt;
+    let pred_p = this[`${axis}_p`] + this.Q;
+
+    // Update (Kalman gain)
+    const K = pred_p / (pred_p + this.R);
+    this[`${axis}_x`] = pred_x + K * (measurement - pred_x);
+    this[`${axis}_v`] = this[`${axis}_v`] + K * (measurement - pred_x) / dt;
+    this[`${axis}_p`] = (1 - K) * pred_p;
+
+    return this[`${axis}_x`];
+  }
+
+  update(mx, my) {
+    return {
+      x: this._update('x', mx),
+      y: this._update('y', my)
+    };
+  }
+
+  reset() { this._init('x'); this._init('y'); }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   EXPONENTIAL MOVING AVERAGE SMOOTHER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class EMAFilter {
+  constructor(alpha = 0.3) {
+    this.alpha = alpha;
+    this.x = null; this.y = null;
+  }
+
+  update(x, y) {
+    if (this.x === null) { this.x = x; this.y = y; return { x, y }; }
+    this.x = lerp(this.x, x, this.alpha);
+    this.y = lerp(this.y, y, this.alpha);
+    return { x: this.x, y: this.y };
+  }
+
+  reset() { this.x = null; this.y = null; }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   CALIBRATION ENGINE
+   5-point calibration → builds polynomial mapping model
+   gaze vector → screen (x%, y%)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class CalibrationEngine {
+  constructor() {
+    // 5 calibration points (screen %)
+    this.CALIB_POINTS = [
+      { sx: 0.10, sy: 0.10, label: 'Top-Left'     },
+      { sx: 0.90, sy: 0.10, label: 'Top-Right'    },
+      { sx: 0.50, sy: 0.50, label: 'Center'       },
+      { sx: 0.10, sy: 0.90, label: 'Bottom-Left'  },
+      { sx: 0.90, sy: 0.90, label: 'Bottom-Right' }
+    ];
+    this.calibData = [];   // [{sx, sy, gx, gy}]
+    this.model = null;
+    this.isCalibrated = false;
+    this.SAMPLES_PER_POINT = 25;
+  }
+
+  /* Record raw gaze samples for a calibration point */
+  addCalibSample(pointIdx, rawGazeX, rawGazeY) {
+    if (!this.calibData[pointIdx]) this.calibData[pointIdx] = { samples: [], ...this.CALIB_POINTS[pointIdx] };
+    this.calibData[pointIdx].samples.push({ gx: rawGazeX, gy: rawGazeY });
+  }
+
+  /* After collecting samples, compute mean gaze vector per point */
+  finalizePoint(pointIdx) {
+    const d = this.calibData[pointIdx];
+    if (!d || d.samples.length === 0) return false;
+    const n = d.samples.length;
+    d.gx = d.samples.reduce((s, v) => s + v.gx, 0) / n;
+    d.gy = d.samples.reduce((s, v) => s + v.gy, 0) / n;
+    return true;
+  }
+
+  /**
+   * Build a simple bilinear polynomial regression model
+   * Maps (gx, gy) → (sx, sy)
+   * Model: sx = a0 + a1*gx + a2*gy + a3*gx*gy
+   */
+  buildModel() {
+    if (this.calibData.length < 5) return false;
+    this.calibData.forEach((d, i) => this.finalizePoint(i));
+
+    const pts = this.calibData.filter(d => d.gx !== undefined);
+    if (pts.length < 4) return false;
+
+    // Least-squares for X and Y separately
+    this.model = {
+      x: this._leastSquares(pts, p => p.sx),
+      y: this._leastSquares(pts, p => p.sy)
+    };
+    this.isCalibrated = true;
+    this._saveToStorage();
+    return true;
+  }
+
+  /* 4-param polynomial LS: f(gx,gy) = a0 + a1*gx + a2*gy + a3*gx*gy */
+  _leastSquares(pts, getTarget) {
+    const n = pts.length;
+    // Build design matrix A and target vector b
+    let A = [], b = [];
+    for (const p of pts) {
+      A.push([1, p.gx, p.gy, p.gx * p.gy]);
+      b.push(getTarget(p));
+    }
+    return this._solveLeastSquares(A, b);
+  }
+
+  /* Normal equations: (A^T A) coeff = A^T b — using 4x4 Gauss elimination */
+  _solveLeastSquares(A, b) {
+    const n = 4;
+    // Build ATA and ATb
+    let ATA = Array.from({ length: n }, () => new Array(n).fill(0));
+    let ATb = new Array(n).fill(0);
+    for (let i = 0; i < A.length; i++) {
+      for (let r = 0; r < n; r++) {
+        ATb[r] += A[i][r] * b[i];
+        for (let c = 0; c < n; c++) ATA[r][c] += A[i][r] * A[i][c];
+      }
+    }
+    // Gauss–Jordan with partial pivoting
+    let aug = ATA.map((row, i) => [...row, ATb[i]]);
+    for (let col = 0; col < n; col++) {
+      let maxR = col;
+      for (let r = col + 1; r < n; r++) if (Math.abs(aug[r][col]) > Math.abs(aug[maxR][col])) maxR = r;
+      [aug[col], aug[maxR]] = [aug[maxR], aug[col]];
+      const piv = aug[col][col];
+      if (Math.abs(piv) < 1e-12) continue;
+      for (let r = 0; r < n; r++) {
+        if (r === col) continue;
+        const f = aug[r][col] / piv;
+        for (let c = col; c <= n; c++) aug[r][c] -= f * aug[col][c];
+      }
+      for (let c = col; c <= n; c++) aug[col][c] /= piv;
+    }
+    return aug.map(row => row[n]);  // [a0,a1,a2,a3]
+  }
+
+  /* Map raw gaze to calibrated screen (0..1) coordinates */
+  mapGaze(gx, gy) {
+    if (!this.model) return { sx: 0.5, sy: 0.5 };
+    const [ax, bx, cx, dx] = this.model.x;
+    const [ay, by, cy, dy] = this.model.y;
+    return {
+      sx: clamp(ax + bx * gx + cx * gy + dx * gx * gy, 0, 1),
+      sy: clamp(ay + by * gx + cy * gy + dy * gx * gy, 0, 1)
+    };
+  }
+
+  _saveToStorage() {
+    try {
+      localStorage.setItem('accesseye_calib', JSON.stringify({
+        model: this.model,
+        calibData: this.calibData.map(d => ({ sx: d.sx, sy: d.sy, gx: d.gx, gy: d.gy })),
+        timestamp: Date.now()
+      }));
+    } catch(_) {}
+  }
+
+  loadFromStorage() {
+    try {
+      const raw = localStorage.getItem('accesseye_calib');
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      this.model = data.model;
+      this.calibData = data.calibData;
+      this.isCalibrated = true;
+      return true;
+    } catch(_) { return false; }
+  }
+
+  reset() {
+    this.calibData = [];
+    this.model = null;
+    this.isCalibrated = false;
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   GESTURE ENGINE
+   MediaPipe Hands landmark-based gesture classification
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class GestureEngine {
+  constructor() {
+    this.DEBOUNCE_MS = { pinch: 600, airTap: 700, openPalm: 800 };
+    this._lastFire = {};
+    this.indexZHistory = [];    // for air-tap Z-delta detection
+    this.MAX_Z_HISTORY = 8;
+    this._callbacks = {};
+  }
+
+  on(event, cb) {
+    if (!this._callbacks[event]) this._callbacks[event] = [];
+    this._callbacks[event].push(cb);
+  }
+
+  _emit(event, data) {
+    (this._callbacks[event] || []).forEach(cb => cb(data));
+  }
+
+  /**
+   * Process MediaPipe Hands results
+   * Landmarks are normalized [0,1] in x,y, z ~depth
+   */
+  processLandmarks(landmarks) {
+    if (!landmarks || landmarks.length === 0) return null;
+    const lm = landmarks[0]; // Use first detected hand
+
+    const gesture = this._classify(lm);
+    if (gesture) {
+      const now_ = now();
+      const debounce = this.DEBOUNCE_MS[gesture] || 500;
+      if (!this._lastFire[gesture] || now_ - this._lastFire[gesture] > debounce) {
+        this._lastFire[gesture] = now_;
+        this._emit('gesture', { type: gesture, landmarks: lm });
+        return gesture;
+      }
+    }
+    return null;
+  }
+
+  _classify(lm) {
+    // ── LANDMARKS ──
+    // 0 = wrist
+    // 4 = thumb tip, 3 = thumb ip, 2 = thumb mcp
+    // 8 = index tip, 7 = index dip, 6 = index pip, 5 = index mcp
+    // 12 = middle tip
+    // 16 = ring tip
+    // 20 = pinky tip
+
+    const thumb  = lm[4];
+    const index  = lm[8];
+    const middle = lm[12];
+    const ring   = lm[16];
+    const pinky  = lm[20];
+    const wrist  = lm[0];
+    const indexPip = lm[6];
+    const indexMcp = lm[5];
+
+    // ── PINCH DETECTION ──
+    // Normalized distance between thumb tip and index tip
+    const pinchDist = dist2D(thumb.x, thumb.y, index.x, index.y);
+    if (pinchDist < 0.06) return 'pinch';
+
+    // ── OPEN PALM DETECTION ──
+    // All fingers spread: average tip distance from wrist is large
+    const tips = [thumb, index, middle, ring, pinky];
+    const avgTipDist = tips.reduce((s, t) => s + dist2D(t.x, t.y, wrist.x, wrist.y), 0) / 5;
+    const midDist = dist2D(middle.x, middle.y, ring.x, ring.y);
+    if (avgTipDist > 0.35 && midDist > 0.07) return 'openPalm';
+
+    // ── AIR TAP DETECTION ──
+    // Index finger forward motion: index Z decreasing rapidly (moving toward camera)
+    const indexZ = index.z;
+    this.indexZHistory.push(indexZ);
+    if (this.indexZHistory.length > this.MAX_Z_HISTORY) this.indexZHistory.shift();
+
+    if (this.indexZHistory.length >= 4) {
+      const oldest = this.indexZHistory[0];
+      const newest = this.indexZHistory[this.indexZHistory.length - 1];
+      const zDelta = oldest - newest; // positive = moved toward camera
+      if (zDelta > 0.06) {
+        this.indexZHistory = []; // reset to avoid re-trigger
+        return 'airTap';
+      }
+    }
+
+    return null;
+  }
+
+  getGestureLabel(g) {
+    return { pinch: '🤌 Pinch', airTap: '👆 Air Tap', openPalm: '✋ Open Palm' }[g] || g;
+  }
+
+  getGestureIcon(g) {
+    return { pinch: 'fas fa-hand-scissors', airTap: 'fas fa-hand-point-up', openPalm: 'fas fa-hand-paper' }[g] || 'fas fa-hand';
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   GAZE ENGINE
+   MediaPipe FaceMesh iris landmarks → gaze vector → screen coords
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class GazeEngine {
+  constructor(calibration) {
+    this.calibration = calibration;
+    this.kalman = new KalmanFilter2D(0.008, 0.0002);
+    this.ema = new EMAFilter(0.25);
+
+    // MediaPipe Face Mesh iris landmark indices
+    // Left eye iris:  landmarks 468-472
+    // Right eye iris: landmarks 473-477
+    this.LEFT_IRIS   = [468, 469, 470, 471, 472];
+    this.RIGHT_IRIS  = [473, 474, 475, 476, 477];
+    this.LEFT_EYE_CORNER_L  = 33;
+    this.LEFT_EYE_CORNER_R  = 133;
+    this.RIGHT_EYE_CORNER_L = 362;
+    this.RIGHT_EYE_CORNER_R = 263;
+
+    this.rawGaze = { x: 0.5, y: 0.5 };
+    this.smoothGaze = { x: 0.5, y: 0.5 };
+    this.confidence = 0;
+
+    this._callbacks = {};
+  }
+
+  on(event, cb) {
+    if (!this._callbacks[event]) this._callbacks[event] = [];
+    this._callbacks[event].push(cb);
+  }
+
+  _emit(event, data) {
+    (this._callbacks[event] || []).forEach(cb => cb(data));
+  }
+
+  /**
+   * Process MediaPipe FaceMesh results
+   * @param {Array} multiFaceLandmarks
+   * @param {number} videoWidth
+   * @param {number} videoHeight
+   */
+  processResults(multiFaceLandmarks, videoWidth, videoHeight) {
+    if (!multiFaceLandmarks || multiFaceLandmarks.length === 0) {
+      this.confidence = 0;
+      return null;
+    }
+
+    const lm = multiFaceLandmarks[0];
+    if (lm.length < 478) {
+      // Iris landmarks not available (need refine_landmarks=true)
+      // Fallback: use eye corner midpoints
+      return this._fallbackGaze(lm, videoWidth, videoHeight);
+    }
+
+    // ── IRIS CENTER CALCULATION ──
+    const leftIrisCenter  = this._irisCenter(lm, this.LEFT_IRIS);
+    const rightIrisCenter = this._irisCenter(lm, this.RIGHT_IRIS);
+
+    // ── EYE SPAN (for normalization) ──
+    const leftEyeSpan  = dist2D(lm[this.LEFT_EYE_CORNER_L].x,  lm[this.LEFT_EYE_CORNER_L].y,
+                                 lm[this.LEFT_EYE_CORNER_R].x,  lm[this.LEFT_EYE_CORNER_R].y);
+    const rightEyeSpan = dist2D(lm[this.RIGHT_EYE_CORNER_L].x, lm[this.RIGHT_EYE_CORNER_L].y,
+                                 lm[this.RIGHT_EYE_CORNER_R].x, lm[this.RIGHT_EYE_CORNER_R].y);
+
+    // ── IRIS OFFSET (normalized by eye width) ──
+    // Left eye: offset from eye center
+    const leftEyeMidX = (lm[this.LEFT_EYE_CORNER_L].x + lm[this.LEFT_EYE_CORNER_R].x) / 2;
+    const leftEyeMidY = (lm[this.LEFT_EYE_CORNER_L].y + lm[this.LEFT_EYE_CORNER_R].y) / 2;
+    const leftOffsetX = leftEyeSpan > 0 ? (leftIrisCenter.x - leftEyeMidX) / leftEyeSpan : 0;
+    const leftOffsetY = leftEyeSpan > 0 ? (leftIrisCenter.y - leftEyeMidY) / leftEyeSpan : 0;
+
+    const rightEyeMidX = (lm[this.RIGHT_EYE_CORNER_L].x + lm[this.RIGHT_EYE_CORNER_R].x) / 2;
+    const rightEyeMidY = (lm[this.RIGHT_EYE_CORNER_L].y + lm[this.RIGHT_EYE_CORNER_R].y) / 2;
+    const rightOffsetX = rightEyeSpan > 0 ? (rightIrisCenter.x - rightEyeMidX) / rightEyeSpan : 0;
+    const rightOffsetY = rightEyeSpan > 0 ? (rightIrisCenter.y - rightEyeMidY) / rightEyeSpan : 0;
+
+    // Average of both eyes (binocular gaze vector)
+    const rawGX = (leftOffsetX + rightOffsetX) / 2;
+    const rawGY = (leftOffsetY + rightOffsetY) / 2;
+
+    this.confidence = Math.min(1, (leftEyeSpan + rightEyeSpan) / 0.15);
+
+    // ── APPLY FILTERS ──
+    const kalmanResult = this.kalman.update(rawGX, rawGY);
+    const smoothResult = this.ema.update(kalmanResult.x, kalmanResult.y);
+
+    this.rawGaze    = { x: rawGX, y: rawGY };
+
+    // ── MAP TO SCREEN COORDINATES ──
+    let screenCoords;
+    if (this.calibration.isCalibrated) {
+      screenCoords = this.calibration.mapGaze(smoothResult.x, smoothResult.y);
+    } else {
+      // Uncalibrated: use head-facing estimate
+      const headX = lm[1].x;  // nose tip
+      const headY = lm[1].y;
+      screenCoords = {
+        sx: clamp(0.5 + smoothResult.x * 3.5 + (0.5 - headX) * 0.6, 0, 1),
+        sy: clamp(0.5 + smoothResult.y * 4.0 + (headY - 0.5) * 0.8, 0, 1)
+      };
+    }
+
+    this.smoothGaze = { x: screenCoords.sx, y: screenCoords.sy };
+
+    this._emit('gaze', {
+      raw: this.rawGaze,
+      screen: this.smoothGaze,
+      confidence: this.confidence
+    });
+
+    return this.smoothGaze;
+  }
+
+  _irisCenter(lm, indices) {
+    const pts = indices.map(i => lm[i]);
+    return {
+      x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+      y: pts.reduce((s, p) => s + p.y, 0) / pts.length
+    };
+  }
+
+  _fallbackGaze(lm, w, h) {
+    // Use nose tip position as rough gaze proxy
+    const nose = lm[1];
+    const sx = clamp(1 - nose.x, 0.05, 0.95);
+    const sy = clamp(nose.y * 1.2 - 0.1, 0.05, 0.95);
+    this.smoothGaze = { x: sx, y: sy };
+    this.confidence = 0.6;
+    this._emit('gaze', { raw: { x: sx, y: sy }, screen: this.smoothGaze, confidence: 0.6 });
+    return this.smoothGaze;
+  }
+
+  reset() {
+    this.kalman.reset();
+    this.ema.reset();
+    this.confidence = 0;
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   UI ELEMENT REGISTRY
+   Registers DOM elements as gaze targets with bounding boxes
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class UIElementRegistry {
+  constructor(dwellTime = 350) {
+    this.elements = new Map();   // id → { el, label, onActivate, bbox, dwellStart }
+    this.focusedId = null;
+    this.dwellTime = dwellTime;
+    this.dwellStart = null;
+    this.dwellProgress = 0;
+    this._callbacks = {};
+
+    // Recalculate bboxes on resize
+    window.addEventListener('resize', () => this._refreshBBoxes());
+  }
+
+  on(event, cb) {
+    if (!this._callbacks[event]) this._callbacks[event] = [];
+    this._callbacks[event].push(cb);
+  }
+
+  _emit(event, data) {
+    (this._callbacks[event] || []).forEach(cb => cb(data));
+  }
+
+  register(id, el, label, onActivate) {
+    const bbox = this._getBBox(el);
+    this.elements.set(id, { id, el, label, onActivate, bbox, focused: false });
+  }
+
+  unregister(id) {
+    if (this.focusedId === id) this._unfocus(id);
+    this.elements.delete(id);
+  }
+
+  _getBBox(el) {
+    const r = el.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+
+  _refreshBBoxes() {
+    for (const [, entry] of this.elements) {
+      entry.bbox = this._getBBox(entry.el);
+    }
+  }
+
+  /**
+   * Update gaze position and detect element focus
+   * @param {number} screenX  Absolute screen X in pixels
+   * @param {number} screenY  Absolute screen Y in pixels
+   */
+  updateGaze(screenX, screenY) {
+    this._refreshBBoxes();
+    let hitId = null;
+
+    for (const [id, entry] of this.elements) {
+      const { x, y, w, h } = entry.bbox;
+      // Expand hit area by 8px for accessibility
+      if (screenX >= x - 8 && screenX <= x + w + 8 &&
+          screenY >= y - 8 && screenY <= y + h + 8) {
+        hitId = id;
+        break;
+      }
+    }
+
+    if (hitId !== this.focusedId) {
+      if (this.focusedId) this._unfocus(this.focusedId);
+      if (hitId) this._beginFocus(hitId);
+    }
+
+    // Update dwell timer
+    if (this.focusedId && this.dwellStart !== null) {
+      const elapsed = now() - this.dwellStart;
+      this.dwellProgress = clamp(elapsed / this.dwellTime, 0, 1);
+      this._updateDwellUI(this.focusedId, this.dwellProgress);
+    }
+  }
+
+  _beginFocus(id) {
+    this.focusedId = id;
+    this.dwellStart = now();
+    this.dwellProgress = 0;
+    const entry = this.elements.get(id);
+    if (!entry) return;
+    entry.el.classList.add('gaze-focus');
+    this._emit('focus', { id, label: entry.label });
+  }
+
+  _unfocus(id) {
+    const entry = this.elements.get(id);
+    if (entry) {
+      entry.el.classList.remove('gaze-focus', 'gaze-activating', 'gaze-activated');
+      this._updateDwellUI(id, 0);
+    }
+    this.focusedId = null;
+    this.dwellStart = null;
+    this.dwellProgress = 0;
+  }
+
+  _updateDwellUI(id, progress) {
+    const entry = this.elements.get(id);
+    if (!entry) return;
+    const bar = entry.el.querySelector('.dwell-progress');
+    if (bar) bar.style.width = `${progress * 100}%`;
+  }
+
+  /** Called when gesture fires — activates focused element */
+  activateFocused(gesture) {
+    if (!this.focusedId) return false;
+    const entry = this.elements.get(this.focusedId);
+    if (!entry) return false;
+    entry.el.classList.add('gaze-activating');
+    setTimeout(() => {
+      entry.el.classList.remove('gaze-activating');
+      entry.el.classList.add('gaze-activated');
+      setTimeout(() => entry.el.classList.remove('gaze-activated'), 600);
+    }, 200);
+    this._emit('activate', { id: entry.id, label: entry.label, gesture });
+    if (entry.onActivate) entry.onActivate(gesture);
+    return true;
+  }
+
+  getFocused() {
+    return this.focusedId ? this.elements.get(this.focusedId) : null;
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   AUDIO FEEDBACK (Web Speech API TTS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class AudioFeedback {
+  constructor() {
+    this.enabled = false;
+    this.synth = window.speechSynthesis || null;
+    this._speaking = false;
+    this._queue = [];
+  }
+
+  speak(text, priority = false) {
+    if (!this.enabled || !this.synth) return;
+    if (priority) { this.synth.cancel(); this._queue = []; }
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.rate = 1.1;
+    utt.pitch = 1.0;
+    utt.volume = 0.9;
+    utt.onend = () => { this._speaking = false; };
+    this._speaking = true;
+    this.synth.speak(utt);
+  }
+
+  toggle() {
+    this.enabled = !this.enabled;
+    if (!this.enabled && this.synth) this.synth.cancel();
+    return this.enabled;
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   SIMULATION ENGINE (Mouse mode — when camera is unavailable)
+   Uses mouse pointer to simulate gaze position
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class SimulationEngine {
+  constructor() {
+    this.active = false;
+    this.mouseX = window.innerWidth / 2;
+    this.mouseY = window.innerHeight / 2;
+    this.ema = new EMAFilter(0.4);
+    this._callbacks = {};
+    this._bound = null;
+  }
+
+  on(event, cb) {
+    if (!this._callbacks[event]) this._callbacks[event] = [];
+    this._callbacks[event].push(cb);
+  }
+
+  _emit(event, data) {
+    (this._callbacks[event] || []).forEach(cb => cb(data));
+  }
+
+  start() {
+    this.active = true;
+    this._bound = (e) => {
+      const s = this.ema.update(e.clientX / window.innerWidth, e.clientY / window.innerHeight);
+      this.mouseX = e.clientX;
+      this.mouseY = e.clientY;
+      this._emit('gaze', {
+        screen: { x: s.x, y: s.y },
+        raw: { x: s.x, y: s.y },
+        confidence: 1.0,
+        simulated: true
+      });
+    };
+    document.addEventListener('mousemove', this._bound);
+  }
+
+  stop() {
+    this.active = false;
+    if (this._bound) document.removeEventListener('mousemove', this._bound);
+    this._bound = null;
+    this.ema.reset();
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   TOAST NOTIFICATION SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class ToastSystem {
+  constructor() {
+    this.container = $('#toast-container');
+  }
+
+  show(title, message, type = 'info', icon = null, duration = 3500) {
+    const icons = {
+      info: 'fas fa-info-circle', success: 'fas fa-check-circle',
+      gesture: 'fas fa-hand-paper', warn: 'fas fa-exclamation-triangle'
+    };
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+      <i class="${icon || icons[type]} toast-icon"></i>
+      <div class="toast-body">
+        <div class="toast-title">${title}</div>
+        ${message ? `<div class="toast-msg">${message}</div>` : ''}
+      </div>`;
+    this.container.appendChild(toast);
+    setTimeout(() => {
+      toast.classList.add('toast-out');
+      setTimeout(() => toast.remove(), 350);
+    }, duration);
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   INTERACTION LOG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class InteractionLog {
+  constructor() {
+    this.body = $('#event-log-body');
+    this.maxEntries = 30;
+  }
+
+  add(message, type = 'info') {
+    if (!this.body) return;
+    const t = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
+    entry.innerHTML = `<span class="log-time">${t}</span><span class="log-msg">${message}</span>`;
+    this.body.appendChild(entry);
+    this.body.scrollTop = this.body.scrollHeight;
+    // Trim old entries
+    while (this.body.children.length > this.maxEntries) this.body.removeChild(this.body.firstChild);
+  }
+
+  clear() { if (this.body) this.body.innerHTML = ''; }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   CALIBRATION UI CONTROLLER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class CalibrationUI {
+  constructor(calibEngine, gazeEngine, log, toast) {
+    this.calibEngine = calibEngine;
+    this.gazeEngine = gazeEngine;
+    this.log = log;
+    this.toast = toast;
+    this.overlay = $('#calibration-overlay');
+    this.container = $('#calib-points-container');
+    this.progressFill = $('#calib-progress-fill');
+    this.stepLabel = $('#calib-step-label');
+    this.currentStep = -1;
+    this.collecting = false;
+    this.sampleCount = 0;
+    this.SAMPLES = 25;
+    this._onComplete = null;
+    this._sampleInterval = null;
+  }
+
+  show(onComplete) {
+    this._onComplete = onComplete;
+    this.calibEngine.reset();
+    this.currentStep = -1;
+    this.overlay.style.display = 'flex';
+    this._renderPoints();
+    this._updateProgress(0);
+    this.log.add('Calibration started', 'info');
+  }
+
+  hide() { this.overlay.style.display = 'none'; }
+
+  _renderPoints() {
+    this.container.innerHTML = '';
+    const pts = this.calibEngine.CALIB_POINTS;
+    const W = this.container.offsetWidth;
+    const H = this.container.offsetHeight;
+    pts.forEach((pt, i) => {
+      const el = document.createElement('div');
+      el.className = 'calib-point';
+      el.textContent = i + 1;
+      el.style.left = `${pt.sx * W}px`;
+      el.style.top  = `${pt.sy * H}px`;
+      el.id = `calib-pt-${i}`;
+      this.container.appendChild(el);
+    });
+  }
+
+  async start() {
+    if (this.collecting) return;
+    this.collecting = true;
+    $('#start-calib-btn').disabled = true;
+    this.calibEngine.reset();
+    this.calibEngine.calibData = [];
+
+    for (let i = 0; i < this.calibEngine.CALIB_POINTS.length; i++) {
+      await this._runStep(i);
+    }
+
+    // Build model
+    const success = this.calibEngine.buildModel();
+    this.hide();
+    this.collecting = false;
+
+    if (success) {
+      this.toast.show('Calibration Complete!', 'Gaze tracking is now calibrated for your eyes.', 'success', 'fas fa-sliders-h');
+      this.log.add('Calibration complete — model built successfully', 'success');
+      if (this._onComplete) this._onComplete(true);
+    } else {
+      this.toast.show('Calibration Failed', 'Not enough data collected. Please try again.', 'warn');
+      this.log.add('Calibration failed — insufficient data', 'warn');
+      if (this._onComplete) this._onComplete(false);
+    }
+  }
+
+  _runStep(stepIdx) {
+    return new Promise(resolve => {
+      this.currentStep = stepIdx;
+      this._updateProgress(stepIdx / this.calibEngine.CALIB_POINTS.length);
+      this.stepLabel.textContent = `Step ${stepIdx + 1} / ${this.calibEngine.CALIB_POINTS.length}`;
+
+      // Activate point
+      $$('.calib-point').forEach(el => el.classList.remove('active'));
+      const ptEl = $(`#calib-pt-${stepIdx}`);
+      if (ptEl) ptEl.classList.add('active');
+
+      this.log.add(`Calibrating point ${stepIdx + 1}: ${this.calibEngine.CALIB_POINTS[stepIdx].label}`, 'info');
+
+      // Wait 800ms then start collecting
+      setTimeout(() => {
+        this.sampleCount = 0;
+        this.calibEngine.calibData[stepIdx] = {
+          ...this.calibEngine.CALIB_POINTS[stepIdx],
+          samples: []
+        };
+
+        this._sampleInterval = setInterval(() => {
+          // Capture current raw gaze
+          const gaze = this.gazeEngine.rawGaze;
+          this.calibEngine.addCalibSample(stepIdx, gaze.x, gaze.y);
+          this.sampleCount++;
+
+          const progress = (stepIdx + this.sampleCount / this.SAMPLES) / this.calibEngine.CALIB_POINTS.length;
+          this._updateProgress(progress);
+
+          if (this.sampleCount >= this.SAMPLES) {
+            clearInterval(this._sampleInterval);
+            this.calibEngine.finalizePoint(stepIdx);
+            if (ptEl) { ptEl.classList.remove('active'); ptEl.classList.add('done'); }
+            resolve();
+          }
+        }, 60); // ~16 FPS sampling
+      }, 800);
+    });
+  }
+
+  _updateProgress(pct) {
+    if (this.progressFill) this.progressFill.style.width = `${pct * 100}%`;
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   MEDIAPIPE CONTROLLER
+   Manages FaceMesh + Hands initialization and processing loop
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class MediaPipeController {
+  constructor(videoEl, canvasEl, gazeEngine, gestureEngine) {
+    this.videoEl = videoEl;
+    this.canvasEl = canvasEl;
+    this.ctx = canvasEl.getContext('2d');
+    this.gazeEngine = gazeEngine;
+    this.gestureEngine = gestureEngine;
+    this.faceMesh = null;
+    this.hands = null;
+    this.camera = null;
+    this.running = false;
+    this.faceDetected = false;
+    this.handDetected = false;
+    this.frameCount = 0;
+    this.lastFpsTime = now();
+    this.fps = 0;
+    this.latency = 0;
+    this._latencyStart = 0;
+    this._callbacks = {};
+  }
+
+  on(event, cb) {
+    if (!this._callbacks[event]) this._callbacks[event] = [];
+    this._callbacks[event].push(cb);
+  }
+
+  _emit(event, data) {
+    (this._callbacks[event] || []).forEach(cb => cb(data));
+  }
+
+  async initialize() {
+    // Check if MediaPipe is available
+    if (typeof FaceMesh === 'undefined' || typeof Hands === 'undefined') {
+      console.warn('MediaPipe not loaded — falling back to simulation mode');
+      return false;
+    }
+
+    try {
+      this.faceMesh = new FaceMesh({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+      });
+      this.faceMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,      // Enables iris landmarks (468-477)
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+      });
+      this.faceMesh.onResults((results) => this._onFaceResults(results));
+
+      this.hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      });
+      this.hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 0,         // Lightweight for real-time
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+      });
+      this.hands.onResults((results) => this._onHandResults(results));
+
+      return true;
+    } catch (e) {
+      console.error('MediaPipe init failed:', e);
+      return false;
+    }
+  }
+
+  async startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user', frameRate: 30 }
+      });
+      this.videoEl.srcObject = stream;
+      await this.videoEl.play();
+
+      // Sync canvas size with video
+      this.canvasEl.width  = this.videoEl.videoWidth  || 640;
+      this.canvasEl.height = this.videoEl.videoHeight || 480;
+
+      this.running = true;
+      this._processLoop();
+      return true;
+    } catch (e) {
+      console.error('Camera access failed:', e);
+      this._emit('error', { type: 'camera', message: e.message });
+      return false;
+    }
+  }
+
+  async _processLoop() {
+    if (!this.running) return;
+    const t0 = now();
+
+    if (this.videoEl.readyState >= 2) {
+      try {
+        if (this.faceMesh) await this.faceMesh.send({ image: this.videoEl });
+        if (this.hands)    await this.hands.send({ image: this.videoEl });
+      } catch(e) {}
+    }
+
+    // FPS calculation
+    this.frameCount++;
+    const elapsed = now() - this.lastFpsTime;
+    if (elapsed >= 1000) {
+      this.fps = Math.round(this.frameCount / (elapsed / 1000));
+      this.frameCount = 0;
+      this.lastFpsTime = now();
+    }
+    this.latency = Math.round(now() - t0);
+
+    this._emit('frame', { fps: this.fps, latency: this.latency });
+    requestAnimationFrame(() => this._processLoop());
+  }
+
+  _onFaceResults(results) {
+    this.faceDetected = !!(results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0);
+    this._emit('face', { detected: this.faceDetected, results });
+
+    if (this.faceDetected) {
+      const gaze = this.gazeEngine.processResults(
+        results.multiFaceLandmarks,
+        this.videoEl.videoWidth,
+        this.videoEl.videoHeight
+      );
+      if (gaze) this._drawGazeOnCanvas(gaze);
+      this._drawFaceMesh(results);
+    } else {
+      this._clearCanvas();
+    }
+  }
+
+  _onHandResults(results) {
+    this.handDetected = !!(results.multiHandLandmarks && results.multiHandLandmarks.length > 0);
+    this._emit('hand', { detected: this.handDetected, results });
+
+    if (this.handDetected) {
+      const gesture = this.gestureEngine.processLandmarks(results.multiHandLandmarks);
+      if (gesture) this._emit('gesture', { type: gesture });
+      this._drawHands(results);
+    }
+  }
+
+  _drawFaceMesh(results) {
+    const canvas = this.canvasEl;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (!results.multiFaceLandmarks) return;
+    for (const lm of results.multiFaceLandmarks) {
+      if (typeof drawConnectors !== 'undefined' && typeof FACEMESH_TESSELATION !== 'undefined') {
+        drawConnectors(ctx, lm, FACEMESH_TESSELATION, { color: 'rgba(0,212,255,0.06)', lineWidth: 0.5 });
+        drawConnectors(ctx, lm, FACEMESH_RIGHT_EYE, { color: 'rgba(0,212,255,0.4)', lineWidth: 1 });
+        drawConnectors(ctx, lm, FACEMESH_LEFT_EYE,  { color: 'rgba(0,212,255,0.4)', lineWidth: 1 });
+      }
+
+      // Draw iris (landmarks 468-477 if available)
+      if (lm.length >= 478) {
+        const irisIndices = [468, 469, 470, 471, 472, 473, 474, 475, 476, 477];
+        for (const idx of irisIndices) {
+          const p = lm[idx];
+          ctx.fillStyle = 'rgba(0,255,136,0.9)';
+          ctx.beginPath();
+          ctx.arc(p.x * canvas.width, p.y * canvas.height, 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+  }
+
+  _drawHands(results) {
+    const canvas = this.canvasEl;
+    const ctx = this.ctx;
+    if (!results.multiHandLandmarks) return;
+    for (const lm of results.multiHandLandmarks) {
+      if (typeof drawConnectors !== 'undefined' && typeof HAND_CONNECTIONS !== 'undefined') {
+        drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: 'rgba(255,107,53,0.5)', lineWidth: 1.5 });
+      }
+      for (const pt of lm) {
+        ctx.fillStyle = 'rgba(255,107,53,0.9)';
+        ctx.beginPath();
+        ctx.arc(pt.x * canvas.width, pt.y * canvas.height, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  _drawGazeOnCanvas(gaze) {
+    const canvas = this.canvasEl;
+    const ctx = this.ctx;
+    // Draw small gaze indicator on video overlay
+    const vx = (1 - gaze.x) * canvas.width;  // mirrored
+    const vy = gaze.y * canvas.height;
+    ctx.strokeStyle = 'rgba(0,212,255,0.8)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(vx, vy, 12, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(0,212,255,0.6)';
+    ctx.beginPath();
+    ctx.arc(vx, vy, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  _clearCanvas() {
+    this.ctx.clearRect(0, 0, this.canvasEl.width, this.canvasEl.height);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.videoEl.srcObject) {
+      this.videoEl.srcObject.getTracks().forEach(t => t.stop());
+      this.videoEl.srcObject = null;
+    }
+    this._clearCanvas();
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   MAIN APPLICATION CONTROLLER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+class AccessEyeApp {
+  constructor() {
+    // Core engines
+    this.calibration  = new CalibrationEngine();
+    this.gazeEngine   = new GazeEngine(this.calibration);
+    this.gestureEngine= new GestureEngine();
+    this.uiRegistry   = new UIElementRegistry(350);
+    this.audio        = new AudioFeedback();
+    this.toast        = new ToastSystem();
+    this.log          = new InteractionLog();
+    this.sim          = new SimulationEngine();
+
+    // Mode
+    this.mode     = 'mouse';  // 'mouse' | 'gaze' | 'calibrate'
+    this.cameraOn = false;
+    this.mpAvailable = false;
+    this.mpController = null;
+
+    // Gaze cursor (global)
+    this.gazeCursor = $('#global-gaze-cursor');
+    this.dwellCircle = $('#dwell-circle');
+    this.DWELL_CIRCUMFERENCE = 163.36;
+
+    // FPS/latency tracking
+    this._frameTimer = 0;
+
+    this._init();
+  }
+
+  _init() {
+    this._setupNavigation();
+    this._setupDemoControls();
+    this._setupGazeTargets();
+    this._setupGestureSystem();
+    this._setupCalibrationUI();
+    this._setupAudioToggle();
+    this._setupPerformanceGauges();
+    this._setupHeroPulse();
+    this._tryLoadCalibration();
+    this._setupSimulation();
+    this._setupHeroButtons();
+    this._startCursorFromMouse(); // Default: mouse sim for demos
+  }
+
+  /* ── NAVIGATION ─────────────────────────────────────────── */
+  _setupNavigation() {
+    $$('.nav-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const page = btn.dataset.page;
+        $$('.nav-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        $$('.page').forEach(p => p.classList.remove('active'));
+        const target = $(`#page-${page}`);
+        if (target) target.classList.add('active');
+        if (page === 'demo') this._onEnterDemo();
+        if (page === 'architecture') this._animateGauges();
+      });
+    });
+  }
+
+  _navigateTo(page) {
+    $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.page === page));
+    $$('.page').forEach(p => p.classList.toggle('active', p.id === `page-${page}`));
+    if (page === 'demo') this._onEnterDemo();
+    if (page === 'architecture') this._animateGauges();
+  }
+
+  _setupHeroButtons() {
+    $('#launch-demo-btn')?.addEventListener('click', () => this._navigateTo('demo'));
+    $('#view-arch-btn')?.addEventListener('click',  () => this._navigateTo('architecture'));
+  }
+
+  /* ── DEMO MODE ENTRY ────────────────────────────────────── */
+  _onEnterDemo() {
+    // If in mouse mode, start simulation
+    if (this.mode === 'mouse' && !this.sim.active) {
+      this._startSimulation();
+    }
+    // Register all gaze targets
+    this._registerGazeTargets();
+  }
+
+  /* ── DEMO CONTROLS ──────────────────────────────────────── */
+  _setupDemoControls() {
+    $('#start-camera-btn')?.addEventListener('click', () => this._startCamera());
+    $('#stop-camera-btn')?.addEventListener('click',  () => this._stopCamera());
+    $('#clear-log-btn')?.addEventListener('click',   () => this.log.clear());
+
+    // Mode tabs
+    $$('.mode-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        $$('.mode-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        this._setMode(tab.dataset.mode);
+      });
+    });
+  }
+
+  _setMode(mode) {
+    this.mode = mode;
+    this.log.add(`Mode: ${mode}`, 'info');
+
+    if (mode === 'mouse') {
+      this._startSimulation();
+      this._updateHint('Mouse simulation: move your cursor over buttons and <strong>click</strong> to activate.');
+    } else if (mode === 'gaze') {
+      this.sim.stop();
+      if (this.cameraOn) {
+        this._updateHint('Gaze mode active: look at buttons, then <strong>pinch</strong> or <strong>air tap</strong> to activate.');
+      } else {
+        this._updateHint('Start camera first to enable gaze tracking.');
+      }
+    } else if (mode === 'calibrate') {
+      this.sim.stop();
+      if (this.cameraOn) {
+        this._showCalibrationFlow();
+      } else {
+        this.toast.show('Camera Required', 'Start the camera to run calibration.', 'warn');
+      }
+    }
+  }
+
+  _updateHint(html) {
+    const el = $('#demo-hint-text');
+    if (el) el.innerHTML = html;
+  }
+
+  /* ── CAMERA ─────────────────────────────────────────────── */
+  async _startCamera() {
+    const btn = $('#start-camera-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+
+    this.log.add('Requesting camera access...', 'info');
+
+    // Initialize MediaPipe
+    const videoEl  = $('#demo-video');
+    const canvasEl = $('#overlay-canvas');
+    this.mpController = new MediaPipeController(videoEl, canvasEl, this.gazeEngine, this.gestureEngine);
+
+    const mpOk = await this.mpController.initialize();
+    this.mpAvailable = mpOk;
+
+    const camOk = await this.mpController.startCamera();
+
+    if (camOk) {
+      this.cameraOn = true;
+      // Update UI
+      $('#camera-placeholder').style.display = 'none';
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-play"></i> Restart';
+      $('#stop-camera-btn').disabled = false;
+      this._updateSystemStatus('active', 'Camera Active');
+      this.log.add(`Camera started ${mpOk ? '(MediaPipe active)' : '(simulation mode)'}`, 'success');
+      this.toast.show('Camera Started', mpOk ? 'MediaPipe processing active.' : 'Using position simulation.', 'success');
+
+      // Wire up MediaPipe events
+      this._wireMediaPipeEvents();
+
+      // Update gaze dot in camera feed
+      const gazeDot = $('#gaze-dot');
+      if (gazeDot) gazeDot.style.display = 'block';
+
+      if (!mpOk) {
+        this._startSimulation();
+        this._showSimBanner();
+      }
+    } else {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-play"></i> Start Camera';
+      this.log.add('Camera failed — using mouse simulation', 'warn');
+      this.toast.show('Camera Failed', 'Camera not available. Using mouse simulation instead.', 'warn');
+      this._startSimulation();
+      this._showSimBanner();
+    }
+  }
+
+  _stopCamera() {
+    if (this.mpController) {
+      this.mpController.stop();
+      this.mpController = null;
+    }
+    this.cameraOn = false;
+    $('#camera-placeholder').style.display = 'flex';
+    $('#start-camera-btn').disabled = false;
+    $('#start-camera-btn').innerHTML = '<i class="fas fa-play"></i> Start Camera';
+    $('#stop-camera-btn').disabled = true;
+    this._updateSystemStatus('offline', 'Camera Off');
+    this._updateStatusItem('status-face',    false, 'Inactive');
+    this._updateStatusItem('status-gaze',    false, 'Inactive');
+    this._updateStatusItem('status-hand',    false, 'Inactive');
+    this._updateStatusItem('status-gesture', false, 'None');
+    this.log.add('Camera stopped', 'info');
+
+    // Fall back to simulation
+    this._startSimulation();
+  }
+
+  _showSimBanner() {
+    const appHeader = $('.demo-app-header');
+    if (!appHeader || appHeader.querySelector('.sim-banner')) return;
+    const banner = document.createElement('div');
+    banner.className = 'sim-banner';
+    banner.innerHTML = '<i class="fas fa-mouse-pointer"></i> Simulation Mode: Move cursor to simulate gaze. Click to simulate gesture.';
+    appHeader.appendChild(banner);
+  }
+
+  /* ── MEDIAPIPE EVENTS ───────────────────────────────────── */
+  _wireMediaPipeEvents() {
+    if (!this.mpController) return;
+
+    this.mpController.on('frame', ({ fps, latency }) => {
+      this._updateMetrics(fps, latency, Math.round(this.gazeEngine.confidence * 100));
+    });
+
+    this.mpController.on('face', ({ detected }) => {
+      this._updateStatusItem('status-face', detected, detected ? 'Detected' : 'Not found', detected ? 'active' : '');
+      this._updateStatusItem('status-gaze', detected, detected ? 'Tracking' : 'Inactive', detected ? 'tracking' : '');
+    });
+
+    this.mpController.on('hand', ({ detected }) => {
+      this._updateStatusItem('status-hand', detected, detected ? 'Detected' : 'Not found', detected ? 'active' : '');
+      if (!detected) this._updateStatusItem('status-gesture', false, 'None');
+    });
+
+    this.mpController.on('gesture', ({ type }) => {
+      this._handleGesture(type);
+    });
+
+    this.gazeEngine.on('gaze', ({ screen, confidence }) => {
+      if (this.mode !== 'gaze' || !this.cameraOn) return;
+      this._updateGazeCursor(screen.x * window.innerWidth, screen.y * window.innerHeight);
+      this._updateCoords(screen.x, screen.y);
+      this.uiRegistry.updateGaze(screen.x * window.innerWidth, screen.y * window.innerHeight);
+    });
+  }
+
+  /* ── SIMULATION ─────────────────────────────────────────── */
+  _setupSimulation() {
+    this.sim.on('gaze', ({ screen, simulated }) => {
+      if (this.mode !== 'mouse') return;
+      const sx = screen.x * window.innerWidth;
+      const sy = screen.y * window.innerHeight;
+      this._updateGazeCursor(sx, sy);
+      this._updateCoords(screen.x, screen.y);
+      this.uiRegistry.updateGaze(sx, sy);
+      this._updateMetrics(60, 5, 100);
+      this._updateSystemStatus('tracking', 'Mouse Sim');
+      this._updateStatusItem('status-gaze', true, 'Simulated', 'tracking');
+    });
+  }
+
+  _startSimulation() {
+    if (!this.sim.active) {
+      this.sim.start();
+      this.log.add('Mouse simulation started', 'info');
+    }
+  }
+
+  _startCursorFromMouse() {
+    // Show cursor while on demo page
+    document.addEventListener('mousemove', (e) => {
+      if (this.mode === 'mouse') {
+        this.gazeCursor.style.display = 'block';
+        this.gazeCursor.style.left = `${e.clientX}px`;
+        this.gazeCursor.style.top  = `${e.clientY}px`;
+      }
+    });
+
+    // Click = gesture in mouse mode
+    document.addEventListener('click', (e) => {
+      if (this.mode === 'mouse') {
+        // Don't intercept button/nav clicks — only trigger gesture if on gaze target
+        const target = e.target.closest('.gaze-target');
+        if (target) return; // Let normal click handle it
+        this._handleGesture('pinch');
+      }
+    });
+  }
+
+  /* ── GAZE CURSOR ────────────────────────────────────────── */
+  _updateGazeCursor(px, py) {
+    if (!this.gazeCursor) return;
+    this.gazeCursor.style.display = 'block';
+    this.gazeCursor.style.left = `${px}px`;
+    this.gazeCursor.style.top  = `${py}px`;
+
+    // Update camera feed dot
+    const videoEl = $('#demo-video');
+    if (videoEl && this.cameraOn) {
+      const rect = videoEl.getBoundingClientRect();
+      const dot = $('#gaze-dot');
+      if (dot) {
+        dot.style.left = `${((px - rect.left) / rect.width) * 100}%`;
+        dot.style.top  = `${((py - rect.top)  / rect.height) * 100}%`;
+      }
+    }
+
+    // Update dwell ring
+    const focused = this.uiRegistry.getFocused();
+    if (focused && this.uiRegistry.dwellProgress > 0) {
+      const dashOffset = (1 - this.uiRegistry.dwellProgress) * this.DWELL_CIRCUMFERENCE;
+      if (this.dwellCircle) {
+        this.dwellCircle.style.strokeDasharray = `${this.uiRegistry.dwellProgress * this.DWELL_CIRCUMFERENCE} ${this.DWELL_CIRCUMFERENCE}`;
+      }
+    } else {
+      if (this.dwellCircle) this.dwellCircle.style.strokeDasharray = `0 ${this.DWELL_CIRCUMFERENCE}`;
+    }
+  }
+
+  /* ── GAZE TARGETS ───────────────────────────────────────── */
+  _setupGazeTargets() {
+    // Button click handlers (for direct mouse clicks in sim mode)
+    document.addEventListener('click', (e) => {
+      const target = e.target.closest('.gaze-target');
+      if (target && this.mode === 'mouse') {
+        const id = target.dataset.id;
+        const label = target.dataset.label;
+        this._onElementActivated(id, label, 'click');
+        e.preventDefault();
+      }
+    });
+  }
+
+  _registerGazeTargets() {
+    // Unregister old ones
+    const targets = $$('.gaze-target');
+    targets.forEach(el => {
+      const id = el.dataset.id;
+      if (id) {
+        this.uiRegistry.unregister(id);
+        this.uiRegistry.register(id, el, el.dataset.label || id, (gesture) => {
+          this._onElementActivated(id, el.dataset.label || id, gesture);
+        });
+      }
+    });
+  }
+
+  _onElementActivated(id, label, gesture) {
+    // Visual ripple
+    const entry = this.uiRegistry.elements.get(id);
+    if (entry) {
+      const rect = entry.el.getBoundingClientRect();
+      this._spawnRipple(rect.left + rect.width/2, rect.top + rect.height/2);
+    }
+
+    // Audio feedback
+    this.audio.speak(`${label} activated`);
+
+    // Log
+    this.log.add(`Activated: <strong>${label}</strong> via ${gesture}`, 'success');
+
+    // Toast
+    this.toast.show(label, `Activated via ${gesture}`, 'success', 'fas fa-check-circle', 2500);
+
+    // Special actions
+    this._handleElementAction(id, label);
+
+    // Update status
+    this._updateStatusItem('status-gesture', true, this.gestureEngine.getGestureLabel(gesture) || gesture, 'gesture');
+    setTimeout(() => this._updateStatusItem('status-gesture', false, 'None'), 2000);
+  }
+
+  _handleElementAction(id, label) {
+    const thread = $('#message-thread');
+    if (!thread) return;
+
+    if (id.startsWith('reply-')) {
+      const bubble = document.createElement('div');
+      bubble.className = 'msg-bubble sent';
+      bubble.innerHTML = `
+        <div class="msg-avatar"><i class="fas fa-user"></i></div>
+        <div class="msg-content">
+          <p>${label}</p>
+          <span class="msg-time">${new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</span>
+        </div>`;
+      thread.appendChild(bubble);
+      thread.scrollTop = thread.scrollHeight;
+      // Fade in
+      requestAnimationFrame(() => { bubble.style.opacity = '0'; requestAnimationFrame(() => { bubble.style.transition = 'opacity 0.3s'; bubble.style.opacity = '1'; }); });
+    }
+
+    if (id === 'btn-send') {
+      const bubble = document.createElement('div');
+      bubble.className = 'msg-bubble sent';
+      bubble.innerHTML = `
+        <div class="msg-avatar"><i class="fas fa-user"></i></div>
+        <div class="msg-content"><p>📤 Message sent!</p><span class="msg-time">${new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</span></div>`;
+      thread.appendChild(bubble);
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    if (id === 'btn-call') {
+      this.toast.show('Calling...', '📞 Initiating voice call...', 'info', 'fas fa-phone', 3000);
+    }
+
+    if (id === 'btn-back') {
+      this.toast.show('Going Back', 'Navigation: Back', 'info', 'fas fa-arrow-left', 2000);
+    }
+  }
+
+  /* ── GESTURE SYSTEM ─────────────────────────────────────── */
+  _setupGestureSystem() {
+    this.uiRegistry.on('focus', ({ id, label }) => {
+      this.log.add(`Focused: <strong>${label}</strong>`, 'focus');
+      this._updateCoordTarget(label);
+      this.audio.speak(label);
+    });
+
+    this.uiRegistry.on('activate', ({ id, label, gesture }) => {
+      // handled in _onElementActivated
+    });
+
+    this.gestureEngine.on('gesture', ({ type }) => {
+      this._handleGesture(type);
+    });
+  }
+
+  _handleGesture(type) {
+    const labelMap = { pinch: '🤌 Pinch', airTap: '👆 Air Tap', openPalm: '✋ Open Palm', click: '👆 Click' };
+    const label = labelMap[type] || type;
+
+    // Show gesture indicator
+    this._showGestureIndicator(label);
+    this.log.add(`Gesture: ${label}`, 'gesture');
+    this._updateStatusItem('status-gesture', true, label, 'gesture');
+
+    if (type === 'openPalm') {
+      this.toast.show('Open Palm', 'Cancel / Go Back', 'gesture', 'fas fa-hand-paper', 2000);
+      return;
+    }
+
+    // Activate focused element
+    const activated = this.uiRegistry.activateFocused(type);
+    if (!activated && this.uiRegistry.focusedId === null) {
+      // No element focused
+      this.log.add(`Gesture detected but no element focused`, 'warn');
+    }
+  }
+
+  _showGestureIndicator(label) {
+    let indicator = $('.gesture-indicator');
+    if (indicator) indicator.remove();
+    indicator = document.createElement('div');
+    indicator.className = 'gesture-indicator';
+    indicator.innerHTML = `<i class="fas fa-hand-point-up"></i> ${label}`;
+    document.body.appendChild(indicator);
+    setTimeout(() => { indicator.style.opacity = '0'; indicator.style.transform = 'translateX(-50%) scale(0.8)'; indicator.style.transition = '0.3s'; setTimeout(() => indicator.remove(), 350); }, 1500);
+  }
+
+  _spawnRipple(x, y) {
+    const ripple = document.createElement('div');
+    ripple.className = 'activation-ripple';
+    ripple.style.left = `${x}px`;
+    ripple.style.top  = `${y}px`;
+    document.body.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 700);
+  }
+
+  /* ── CALIBRATION ────────────────────────────────────────── */
+  _setupCalibrationUI() {
+    const overlay = $('#calibration-overlay');
+    if (!overlay) return;
+    const calibUI = new CalibrationUI(this.calibration, this.gazeEngine, this.log, this.toast);
+
+    $('#start-calib-btn')?.addEventListener('click', () => calibUI.start());
+    $('#cancel-calib-btn')?.addEventListener('click', () => {
+      calibUI.hide();
+      this.log.add('Calibration cancelled', 'warn');
+    });
+
+    this._calibUI = calibUI;
+  }
+
+  _showCalibrationFlow() {
+    if (this._calibUI) {
+      this._calibUI.show((success) => {
+        if (success) {
+          this._updateSystemStatus('tracking', 'Calibrated');
+          this.log.add('Gaze calibration active', 'success');
+        }
+      });
+    }
+  }
+
+  _tryLoadCalibration() {
+    const loaded = this.calibration.loadFromStorage();
+    if (loaded) {
+      this.log.add('Saved calibration loaded', 'success');
+    }
+  }
+
+  /* ── AUDIO TOGGLE ───────────────────────────────────────── */
+  _setupAudioToggle() {
+    const btn = $('#audio-toggle');
+    const icon = $('#audio-icon');
+    btn?.addEventListener('click', () => {
+      const on = this.audio.toggle();
+      btn.classList.toggle('active', on);
+      if (icon) icon.className = on ? 'fas fa-volume-up' : 'fas fa-volume-mute';
+      this.toast.show(on ? 'Audio On' : 'Audio Off', `TTS feedback ${on ? 'enabled' : 'disabled'}`, 'info', null, 2000);
+    });
+  }
+
+  /* ── STATUS HELPERS ─────────────────────────────────────── */
+  _updateSystemStatus(state, label) {
+    const dot   = $('.status-dot');
+    const lbl   = $('.status-label');
+    if (dot)  { dot.className = `status-dot ${state}`; }
+    if (lbl)  lbl.textContent = label;
+  }
+
+  _updateStatusItem(id, active, valText, cssClass = '') {
+    const el = $(`#${id}`);
+    if (!el) return;
+    el.className = `status-item ${cssClass}`;
+    const valEl = el.querySelector('.status-val');
+    if (valEl) valEl.textContent = valText;
+  }
+
+  _updateMetrics(fps, latency, conf) {
+    const fpsEl  = $('#fps-display');
+    const latEl  = $('#latency-display');
+    const confEl = $('#confidence-display');
+    if (fpsEl)  fpsEl.textContent  = fps;
+    if (latEl)  latEl.textContent  = latency;
+    if (confEl) confEl.textContent = `${conf}%`;
+  }
+
+  _updateCoords(x, y) {
+    const xEl = $('#gaze-x-val'), yEl = $('#gaze-y-val');
+    if (xEl) xEl.textContent = (x * window.innerWidth).toFixed(0) + 'px';
+    if (yEl) yEl.textContent = (y * window.innerHeight).toFixed(0) + 'px';
+  }
+
+  _updateCoordTarget(label) {
+    const el = $('#target-val');
+    if (el) el.textContent = label;
+  }
+
+  /* ── ARCHITECTURE: PERFORMANCE GAUGES ───────────────────── */
+  _setupPerformanceGauges() {
+    // Gauges animate in when page becomes visible
+  }
+
+  _animateGauges() {
+    const gaugeData = [
+      { id: 'gauge-latency',  pct: 0.9, color: '#00d4ff'  },
+      { id: 'gauge-fps',      pct: 1.0, color: '#00ff88'  },
+      { id: 'gauge-gesture',  pct: 0.85,color: '#ff6b35'  },
+      { id: 'gauge-accuracy', pct: 0.85,color: '#a78bfa'  }
+    ];
+    const CIRCUMFERENCE = 141; // arc length of our gauge path
+    gaugeData.forEach(({ id, pct, color }, i) => {
+      setTimeout(() => {
+        const el = $(`#${id}`);
+        if (el) {
+          el.style.transition = `stroke-dasharray 1.2s cubic-bezier(0.4,0,0.2,1)`;
+          el.style.strokeDasharray = `${pct * CIRCUMFERENCE} ${CIRCUMFERENCE}`;
+          el.style.stroke = color;
+        }
+      }, i * 200);
+    });
+  }
+
+  /* ── HERO ANIMATION ─────────────────────────────────────── */
+  _setupHeroPulse() {
+    // Hero pupil and crosshair are CSS animated, no JS needed
+    // Start metric counter animation
+    $$('.stat-val').forEach(el => {
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(10px)';
+      el.style.transition = 'all 0.5s ease';
+    });
+    setTimeout(() => {
+      $$('.stat-val').forEach((el, i) => {
+        setTimeout(() => {
+          el.style.opacity = '1';
+          el.style.transform = 'none';
+        }, i * 150);
+      });
+    }, 500);
+  }
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   BOOTSTRAP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+let app;
+document.addEventListener('DOMContentLoaded', () => {
+  app = new AccessEyeApp();
+
+  // Expose public API for external use
+  window.AccessEye = {
+    /**
+     * Register a UI element as a gaze target
+     */
+    registerElement({ id, element, label, onActivate }) {
+      app.uiRegistry.register(id, element, label, onActivate);
+    },
+
+    /**
+     * Register multiple elements
+     */
+    registerElements(elements) {
+      elements.forEach(e => {
+        if (e.element) {
+          app.uiRegistry.register(e.id, e.element, e.label, e.onActivate);
+        }
+      });
+    },
+
+    /**
+     * Remove a registered element
+     */
+    unregisterElement(id) {
+      app.uiRegistry.unregister(id);
+    },
+
+    /**
+     * Run calibration flow
+     */
+    calibrate() {
+      app._showCalibrationFlow();
+    },
+
+    /**
+     * Listen for system events
+     */
+    on(event, cb) {
+      if (event === 'gaze')    app.gazeEngine.on('gaze', cb);
+      if (event === 'gesture') app.gestureEngine.on('gesture', cb);
+      if (event === 'focus')   app.uiRegistry.on('focus', cb);
+      if (event === 'activate')app.uiRegistry.on('activate', cb);
+    },
+
+    /**
+     * Toggle audio feedback
+     */
+    toggleAudio() { return app.audio.toggle(); },
+
+    /**
+     * Get current gaze position (normalized 0-1)
+     */
+    getGaze() { return app.gazeEngine.smoothGaze; }
+  };
+
+  console.log('%c AccessEye MVP Loaded ✅', 'color:#00d4ff;font-weight:bold;font-size:14px;');
+  console.log('%c Version: 1.0.0 | On-device eye + gesture control', 'color:#94a3b8;font-size:12px;');
+});
