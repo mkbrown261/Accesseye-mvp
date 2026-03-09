@@ -299,7 +299,7 @@ app.get('/', (c) => {
             <div class="flow-num">02</div>
             <div class="flow-icon"><i class="fas fa-sliders-h"></i></div>
             <h4>Calibrate</h4>
-            <p>5-point calibration builds personalized gaze-to-screen model</p>
+            <p>13-point ridge regression builds personalized gaze-to-screen model</p>
           </div>
           <div class="flow-arrow"><i class="fas fa-arrow-right"></i></div>
           <div class="flow-step">
@@ -697,7 +697,7 @@ app.get('/', (c) => {
               <h2><i class="fas fa-sliders-h"></i> Eye Tracking Calibration</h2>
               <p>Look directly at each circle when it glows. Hold your gaze for 2 seconds.</p>
               <div class="calib-progress-bar"><div class="calib-progress-fill" id="calib-progress-fill"></div></div>
-              <span id="calib-step-label">Step 0 / 5</span>
+              <span id="calib-step-label">Step 0 / 13</span>
             </div>
             <div class="calib-points-container" id="calib-points-container">
               <!-- Points injected by JS -->
@@ -926,8 +926,93 @@ app.get('/', (c) => {
                   <i class="fas fa-undo"></i> Reset Micro-Calib
                 </button>
               </div>
+
+              <!-- ═══════════════════════════════════════════════ -->
+              <!-- PHASE 3 UPGRADES PANEL                         -->
+              <!-- ═══════════════════════════════════════════════ -->
+
+              <!-- P3.1 + P3.2: One Euro Filter + IVT -->
+              <div class="p2-section" id="p3-section">
+                <div class="p2-section-title"><i class="fas fa-wave-square"></i> Phase 3 — Advanced Filters</div>
+
+                <!-- IVT Status -->
+                <div class="p2-micro-status">
+                  <span class="p2-micro-lbl">IVT Status:</span>
+                  <span class="p2-micro-val" id="p3-ivt-status" style="color:#00ff88">Scanning</span>
+                </div>
+                <div class="p2-micro-status">
+                  <span class="p2-micro-lbl">Velocity:</span>
+                  <span class="p2-micro-val" id="p3-velocity">0px/f</span>
+                </div>
+              </div>
+
+              <!-- P3.3: Adaptive Dwell Timer -->
+              <div class="p2-section">
+                <div class="p2-section-title"><i class="fas fa-clock"></i> Adaptive Dwell Timer</div>
+                <div class="p2-micro-status">
+                  <span class="p2-micro-lbl">Current Preset:</span>
+                  <span class="p2-micro-val" id="p3-dwell-preset">Normal (300ms)</span>
+                </div>
+                <!-- Preset buttons -->
+                <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;">
+                  <button class="p2-toggle-btn active" data-dwell-preset="fast"
+                          style="font-size:0.7rem;padding:4px 8px" title="Fast — 180ms">⚡ Fast</button>
+                  <button class="p2-toggle-btn active" data-dwell-preset="normal"
+                          style="font-size:0.7rem;padding:4px 8px" title="Normal — 300ms">🎯 Normal</button>
+                  <button class="p2-toggle-btn" data-dwell-preset="accessible"
+                          style="font-size:0.7rem;padding:4px 8px" title="Accessible — 500ms">♿ Access.</button>
+                  <button class="p2-toggle-btn" data-dwell-preset="extended"
+                          style="font-size:0.7rem;padding:4px 8px" title="Extended — 800ms">🐢 Extended</button>
+                </div>
+              </div>
+
+              <!-- P3.4: PACE Recalibration -->
+              <div class="p2-section">
+                <div class="p2-section-title"><i class="fas fa-sync-alt"></i> PACE Recalibration</div>
+                <div class="p2-micro-status">
+                  <span class="p2-micro-lbl">Passive samples:</span>
+                  <span class="p2-micro-val" id="p3-pace-count">0</span>
+                </div>
+                <button class="p2-toggle-btn" id="p3-pace-reset">
+                  <i class="fas fa-undo"></i> Reset PACE Buffer
+                </button>
+              </div>
+
+              <!-- P3.5: Smooth Pursuit Calibration -->
+              <div class="p2-section">
+                <div class="p2-section-title"><i class="fas fa-route"></i> Smooth Pursuit Calib.</div>
+                <div style="font-size:0.75rem;color:#888;margin-bottom:8px">
+                  Follow a moving dot to calibrate without fixed staring
+                </div>
+                <button class="p2-toggle-btn" id="p3-pursuit-btn">
+                  <i class="fas fa-play-circle"></i> Start Pursuit Calibration
+                </button>
+              </div>
+
+              <!-- P3.6: Post-Calibration Validation -->
+              <div class="p2-section">
+                <div class="p2-section-title"><i class="fas fa-crosshairs"></i> Accuracy Validation</div>
+                <div style="font-size:0.75rem;color:#888;margin-bottom:8px">
+                  5-point test — thresholds 70% / 85%+ pass
+                </div>
+                <button class="p2-toggle-btn" id="p3-validate-btn">
+                  <i class="fas fa-check-circle"></i> ✓ Validate Accuracy
+                </button>
+              </div>
+
+              <!-- P3.7: Head-Free Stabilization -->
+              <div class="p2-section">
+                <div class="p2-section-title"><i class="fas fa-arrows-alt"></i> Head-Free Stabilization</div>
+                <div style="font-size:0.75rem;color:#888;margin-bottom:8px">
+                  Compensates for head movement dynamically
+                </div>
+                <button class="p2-toggle-btn active" id="p3-headfree-toggle">
+                  <i class="fas fa-power-off"></i> Disable Head-Free
+                </button>
+              </div>
+
+              <!-- ═══════════════════════════════════════════════ -->
             </div>
-            <!-- ═══════════════════════════════════════════ -->
           </div>
         </div>
       </div>
@@ -1009,7 +1094,7 @@ eye.<span class="f">unregisterElement</span>(<span class="s">'sendButton'</span>
             <h2>Calibration System</h2>
             <pre class="code-block"><code><span class="c">// Run 5-point calibration flow</span>
 <span class="k">const</span> result = <span class="k">await</span> eye.<span class="f">calibrate</span>({
-  points: <span class="n">5</span>,          <span class="c">// 5-point grid</span>
+  points: <span class="n">13</span>,         <span class="c">// 13-point ridge regression grid</span>
   samplesPerPoint: <span class="n">30</span>, <span class="c">// frames to average</span>
   timeout: <span class="n">10000</span>      <span class="c">// max 10s</span>
 });
@@ -1145,6 +1230,8 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="/static/app.js"></script>
   <script src="/static/phase2-engine.js"></script>
   <script src="/static/phase2-init.js"></script>
+  <script src="/static/phase3-engine.js"></script>
+  <script src="/static/phase3-init.js"></script>
 </body>
 </html>`)
 })

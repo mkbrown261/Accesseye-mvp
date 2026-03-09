@@ -836,43 +836,33 @@ class GazeConfidenceScorer {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   P2.7  DYNAMIC CALIBRATION ENGINE
-   Extends Phase 1 CalibrationEngine with:
-     • Micro-calibration: incremental model updates from confirmed interactions
-     • Confidence gating: only update when confidence > threshold
-     • Drift compensation: rolling bias correction
-     • 9-point calibration support (vs Phase 1's 5-point)
+   P2.7  DYNAMIC CALIBRATION ENGINE  [upgraded — ridge regression micro-updates]
+   Extends Phase 1 CalibrationEngine (v3) with:
+     • Micro-calibration: weighted ridge regression model updates
+     • Confidence gating (MIN_CONF = 0.65)
+     • Drift compensation: rolling bias correction (α=0.03)
+     • Weight-decay 0.995 on micro-samples (PACE-style recalibration)
 ───────────────────────────────────────────────────────────────────────── */
 class DynamicCalibrationEngine {
   /**
-   * @param {CalibrationEngine} baseCalib  Phase 1 engine (reused)
+   * @param {CalibrationEngine} baseCalib  Phase 1 engine (v3 — ridge regression)
    */
   constructor(baseCalib) {
     this.base = baseCalib;
 
     // Micro-calibration state
-    this.microSamples = [];       // [{gx, gy, sx, sy, confidence}]
-    this.MAX_MICRO    = 40;       // rolling window
-    this.MIN_CONF     = 0.65;     // minimum confidence to accept sample
-    this.MICRO_LR     = 0.04;     // micro-update learning rate
+    this.microSamples  = [];    // [{gx, gy, sx, sy, w, confidence, t}]
+    this.MAX_MICRO     = 100;   // PACE-style larger buffer (up from 40)
+    this.MIN_CONF      = 0.65;  // minimum confidence to accept sample
+    this.WEIGHT_DECAY  = 0.995; // PACE temporal weight decay per frame
 
     // Drift bias (rolling mean of residuals)
-    this._biasX = 0;
-    this._biasY = 0;
+    this._biasX     = 0;
+    this._biasY     = 0;
     this._biasAlpha = 0.03;
 
-    // Extended 9-point calibration points
-    this.CALIB_POINTS_9 = [
-      { sx:0.10, sy:0.10, label:'TopLeft'     },
-      { sx:0.50, sy:0.10, label:'TopCenter'   },
-      { sx:0.90, sy:0.10, label:'TopRight'    },
-      { sx:0.10, sy:0.50, label:'MidLeft'     },
-      { sx:0.50, sy:0.50, label:'Center'      },
-      { sx:0.90, sy:0.50, label:'MidRight'    },
-      { sx:0.10, sy:0.90, label:'BotLeft'     },
-      { sx:0.50, sy:0.90, label:'BotCenter'   },
-      { sx:0.90, sy:0.90, label:'BotRight'    }
-    ];
+    // Ridge regression λ for micro-updates (slightly higher for robustness)
+    this.MICRO_LAMBDA = 0.015;
 
     this._callbacks = {};
   }
@@ -889,18 +879,18 @@ class DynamicCalibrationEngine {
   /**
    * Called after a confirmed user interaction (gesture + element activation).
    * Treats (gazeX, gazeY) → (targetSX, targetSY) as a calibration sample.
-   *
-   * @param {number} gazeX      raw gaze X from HybridGazeEngine
-   * @param {number} gazeY      raw gaze Y
-   * @param {number} targetSX   known screen X of activated element (0-1)
-   * @param {number} targetSY   known screen Y of activated element (0-1)
-   * @param {number} confidence
    */
   recordInteraction(gazeX, gazeY, targetSX, targetSY, confidence) {
     if (confidence < this.MIN_CONF) return false;
     if (!this.base.isCalibrated) return false;
 
-    this.microSamples.push({ gx: gazeX, gy: gazeY, sx: targetSX, sy: targetSY, confidence, t: p2.now() });
+    this.microSamples.push({
+      gx: gazeX, gy: gazeY,
+      sx: targetSX, sy: targetSY,
+      w: confidence,             // initial weight = confidence
+      confidence,
+      t: p2.now()
+    });
     if (this.microSamples.length > this.MAX_MICRO) this.microSamples.shift();
 
     // Compute bias from this sample
@@ -928,10 +918,9 @@ class DynamicCalibrationEngine {
 
   /**
    * Apply drift bias correction to a mapped screen coordinate.
-   * Called after base.mapGaze() in the pipeline.
+   * Returns { x, y } so callers can use .x / .y directly.
    */
   applyBiasCorrection(sx, sy) {
-    // Returns { x, y } (NOT sx/sy) so callers can use .x / .y directly
     return {
       x: p2.clamp(sx + this._biasX * 0.7, 0, 1),
       y: p2.clamp(sy + this._biasY * 0.7, 0, 1)
@@ -939,67 +928,105 @@ class DynamicCalibrationEngine {
   }
 
   /**
-   * Rebuild base calibration model augmented with micro-samples.
-   * Weighted blend of original calibration data + new micro-samples.
+   * PACE-style decay: age all micro-sample weights by WEIGHT_DECAY.
+   * Should be called periodically (e.g., every 30 frames) to phase out old samples.
+   */
+  decayWeights() {
+    for (const s of this.microSamples) {
+      s.w *= this.WEIGHT_DECAY;
+    }
+    // Remove samples whose weight has dropped below 0.01
+    this.microSamples = this.microSamples.filter(s => s.w >= 0.01);
+  }
+
+  /**
+   * Rebuild base calibration model augmented with micro-samples via ridge regression.
+   * Blends original calib points (weight 2.0) + micro-samples (confidence weight).
    */
   _microUpdate() {
     if (!this.base.isCalibrated || this.microSamples.length < 5) return;
 
-    // Blend: original calibration points get weight 2.0, micro-samples get confidence weight
     const blended = [
+      // Original calibration points — high anchor weight
       ...this.base.calibData.filter(d => d.gx !== undefined).map(d => ({
         gx: d.gx, gy: d.gy, sx: d.sx, sy: d.sy, w: 2.0
       })),
-      ...this.microSamples.map(s => ({
-        gx: s.gx, gy: s.gy, sx: s.sx, sy: s.sy, w: s.confidence
-      }))
+      // Micro-samples with time-decayed weights
+      ...this.microSamples.map(s => ({ gx: s.gx, gy: s.gy, sx: s.sx, sy: s.sy, w: s.w }))
     ];
 
-    // Weighted least-squares
-    const modelX = this._weightedLS(blended, p => p.sx);
-    const modelY = this._weightedLS(blended, p => p.sy);
+    // Use degree-2 ridge regression (same as base CalibrationEngine v3)
+    const modelX = this._ridgeLS(blended, p => p.sx, this.MICRO_LAMBDA);
+    const modelY = this._ridgeLS(blended, p => p.sy, this.MICRO_LAMBDA);
 
     if (modelX && modelY) {
-      this.base.model = { x: modelX, y: modelY };
-      this._emit('modelUpdated', { samples: blended.length, biasX: this._biasX, biasY: this._biasY });
+      // Update model preserving metadata
+      this.base.model = {
+        ...this.base.model,
+        x: modelX, y: modelY,
+        lambda: this.MICRO_LAMBDA,
+        microSamples: blended.length
+      };
+      this._emit('modelUpdated', {
+        samples: blended.length,
+        biasX: this._biasX, biasY: this._biasY
+      });
     }
   }
 
-  /* Weighted least-squares: 4-parameter bilinear */
-  _weightedLS(pts, getTarget) {
+  /**
+   * Degree-2 weighted ridge regression (6-term polynomial)
+   * φ(gx, gy) = [1, gx, gy, gx², gy², gx·gy]
+   */
+  _ridgeLS(pts, getTarget, lambda) {
     try {
-      const n = 4;
-      let ATA = Array.from({length:n},()=>new Array(n).fill(0));
-      let ATb = new Array(n).fill(0);
+      const deg = 6;
+      let ATA = Array.from({ length: deg }, () => new Array(deg).fill(0));
+      let ATb = new Array(deg).fill(0);
+
       for (const p of pts) {
-        const w = p.w ?? 1;
-        const row = [1, p.gx, p.gy, p.gx*p.gy];
+        const w   = p.w ?? 1.0;
+        const row = this._phi(p.gx, p.gy);
         const t   = getTarget(p);
-        for (let r=0; r<n; r++) {
+        for (let r = 0; r < deg; r++) {
           ATb[r] += w * row[r] * t;
-          for (let c=0; c<n; c++) ATA[r][c] += w * row[r] * row[c];
+          for (let c = 0; c < deg; c++) ATA[r][c] += w * row[r] * row[c];
         }
       }
+
+      // Ridge penalty on non-intercept terms
+      for (let i = 1; i < deg; i++) ATA[i][i] += lambda;
+
       // Gauss-Jordan
-      let aug = ATA.map((row,i)=>[...row, ATb[i]]);
-      for (let col=0; col<n; col++) {
+      let aug = ATA.map((row, i) => [...row, ATb[i]]);
+      for (let col = 0; col < deg; col++) {
         let maxR = col;
-        for (let r=col+1;r<n;r++) if (Math.abs(aug[r][col])>Math.abs(aug[maxR][col])) maxR=r;
-        [aug[col],aug[maxR]]=[aug[maxR],aug[col]];
+        for (let r = col + 1; r < deg; r++) {
+          if (Math.abs(aug[r][col]) > Math.abs(aug[maxR][col])) maxR = r;
+        }
+        [aug[col], aug[maxR]] = [aug[maxR], aug[col]];
         const piv = aug[col][col];
-        if (Math.abs(piv)<1e-12) continue;
-        for (let r=0;r<n;r++) { if(r===col) continue; const f=aug[r][col]/piv; for(let c=col;c<=n;c++) aug[r][c]-=f*aug[col][c]; }
-        for (let c=col;c<=n;c++) aug[col][c]/=piv;
+        if (Math.abs(piv) < 1e-12) continue;
+        for (let r = 0; r < deg; r++) {
+          if (r === col) continue;
+          const f = aug[r][col] / piv;
+          for (let c = col; c <= deg; c++) aug[r][c] -= f * aug[col][c];
+        }
+        for (let c = col; c <= deg; c++) aug[col][c] /= piv;
       }
-      return aug.map(row=>row[n]);
-    } catch(_) { return null; }
+      return aug.map(row => row[deg]);
+    } catch (_) { return null; }
+  }
+
+  _phi(gx, gy) {
+    return [1, gx, gy, gx * gx, gy * gy, gx * gy];
   }
 
   saveMicroData() {
     try {
       localStorage.setItem('accesseye_micro', JSON.stringify({
         biasX: this._biasX, biasY: this._biasY,
-        samples: this.microSamples.slice(-20),
+        samples: this.microSamples.slice(-40),
         t: Date.now()
       }));
     } catch(_) {}
@@ -1012,7 +1039,7 @@ class DynamicCalibrationEngine {
       const d = JSON.parse(raw);
       this._biasX = d.biasX || 0;
       this._biasY = d.biasY || 0;
-      this.microSamples = d.samples || [];
+      this.microSamples = (d.samples || []).map(s => ({ ...s, w: s.w ?? s.confidence ?? 1 }));
     } catch(_) {}
   }
 
