@@ -922,6 +922,8 @@ class CalibrationUI {
     this.SAMPLES = 25;
     this._onComplete = null;
     this._sampleInterval = null;
+    this._arenaW = 0;   // set in _renderPoints after layout
+    this._arenaH = 0;
   }
 
   show(onComplete) {
@@ -929,18 +931,44 @@ class CalibrationUI {
     this.calibEngine.reset();
     this.currentStep = -1;
     this.overlay.style.display = 'flex';
-    this._renderPoints();
     this._updateProgress(0);
     this.log.add('Calibration started', 'info');
+    // FIX CAL-2: defer _renderPoints until after the browser has painted the
+    // full-viewport overlay so offsetWidth/Height return correct dimensions.
+    // Double-rAF ensures the flex layout has fully resolved before we query.
+    requestAnimationFrame(() => requestAnimationFrame(() => this._renderPoints()));
   }
 
-  hide() { this.overlay.style.display = 'none'; }
+  hide() {
+    this.overlay.style.display = 'none';
+    this._arenaW = 0;   // reset so next show() re-measures the viewport
+    this._arenaH = 0;
+  }
 
+  /**
+   * FIX CAL-1 + CAL-4: Place calibration dots using the ACTUAL rendered
+   * dimensions of the container (which now spans the full viewport working
+   * area).  The sx/sy fractions (0–1) in CALIB_POINTS therefore represent
+   * fractions of the full visible screen, matching the `window.innerWidth ×
+   * window.innerHeight` multiplication used when the gaze cursor is placed.
+   *
+   * Previously the container was a fixed 600×380 px box inside the demo
+   * sidebar.  The model was trained on targets clustered inside that small
+   * box, while the cursor was placed across the full 1920×1080 viewport.
+   * That mismatch caused a systematic ~3–4× scale error in both axes.
+   */
   _renderPoints() {
     this.container.innerHTML = '';
     const pts = this.calibEngine.CALIB_POINTS;
-    const W = this.container.offsetWidth;
-    const H = this.container.offsetHeight;
+
+    // Use the live rendered size (full viewport after CSS fix)
+    const W = this.container.offsetWidth  || window.innerWidth;
+    const H = this.container.offsetHeight || window.innerHeight;
+
+    // Store the arena size so _runStep can re-render correctly after resize
+    this._arenaW = W;
+    this._arenaH = H;
+
     pts.forEach((pt, i) => {
       const el = document.createElement('div');
       el.className = 'calib-point';
@@ -954,6 +982,16 @@ class CalibrationUI {
 
   async start() {
     if (this.collecting) return;
+
+    // FIX CAL-2: if _renderPoints hasn't finished yet (overlay just shown),
+    // wait one more frame before starting.  The Start button is only visible
+    // after the overlay opens so this delay is imperceptible.
+    if (!this._arenaW) {
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      this._renderPoints();
+      await new Promise(r => requestAnimationFrame(r));
+    }
+
     this.collecting = true;
     $('#start-calib-btn').disabled = true;
     this.calibEngine.reset();
@@ -1001,8 +1039,13 @@ class CalibrationUI {
         };
 
         this._sampleInterval = setInterval(() => {
-          // Capture current raw gaze
-          const gaze = this.gazeEngine.rawGaze;
+          // FIX CAL-4: Prefer Phase 2 HybridGazeEngine rawGaze when available —
+          // it uses binocular iris + head-pose fusion and is more accurate than
+          // the Phase-1 single-eye estimate.  Fall back to Phase-1 when inactive.
+          const rawSrc = (window.app?.phase2?.active && window.Phase2?.orchestrator?.hybridGaze)
+            ? window.Phase2.orchestrator.hybridGaze
+            : this.gazeEngine;
+          const gaze = rawSrc.rawGaze;
           this.calibEngine.addCalibSample(stepIdx, gaze.x, gaze.y);
           this.sampleCount++;
 

@@ -876,23 +876,33 @@ body {
   background: var(--bg-primary);
 }
 
-/* Calibration overlay */
+/* Calibration overlay — FIX CAL-3: full-viewport fixed overlay so calibration
+   points span the entire screen the user will actually gaze at.            */
 .calibration-overlay {
-  position: absolute;
-  inset: 0;
+  position: fixed;          /* FIX CAL-3: was absolute (confined to demo-main) */
+  inset: 0;                 /* cover the full viewport */
   background: rgba(10, 14, 26, 0.97);
-  z-index: 100;
+  z-index: 9000;            /* above nav-bar and all panels */
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 32px;
-  padding: 40px;
+  justify-content: flex-start;  /* header at top, container fills middle */
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
-.calib-header { text-align: center; max-width: 500px; }
-.calib-header h2 { font-size: 1.6rem; font-weight: 800; margin-bottom: 10px; color: var(--accent-cyan); }
-.calib-header p { font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 20px; }
+/* FIX CAL-3: header lives at the top of the fixed overlay */
+.calib-header {
+  text-align: center;
+  width: 100%;
+  padding: 20px 40px 12px;
+  background: rgba(10, 14, 26, 0.98);
+  z-index: 1;
+  flex-shrink: 0;
+}
+.calib-header h2 { font-size: 1.4rem; font-weight: 800; margin-bottom: 6px; color: var(--accent-cyan); }
+.calib-header p { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px; }
 
 .calib-progress-bar {
   width: 100%;
@@ -913,13 +923,15 @@ body {
 
 #calib-step-label { font-size: 0.8rem; color: var(--text-muted); }
 
+/* FIX CAL-1: was fixed 600×380 px — now fills remaining viewport height.
+   Points must span the same area the user gazes at during real use.       */
 .calib-points-container {
   position: relative;
-  width: 600px;
-  height: 380px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
+  flex: 1 1 auto;           /* fill all space between header and footer */
+  width: 100%;
+  background: rgba(10, 14, 26, 0.60);
+  border: none;
+  border-radius: 0;
 }
 
 .calib-point {
@@ -960,7 +972,15 @@ body {
   to   { transform: translate(-50%,-50%) scale(1.4); }
 }
 
-.calib-footer { display: flex; gap: 16px; }
+/* FIX CAL-3: footer anchored to the bottom of the fixed overlay */
+.calib-footer {
+  display: flex;
+  gap: 16px;
+  padding: 16px 40px 20px;
+  background: rgba(10, 14, 26, 0.98);
+  flex-shrink: 0;
+  z-index: 1;
+}
 
 /* ── GAZE CURSOR ────────────────────────────────────────────── */
 .gaze-cursor {
