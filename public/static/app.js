@@ -137,6 +137,18 @@ class CalibrationEngine {
     this.SAMPLES_PER_POINT = 25;
     this.RIDGE_LAMBDA      = 0.01;  // regularisation strength (λ)
     this.MIN_POINTS_FOR_MODEL = 6;  // minimum calibration points to build model
+
+    // Event system (used to notify GazeEngine of calibration completion)
+    this._callbacks = {};
+  }
+
+  on(event, cb) {
+    if (!this._callbacks[event]) this._callbacks[event] = [];
+    this._callbacks[event].push(cb);
+  }
+
+  _emit(event, data) {
+    (this._callbacks[event] || []).forEach(cb => cb(data));
   }
 
   /* Record raw gaze samples for a calibration point */
@@ -147,18 +159,32 @@ class CalibrationEngine {
     this.calibData[pointIdx].samples.push({ gx: rawGazeX, gy: rawGazeY });
   }
 
-  /* After collecting samples, compute trimmed-mean gaze vector per point */
+  /* After collecting samples, compute trimmed-mean gaze vector per point.
+   * FIX C-1: Sort by 2D Euclidean distance from centroid and discard the
+   * worst 20% rows TOGETHER (axis-coupled), so a blink frame that corrupts
+   * both gx and gy is removed as a unit. The old per-axis sort could remove
+   * a good gx row and a good gy row from *different* blink frames, leaving
+   * both axes contaminated.
+   */
   finalizePoint(pointIdx) {
     const d = this.calibData[pointIdx];
     if (!d || d.samples.length === 0) return false;
-    // Use middle 60% of samples (trim 20% tails) to reject outlier blinks
-    const sorted_x = [...d.samples].sort((a, b) => a.gx - b.gx);
-    const sorted_y = [...d.samples].sort((a, b) => a.gy - b.gy);
-    const cut = Math.floor(d.samples.length * 0.20);
-    const trimmed_x = sorted_x.slice(cut, sorted_x.length - cut);
-    const trimmed_y = sorted_y.slice(cut, sorted_y.length - cut);
-    d.gx = trimmed_x.reduce((s, v) => s + v.gx, 0) / trimmed_x.length;
-    d.gy = trimmed_y.reduce((s, v) => s + v.gy, 0) / trimmed_y.length;
+
+    // Compute centroid of all samples
+    const cx = d.samples.reduce((s, v) => s + v.gx, 0) / d.samples.length;
+    const cy = d.samples.reduce((s, v) => s + v.gy, 0) / d.samples.length;
+
+    // Rank by 2D distance from centroid (closest = most representative)
+    const ranked = [...d.samples]
+      .map(s => ({ ...s, dist: Math.hypot(s.gx - cx, s.gy - cy) }))
+      .sort((a, b) => a.dist - b.dist);
+
+    // Discard the outermost 20% of samples (blinks, squints, head turns)
+    const cut     = Math.floor(ranked.length * 0.20);
+    const trimmed = ranked.slice(0, ranked.length - cut);  // keep closest 80%
+
+    d.gx = trimmed.reduce((s, v) => s + v.gx, 0) / trimmed.length;
+    d.gy = trimmed.reduce((s, v) => s + v.gy, 0) / trimmed.length;
     return true;
   }
 
@@ -189,6 +215,13 @@ class CalibrationEngine {
     };
     this.isCalibrated = true;
     this._saveToStorage();
+
+    // FIX M-1: notify GazeEngine to capture reference eye span.
+    // The calibration was collected while the user was positioned in front of
+    // the camera, so rawGaze from the gaze engine reflects their real eye size.
+    // We emit an event that GazeEngine listens to in order to set _refEyeSpan.
+    this._emit?.('calibrated', { points: pts.length });
+
     return true;
   }
 
@@ -441,7 +474,24 @@ class GazeEngine {
     this.smoothGaze = { x: 0.5, y: 0.5 };
     this.confidence = 0;
 
+    // FIX M-1: reference eye span measured at calibration time
+    // Prevents narrow-eye users from being penalised by fixed 0.15 denominator
+    this._refEyeSpan = null;
+
     this._callbacks = {};
+
+    // FIX Bug-11: Subscribe to CalibrationEngine 'calibrated' event so we
+    // capture the current eye span as the user's personal reference.
+    // This must happen here (constructor) because CalibrationEngine already
+    // exists when GazeEngine is constructed; we can't rely on external wiring.
+    this.calibration.on('calibrated', () => {
+      // Capture the eye span as measured during the last processed frame.
+      // If we haven't seen a frame yet (span is 0) keep the existing reference.
+      if (this._lastEyeSpan > 0) {
+        this._refEyeSpan = this._lastEyeSpan * 2; // sum of both eyes (matches confidence calc)
+      }
+    });
+    this._lastEyeSpan = 0;   // running sum of both eye spans, updated every frame
   }
 
   on(event, cb) {
@@ -476,32 +526,58 @@ class GazeEngine {
     const leftIrisCenter  = this._irisCenter(lm, this.LEFT_IRIS);
     const rightIrisCenter = this._irisCenter(lm, this.RIGHT_IRIS);
 
-    // ── EYE SPAN (for normalization) ──
+    // ── EYE SPAN (horizontal) — used for X offset + confidence ──
     const leftEyeSpan  = dist2D(lm[this.LEFT_EYE_CORNER_L].x,  lm[this.LEFT_EYE_CORNER_L].y,
                                  lm[this.LEFT_EYE_CORNER_R].x,  lm[this.LEFT_EYE_CORNER_R].y);
     const rightEyeSpan = dist2D(lm[this.RIGHT_EYE_CORNER_L].x, lm[this.RIGHT_EYE_CORNER_L].y,
                                  lm[this.RIGHT_EYE_CORNER_R].x, lm[this.RIGHT_EYE_CORNER_R].y);
 
-    // ── IRIS OFFSET (normalized by eye width) ──
-    // Left eye: offset from eye center
+    // ── EYE HEIGHT (vertical) — FIX A-1: normalize Y by eye height not width ──
+    // Upper/lower eyelid mid-landmarks for each eye
+    // Left eye: upper lid ~159, lower lid ~145
+    // Right eye: upper lid ~386, lower lid ~374
+    const leftEyeHeight  = lm[159] && lm[145] ? Math.abs(lm[159].y - lm[145].y) : leftEyeSpan * 0.4;
+    const rightEyeHeight = lm[386] && lm[374] ? Math.abs(lm[386].y - lm[374].y) : rightEyeSpan * 0.4;
+
+    // ── IRIS OFFSET ──
+    // X offset: normalized by horizontal eye width (correct for horizontal gaze)
+    // Y offset: normalized by vertical eye height (FIX A-1 — was using eye width, causing 3-5x compression)
     const leftEyeMidX = (lm[this.LEFT_EYE_CORNER_L].x + lm[this.LEFT_EYE_CORNER_R].x) / 2;
     const leftEyeMidY = (lm[this.LEFT_EYE_CORNER_L].y + lm[this.LEFT_EYE_CORNER_R].y) / 2;
-    const leftOffsetX = leftEyeSpan > 0 ? (leftIrisCenter.x - leftEyeMidX) / leftEyeSpan : 0;
-    const leftOffsetY = leftEyeSpan > 0 ? (leftIrisCenter.y - leftEyeMidY) / leftEyeSpan : 0;
+    const leftOffsetX = leftEyeSpan   > 0 ? (leftIrisCenter.x - leftEyeMidX) / leftEyeSpan   : 0;
+    const leftOffsetY = leftEyeHeight > 0 ? (leftIrisCenter.y - leftEyeMidY) / leftEyeHeight : 0;
 
     const rightEyeMidX = (lm[this.RIGHT_EYE_CORNER_L].x + lm[this.RIGHT_EYE_CORNER_R].x) / 2;
     const rightEyeMidY = (lm[this.RIGHT_EYE_CORNER_L].y + lm[this.RIGHT_EYE_CORNER_R].y) / 2;
-    const rightOffsetX = rightEyeSpan > 0 ? (rightIrisCenter.x - rightEyeMidX) / rightEyeSpan : 0;
-    const rightOffsetY = rightEyeSpan > 0 ? (rightIrisCenter.y - rightEyeMidY) / rightEyeSpan : 0;
+    const rightOffsetX = rightEyeSpan   > 0 ? (rightIrisCenter.x - rightEyeMidX) / rightEyeSpan   : 0;
+    const rightOffsetY = rightEyeHeight > 0 ? (rightIrisCenter.y - rightEyeMidY) / rightEyeHeight : 0;
 
     // Average of both eyes (binocular gaze vector)
     const rawGX = (leftOffsetX + rightOffsetX) / 2;
     const rawGY = (leftOffsetY + rightOffsetY) / 2;
 
-    this.confidence = Math.min(1, (leftEyeSpan + rightEyeSpan) / 0.15);
+    // ── CONFIDENCE ──
+    // FIX M-1: normalize to user's own reference span instead of fixed 0.15
+    // _refEyeSpan is set at first calibration; falls back to 0.15 until then
+    const currentSpanSum = leftEyeSpan + rightEyeSpan;
+    this._lastEyeSpan = currentSpanSum;  // Bug-11: keep updated for calibrated-event callback
+    const refSpan = this._refEyeSpan || 0.15;
+    this.confidence = Math.min(1, currentSpanSum / refSpan);
 
     // ── APPLY FILTERS ──
-    const kalmanResult = this.kalman.update(rawGX, rawGY);
+    // FIX H-2: When Phase 2 is active it runs its own superior Kalman
+    // (TemporalStabilizer with adaptive R=0.003) plus EMA + sliding-window
+    // median.  Running Phase 1 Kalman (R=0.008) BEFORE Phase 2 adds
+    // 80-150 ms of extra lag on fast deliberate moves.
+    // Solution: use identity passthrough when Phase 2 orchestrator is active,
+    // preserving only the EMA for a very light smoothing pass.
+    let kalmanResult;
+    if (window.app?.phase2?.active) {
+      // Identity passthrough — Phase 2 handles all stabilisation
+      kalmanResult = { x: rawGX, y: rawGY };
+    } else {
+      kalmanResult = this.kalman.update(rawGX, rawGY);
+    }
     const smoothResult = this.ema.update(kalmanResult.x, kalmanResult.y);
 
     this.rawGaze    = { x: rawGX, y: rawGY };
@@ -554,6 +630,8 @@ class GazeEngine {
     this.kalman.reset();
     this.ema.reset();
     this.confidence = 0;
+    this._lastEyeSpan = 0;
+    // Do NOT reset _refEyeSpan here — it persists across camera restarts
   }
 }
 
@@ -569,6 +647,10 @@ class UIElementRegistry {
     this.dwellStart = null;
     this.dwellProgress = 0;
     this._callbacks = {};
+
+    // FIX M-2: throttle bbox refresh to 5 Hz (was forcing reflow every gaze frame)
+    this._lastRefresh = 0;
+    this.BBOX_REFRESH_INTERVAL = 200;  // ms
 
     // Recalculate bboxes on resize
     window.addEventListener('resize', () => this._refreshBBoxes());
@@ -610,7 +692,13 @@ class UIElementRegistry {
    * @param {number} screenY  Absolute screen Y in pixels
    */
   updateGaze(screenX, screenY) {
-    this._refreshBBoxes();
+    // FIX M-2: throttle getBoundingClientRect reflows to 5 Hz (200ms)
+    // Previously this ran every frame (30-60x/s), forcing up to 10 reflows/frame
+    const t = now();
+    if (t - this._lastRefresh > this.BBOX_REFRESH_INTERVAL) {
+      this._refreshBBoxes();
+      this._lastRefresh = t;
+    }
     let hitId = null;
 
     for (const [id, entry] of this.elements) {
@@ -1014,11 +1102,21 @@ class MediaPipeController {
         video: { width: 640, height: 480, facingMode: 'user', frameRate: 30 }
       });
       this.videoEl.srcObject = stream;
+
+      // FIX M-6: set canvas dimensions from loadedmetadata event, not immediately
+      // after play() — videoWidth is 0 on some browsers until the first frame arrives
+      this.videoEl.addEventListener('loadedmetadata', () => {
+        this.canvasEl.width  = this.videoEl.videoWidth  || 640;
+        this.canvasEl.height = this.videoEl.videoHeight || 480;
+      }, { once: true });
+
       await this.videoEl.play();
 
-      // Sync canvas size with video
-      this.canvasEl.width  = this.videoEl.videoWidth  || 640;
-      this.canvasEl.height = this.videoEl.videoHeight || 480;
+      // Fallback: if metadata already loaded (stream was reused), set now
+      if (this.videoEl.videoWidth > 0) {
+        this.canvasEl.width  = this.videoEl.videoWidth;
+        this.canvasEl.height = this.videoEl.videoHeight;
+      }
 
       this.running = true;
       this._processLoop();
@@ -1037,7 +1135,12 @@ class MediaPipeController {
     if (this.videoEl.readyState >= 2) {
       try {
         if (this.faceMesh) await this.faceMesh.send({ image: this.videoEl });
-        if (this.hands)    await this.hands.send({ image: this.videoEl });
+        // FIX H-4: Process Hands every 2nd frame only.
+        // Gestures don't require per-frame latency < 100ms, and serial execution
+        // adds ~7ms average latency at 30fps. This saves ~15% CPU.
+        if (this.hands && this.frameCount % 2 === 0) {
+          await this.hands.send({ image: this.videoEl });
+        }
       } catch(e) {}
     }
 

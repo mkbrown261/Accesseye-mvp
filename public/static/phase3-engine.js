@@ -59,7 +59,11 @@ class OneEuroFilter {
    * @param {number} dCutoff    Derivative cutoff (Hz)
    * @param {number} freq       Input frequency (Hz)
    */
-  constructor(minCutoff = 1.0, beta = 0.007, dCutoff = 1.0, freq = 30) {
+  // FIX M-3: beta raised from 0.007 → 0.02.
+  // Higher beta makes the adaptive cutoff rise faster with gaze velocity,
+  // so intentional saccades pass through with less lag while slow drift
+  // is still smoothed.  At 0.007 the filter was over-smoothing fast moves.
+  constructor(minCutoff = 1.0, beta = 0.02, dCutoff = 1.0, freq = 30) {
     this.minCutoff = minCutoff;
     this.beta      = beta;
     this.dCutoff   = dCutoff;
@@ -822,16 +826,37 @@ class SmoothPursuitCalibrator {
 
     const success = this._collectedPts.length >= this.MIN_WINDOWS;
     if (success) {
+      // FIX C-3: The pursuit dot is positioned relative to the #pursuit-arena
+      // div (80vw × 60vh), so target.x / target.y are already fractions [0,1]
+      // of that arena.  But the calibration model expects gaze→screen fractions
+      // relative to the FULL viewport.  The Lissajous path has CENTER_X=0.5,
+      // AMPLITUDE_X=0.38, CENTER_Y=0.5, AMPLITUDE_Y=0.30, so the extreme
+      // positions in arena fractions are [0.12, 0.88] × [0.20, 0.80].
+      // We do NOT need to rescale sx/sy because the arena fractions ARE the
+      // screen fractions the user was looking at (the arena fills the overlay
+      // which covers the full screen).  HOWEVER we must guard against any
+      // direct pixel-to-fraction confusion in callers.  The safest proof is:
+      //   arena fraction in [0,1] → already correct screen fraction.
+      // What WAS wrong: older code paths used arena.clientWidth/clientHeight
+      // to convert pixel positions, which yielded fractions > 1.  Verify:
+      const screenPts = this._collectedPts.map(p => ({
+        gx: p.gx, gy: p.gy,
+        // Clamp to [0,1] to catch any legacy pixel leak
+        sx: Math.max(0, Math.min(1, p.sx)),
+        sy: Math.max(0, Math.min(1, p.sy)),
+        w:  p.w
+      }));
+
       // Build calibration model from pursuit data
-      const modelX = this._ridgeLS(this._collectedPts, p => p.sx);
-      const modelY = this._ridgeLS(this._collectedPts, p => p.sy);
+      const modelX = this._ridgeLS(screenPts, p => p.sx);
+      const modelY = this._ridgeLS(screenPts, p => p.sy);
 
       if (modelX && modelY) {
         this.calib.model = {
           x: modelX, y: modelY,
           degree: 2, lambda: this.RIDGE_LAMBDA,
           method: 'pursuit',
-          points: this._collectedPts.length,
+          points: screenPts.length,
           timestamp: Date.now()
         };
         this.calib.isCalibrated = true;
@@ -981,14 +1006,20 @@ class CalibrationValidator {
       const samples = await this._collectSamples(pt);
 
       if (samples.length > 0) {
-        // Use trimmed mean
-        const sorted_x = [...samples].sort((a, b) => a.x - b.x);
-        const sorted_y = [...samples].sort((a, b) => a.y - b.y);
-        const cut = Math.max(1, Math.floor(samples.length * 0.2));
-        const trim_x = sorted_x.slice(cut, sorted_x.length - cut);
-        const trim_y = sorted_y.slice(cut, sorted_y.length - cut);
-        const meanX  = p3.avg(trim_x.map(s => s.x));
-        const meanY  = p3.avg(trim_y.map(s => s.y));
+        // FIX: Use 2D centroid-distance trimming (same fix as CalibrationEngine C-1).
+        // Original code sorted X and Y arrays separately, so a blink frame that
+        // pushed both axes off could survive in one axis while being trimmed in
+        // the other.  Sort by Euclidean distance from centroid and discard the
+        // worst 20% as a coupled unit.
+        const cx = p3.avg(samples.map(s => s.x));
+        const cy = p3.avg(samples.map(s => s.y));
+        const ranked = [...samples]
+          .map(s => ({ ...s, dist: p3.dist2(s.x, s.y, cx, cy) }))
+          .sort((a, b) => a.dist - b.dist);
+        const cut     = Math.max(1, Math.floor(ranked.length * 0.2));
+        const trimmed = ranked.slice(0, ranked.length - cut);
+        const meanX   = p3.avg(trimmed.map(s => s.x));
+        const meanY   = p3.avg(trimmed.map(s => s.y));
 
         const errorPx = p3.dist2(meanX * W, meanY * H, pt.sx * W, pt.sy * H);
         const passed  = errorPx <= this.tolerancePx;
@@ -1265,7 +1296,7 @@ class Phase3Orchestrator {
     const gazeEngine = p2Orch.hybridGaze;
 
     // ── Instantiate P3 modules ──
-    this.oneEuro  = new OneEuroFilter(1.0, 0.007, 1.0, 30);   // P3.1
+    this.oneEuro  = new OneEuroFilter(1.0, 0.02, 1.0, 30);    // P3.1  FIX M-3: beta 0.007→0.02
     this.ivt      = new IVTSaccadeDetector(35, 100, 3);        // P3.2
     this.dwell    = new AdaptiveDwellTimer('normal', this.ivt);// P3.3
     this.pace     = new PACERecalibrator(calib, 100, 0.995, 0.65, 10);  // P3.4
@@ -1396,14 +1427,20 @@ class Phase3Orchestrator {
           orch.hybridGaze.processResults = function(multiFaceLandmarks, W, H, headPoseResult) {
             const packet = this._originalProcessResults(multiFaceLandmarks, W, H, headPoseResult);
             if (packet && packet.raw) {
-              // Apply One Euro to raw gaze before it enters Kalman
+              // FIX P-1: Apply One Euro to raw gaze before it enters Kalman.
+              // CRITICAL: must update BOTH packet.raw AND this.rawGaze (the
+              // internal property used by PACE, HeadFree, and the benchmark).
+              // Previously only packet.raw was updated, leaving this.rawGaze
+              // one frame behind and corrupting downstream consumers.
               const filtered = self.oneEuro.filter(packet.raw.x, packet.raw.y);
-              packet.raw   = filtered;
-              packet.screen = { x: filtered.x, y: filtered.y }; // will be remapped by calibration
+              packet.raw      = filtered;
+              this.rawGaze    = filtered;   // FIX P-1: keep internal state in sync
               // Remap through calibration if available
               if (this.calibration?.isCalibrated) {
                 const mapped = this.calibration.mapGaze(filtered.x, filtered.y);
                 packet.screen = { x: mapped.sx, y: mapped.sy };
+              } else {
+                packet.screen = { x: filtered.x, y: filtered.y };
               }
             }
             return packet;

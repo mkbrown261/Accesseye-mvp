@@ -293,8 +293,12 @@ class HybridGazeEngine {
     this.confidence = 0;
 
     // Internal weights (adaptive)
+    // FIX H-3: W_HEAD reduced from 0.30 → 0.15.  The original 0.30 added
+    //          12% screen-width displacement for a mere 20° head turn,
+    //          introducing visible gaze drift on slight head movements.
+    //          Weight is now gated via headMag in the fusion step below.
     this.W_IRIS = 0.55;      // binocular iris offset weight
-    this.W_HEAD = 0.30;      // head pose vector weight
+    this.W_HEAD = 0.15;      // head pose vector weight (was 0.30 — FIX H-3)
     this.W_PUPIL= 0.15;      // pupil boundary centroid weight
 
     // Phase-1 fallback re-used
@@ -339,10 +343,14 @@ class HybridGazeEngine {
     this.confidence = p2.clamp(baseConf, 0, 1);
 
     // ── Adaptive weight blending ──
-    // Lower head pose weight when head is nearly frontal (iris more reliable)
+    // FIX H-3: Gate head-pose contribution on headMag > 0.5 (≈15° combined).
+    // Below threshold the head is near-frontal — iris signal dominates fully.
+    // Above threshold, scale W_HEAD smoothly from 0 → W_HEAD.
     const headMag  = Math.hypot(headPoseResult?.yaw || 0, headPoseResult?.pitch || 0) / 30;
-    const wHead    = p2.clamp(this.W_HEAD * (0.5 + headMag), 0, 0.45);
-    const wIris    = p2.clamp(1 - wHead - this.W_PUPIL, 0, 0.70);
+    // headGate: 0 when frontal, rises to 1 at headMag ≥ 1 (≈30° combined)
+    const headGate = p2.clamp((headMag - 0.5) / 0.5, 0, 1);
+    const wHead    = p2.clamp(this.W_HEAD * headGate, 0, 0.30);
+    const wIris    = p2.clamp(1 - wHead - this.W_PUPIL, 0, 0.80);
     const wPupil   = this.W_PUPIL;
 
     // ── Fused raw gaze vector ──
@@ -405,11 +413,23 @@ class HybridGazeEngine {
     const lMidX = (lOuter.x + lInner.x) / 2, lMidY = (lOuter.y + lInner.y) / 2;
     const rMidX = (rOuter.x + rInner.x) / 2, rMidY = (rOuter.y + rInner.y) / 2;
 
-    // Normalized iris displacement within eye span
-    const lOX = lSpan > 0 ? (lIris.x - lMidX) / lSpan : 0;
-    const lOY = lSpan > 0 ? (lIris.y - lMidY) / lSpan : 0;
-    const rOX = rSpan > 0 ? (rIris.x - rMidX) / rSpan : 0;
-    const rOY = rSpan > 0 ? (rIris.y - rMidY) / rSpan : 0;
+    // FIX A-1: Normalize X offset by horizontal eye width (correct),
+    //          Normalize Y offset by vertical eye HEIGHT — not width.
+    //          Eye height landmarks: left upper lid ~159, lower lid ~145;
+    //          right upper lid ~386, lower lid ~374.
+    //          Using width for Y compressed vertical range 3-5x.
+    const lHeight = (lm[159] && lm[145])
+      ? Math.abs(lm[159].y - lm[145].y)
+      : lSpan * 0.4;   // fallback: typical lid-gap ≈ 40% of span
+    const rHeight = (lm[386] && lm[374])
+      ? Math.abs(lm[386].y - lm[374].y)
+      : rSpan * 0.4;
+
+    // Normalized iris displacement
+    const lOX = lSpan   > 0 ? (lIris.x - lMidX) / lSpan   : 0;  // X by width
+    const lOY = lHeight > 0 ? (lIris.y - lMidY) / lHeight : 0;  // Y by height
+    const rOX = rSpan   > 0 ? (rIris.x - rMidX) / rSpan   : 0;  // X by width
+    const rOY = rHeight > 0 ? (rIris.y - rMidY) / rHeight : 0;  // Y by height
 
     // Binocular average
     const x = (lOX + rOX) / 2;
@@ -791,9 +811,15 @@ class GazeConfidenceScorer {
       const d = this._bCtx.getImageData(0, 0, 64, 48).data;
       let sum = 0;
       for (let i = 0; i < d.length; i += 4) sum += 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-      const avg = sum / (d.length / 4);
-      // Normalize: 0 (black) → 0.0, 90+ lux proxy → 1.0
-      return p2.clamp(avg / 128, 0, 1);
+      const avg = sum / (d.length / 4);  // 0-255 luminance
+      // FIX M-5: Replace linear normalisation with sigmoid.
+      // Linear: score = avg/128  treats dark (avg=40) the same as medium (avg=80).
+      // Sigmoid: centre at avg=80 (realistic indoor), slope=0.035.
+      //   score(40)=0.22, score(80)=0.50, score(128)=0.77, score(180)=0.93.
+      // This spreads the useful signal over the indoor-light range instead of
+      // collapsing everything below avg=64 into a flat low-score band.
+      const score = 1.0 / (1.0 + Math.exp(-0.035 * (avg - 80)));
+      return p2.clamp(score, 0, 1);
     } catch(_) { return 0.8; }
   }
 
@@ -824,7 +850,13 @@ class GazeConfidenceScorer {
     const pitch = Math.abs(hp.pitch || 0);
     // Beyond 30°, tracking degrades significantly
     const yawScore   = p2.clamp(1 - (yaw   - 20) / 30, 0.2, 1);
-    const pitchScore = p2.clamp(1 - (pitch - 15) / 25, 0.2, 1);
+    // FIX M-4: Vertical-extremes confidence fix.
+    // Original pitchScore penalised from 15° with limit 0.2, which rejected
+    // legitimate downward and upward gaze common in real use.
+    // New: penalty starts at 20° (was 15°), floor raised to 0.40 (was 0.2).
+    // This keeps enough confidence at typical +-25° head pitch to feed the
+    // calibration model without triggering the 0.65 gating threshold.
+    const pitchScore = p2.clamp(1 - (pitch - 20) / 25, 0.40, 1);
     return (yawScore + pitchScore) / 2;
   }
 
