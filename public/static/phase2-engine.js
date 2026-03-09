@@ -931,9 +931,10 @@ class DynamicCalibrationEngine {
    * Called after base.mapGaze() in the pipeline.
    */
   applyBiasCorrection(sx, sy) {
+    // Returns { x, y } (NOT sx/sy) so callers can use .x / .y directly
     return {
-      sx: p2.clamp(sx + this._biasX * 0.7, 0, 1),
-      sy: p2.clamp(sy + this._biasY * 0.7, 0, 1)
+      x: p2.clamp(sx + this._biasX * 0.7, 0, 1),
+      y: p2.clamp(sy + this._biasY * 0.7, 0, 1)
     };
   }
 
