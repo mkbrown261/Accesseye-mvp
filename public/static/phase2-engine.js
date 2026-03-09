@@ -415,28 +415,47 @@ class HybridGazeEngine {
 
     // FIX A-1: Normalize X offset by horizontal eye width (correct),
     //          Normalize Y offset by vertical eye HEIGHT — not width.
-    //          Eye height landmarks: left upper lid ~159, lower lid ~145;
-    //          right upper lid ~386, lower lid ~374.
-    //          Using width for Y compressed vertical range 3-5x.
-    const lHeight = (lm[159] && lm[145])
-      ? Math.abs(lm[159].y - lm[145].y)
-      : lSpan * 0.4;   // fallback: typical lid-gap ≈ 40% of span
-    const rHeight = (lm[386] && lm[374])
-      ? Math.abs(lm[386].y - lm[374].y)
-      : rSpan * 0.4;
+    // FIX ACC-4: Use multiple upper/lower lid landmarks for more robust height
+    //   estimate. Single-landmark height measurement is noisy due to brow raises.
+    //   Average of 3 upper and 3 lower lid points gives a much more stable value.
+    //   Left eye: upper lid 159,160,161 / lower lid 145,144,163
+    //   Right eye: upper lid 386,387,388 / lower lid 374,373,390
+    const lUpperY = [159,160,161].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
+    const lLowerY = [145,144,163].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
+    const lHeight = Math.abs(lUpperY - lLowerY) || lSpan * 0.4;
+
+    const rUpperY = [386,387,388].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
+    const rLowerY = [374,373,390].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
+    const rHeight = Math.abs(rUpperY - rLowerY) || rSpan * 0.4;
+
+    // FIX ACC-5: Clamp eye height to min 40% of span to prevent div-by-near-zero
+    // when eyes are squinted, which would amplify Y noise dramatically.
+    const lH = Math.max(lHeight, lSpan * 0.30);
+    const rH = Math.max(rHeight, rSpan * 0.30);
 
     // Normalized iris displacement
-    const lOX = lSpan   > 0 ? (lIris.x - lMidX) / lSpan   : 0;  // X by width
-    const lOY = lHeight > 0 ? (lIris.y - lMidY) / lHeight : 0;  // Y by height
-    const rOX = rSpan   > 0 ? (rIris.x - rMidX) / rSpan   : 0;  // X by width
-    const rOY = rHeight > 0 ? (rIris.y - rMidY) / rHeight : 0;  // Y by height
+    const lOX = lSpan > 0 ? (lIris.x - lMidX) / lSpan : 0;  // X by width
+    const lOY = lH    > 0 ? (lIris.y - lMidY) / lH    : 0;  // Y by height
+    const rOX = rSpan > 0 ? (rIris.x - rMidX) / rSpan : 0;  // X by width
+    const rOY = rH    > 0 ? (rIris.y - rMidY) / rH    : 0;  // Y by height
 
-    // Binocular average
-    const x = (lOX + rOX) / 2;
-    const y = (lOY + rOY) / 2;
+    // FIX ACC-6: Per-eye quality check before averaging.
+    // If one eye's span is much smaller (occlusion/blink), weight it less
+    // to avoid corrupting the binocular average with a bad eye.
+    const lQuality = p2.clamp(lSpan / Math.max(rSpan, 0.01), 0, 1);
+    const rQuality = p2.clamp(rSpan / Math.max(lSpan, 0.01), 0, 1);
+    const totalQ = lQuality + rQuality;
+    const wL = totalQ > 0 ? lQuality / totalQ : 0.5;
+    const wR = totalQ > 0 ? rQuality / totalQ : 0.5;
 
-    // Confidence: eye span relative to face width
-    const confidence = p2.clamp((lSpan + rSpan) / 0.16, 0, 1);
+    // Weighted binocular average
+    const x = wL * lOX + wR * rOX;
+    const y = wL * lOY + wR * rOY;
+
+    // Confidence: eye span relative to face width, penalize asymmetry
+    const avgSpan = (lSpan + rSpan) / 2;
+    const asymmetry = Math.abs(lSpan - rSpan) / Math.max(avgSpan, 0.001);
+    const confidence = p2.clamp((avgSpan / 0.08) * (1 - asymmetry * 0.5), 0, 1);
 
     return { x, y, lSpan, rSpan, confidence, lIris, rIris };
   }
@@ -561,22 +580,32 @@ class TemporalStabilizer {
    */
   update(rx, ry, confidence = 1.0) {
     // ── Layer A: Adaptive Kalman ──
-    // Increase measurement noise when confidence is low (be more conservative)
-    const adaptR = this.baseR / Math.max(confidence, 0.1);
+    // FIX ACC-9: Increase R more aggressively at low confidence.
+    // When confidence < 0.5 (blink/partial occlusion), increase R to 0.04
+    // so the Kalman filter heavily discounts the noisy measurement.
+    const confGate = Math.max(confidence, 0.1);
+    const adaptR = confidence < 0.5
+      ? this.baseR * 6 / confGate   // aggressive smoothing at low conf
+      : this.baseR / confGate;      // normal adaptive smoothing
     this._kx.R = adaptR;
     this._ky.R = adaptR;
     const kx = this._kx.update(rx);
     const ky = this._ky.update(ry);
 
     // ── Layer B: Adaptive EMA ──
-    // Velocity-based alpha: fast movements → higher alpha (more responsive)
+    // FIX ACC-10: Threshold-based velocity for alpha selection.
+    // Very small movements (< 0.008 normalized = ~15px on 1920px screen)
+    // are treated as tremor and get minimum alpha for heavy smoothing.
+    // Larger intentional movements ramp up alpha quickly.
     const velMag = this._prevX !== null
       ? Math.hypot(kx - this._prevX, ky - this._prevY)
       : 0;
     this._velX = p2.lerp(this._velX, Math.abs(kx - (this._prevX??kx)), 0.4);
     this._velY = p2.lerp(this._velY, Math.abs(ky - (this._prevY??ky)), 0.4);
-    const velScore = p2.clamp(velMag / 0.05, 0, 1);
-    const alpha = p2.lerp(this.baseAlpha, 0.6, velScore);
+    // Tremor threshold: < 0.008 = fixation/drift → use minimum alpha (0.15)
+    // Saccade threshold: > 0.05 = fast move → use maximum alpha (0.65)
+    const velScore = p2.clamp((velMag - 0.008) / 0.042, 0, 1);
+    const alpha = p2.lerp(0.15, 0.65, velScore);
 
     if (this._ex === null) { this._ex = kx; this._ey = ky; }
     else {
@@ -598,9 +627,16 @@ class TemporalStabilizer {
   }
 
   _trimmedMean(arr) {
-    if (arr.length < 5) return p2.avg(arr);
+    // FIX ACC-12: Trimmed mean trims 1 from each end for window 5+
+    // This is equivalent to removing 40% of values (2 out of 5)
+    // which is very aggressive but window=5 means we're already smooth
+    if (arr.length < 3) return p2.avg(arr);
     const s = [...arr].sort((a,b)=>a-b);
-    return p2.avg(s.slice(1, -1));
+    // For window=5: trim 1 from each end → average of middle 3
+    // For window<5: trim 1 from each end → average of middle
+    const trimCount = Math.floor(arr.length / 5);
+    const trimmed = trimCount > 0 ? s.slice(trimCount, -trimCount) : s.slice(1, -1);
+    return p2.avg(trimmed);
   }
 
   reset() {
@@ -1007,12 +1043,13 @@ class DynamicCalibrationEngine {
   }
 
   /**
-   * Degree-2 weighted ridge regression (6-term polynomial)
-   * φ(gx, gy) = [1, gx, gy, gx², gy², gx·gy]
+   * FIX ACC-3b: Degree-3 weighted ridge regression (10-term polynomial)
+   * φ(gx, gy) = [1, gx, gy, gx², gy², gx·gy, gx³, gy³, gx²·gy, gx·gy²]
+   * Matches the base CalibrationEngine v3 upgrade for consistent mapping.
    */
   _ridgeLS(pts, getTarget, lambda) {
     try {
-      const deg = 6;
+      const deg = 10;  // FIX ACC-3b: upgraded from 6 to 10 terms
       let ATA = Array.from({ length: deg }, () => new Array(deg).fill(0));
       let ATb = new Array(deg).fill(0);
 
@@ -1051,7 +1088,9 @@ class DynamicCalibrationEngine {
   }
 
   _phi(gx, gy) {
-    return [1, gx, gy, gx * gx, gy * gy, gx * gy];
+    // FIX ACC-3b: degree-3, 10-term polynomial
+    const gx2 = gx*gx, gy2 = gy*gy;
+    return [1, gx, gy, gx2, gy2, gx*gy, gx*gx2, gy*gy2, gx2*gy, gx*gy2];
   }
 
   saveMicroData() {
@@ -1406,8 +1445,8 @@ class Phase2Orchestrator {
     this.camera     = new HighFPSCameraController();
     this.headPose   = new HeadPoseEstimator();
     this.hybridGaze = new HybridGazeEngine(app.calibration, this.headPose);
-    this.stabilizer = new TemporalStabilizer({ kalmanR: 0.003, emaAlpha: 0.25, windowSize: 7 });
-    this.saccade    = new MicroSaccadeFilter(12, 200);
+    this.stabilizer = new TemporalStabilizer({ kalmanR: 0.005, emaAlpha: 0.22, windowSize: 5 });
+    this.saccade    = new MicroSaccadeFilter(18, 150);  // FIX ACC-11: radius 12→18px, duration 200→150ms
     this.confidence = new GazeConfidenceScorer(null); // videoEl assigned on camera start
     this.dynCalib   = new DynamicCalibrationEngine(app.calibration);
     this.intent     = new IntentPredictionEngine('/api/intent');

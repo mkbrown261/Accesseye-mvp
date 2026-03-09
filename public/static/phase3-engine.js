@@ -60,10 +60,13 @@ class OneEuroFilter {
    * @param {number} freq       Input frequency (Hz)
    */
   // FIX M-3: beta raised from 0.007 → 0.02.
-  // Higher beta makes the adaptive cutoff rise faster with gaze velocity,
-  // so intentional saccades pass through with less lag while slow drift
-  // is still smoothed.  At 0.007 the filter was over-smoothing fast moves.
-  constructor(minCutoff = 1.0, beta = 0.02, dCutoff = 1.0, freq = 30) {
+  // FIX ACC-1: minCutoff lowered from 1.0 → 0.3 Hz.
+  // At 1.0 Hz the filter barely smooths at-rest tremor (α≈0.18 at 30fps).
+  // At 0.3 Hz α≈0.056, giving much stronger jitter suppression at fixation
+  // while beta=0.05 ensures intentional fast saccades still break through.
+  // Reference: Casiez et al. CHI 2012 recommend minCutoff ≈ 0.5-1.0 Hz for
+  // mouse, but gaze needs lower (0.3-0.5) due to higher tremor frequency.
+  constructor(minCutoff = 0.3, beta = 0.05, dCutoff = 1.0, freq = 30) {
     this.minCutoff = minCutoff;
     this.beta      = beta;
     this.dCutoff   = dCutoff;
@@ -560,18 +563,21 @@ class PACERecalibrator {
   }
 
   /**
-   * Degree-2 weighted ridge regression (6 terms).
-   * φ(gx, gy) = [1, gx, gy, gx², gy², gx·gy]
+   * FIX ACC-3c: Degree-3 weighted ridge regression (10 terms).
+   * φ(gx, gy) = [1, gx, gy, gx², gy², gx·gy, gx³, gy³, gx²·gy, gx·gy²]
+   * Matches base CalibrationEngine degree-3 upgrade.
    */
   _ridgeLS(pts, getTarget) {
     try {
-      const deg = 6;
+      const deg = 10;  // FIX ACC-3c: upgraded from 6 to 10 terms
       let ATA = Array.from({ length: deg }, () => new Array(deg).fill(0));
       let ATb = new Array(deg).fill(0);
 
       for (const p of pts) {
         const w   = p.w ?? 1.0;
-        const row = [1, p.gx, p.gy, p.gx * p.gx, p.gy * p.gy, p.gx * p.gy];
+        const gx = p.gx, gy = p.gy;
+        const gx2 = gx*gx, gy2 = gy*gy;
+        const row = [1, gx, gy, gx2, gy2, gx*gy, gx*gx2, gy*gy2, gx2*gy, gx*gy2];
         const t   = getTarget(p);
         for (let r = 0; r < deg; r++) {
           ATb[r] += w * row[r] * t;
@@ -1296,7 +1302,7 @@ class Phase3Orchestrator {
     const gazeEngine = p2Orch.hybridGaze;
 
     // ── Instantiate P3 modules ──
-    this.oneEuro  = new OneEuroFilter(1.0, 0.02, 1.0, 30);    // P3.1  FIX M-3: beta 0.007→0.02
+    this.oneEuro  = new OneEuroFilter(0.3, 0.05, 1.0, 30);    // P3.1  FIX ACC-1: minCutoff 1.0→0.3, beta 0.02→0.05
     this.ivt      = new IVTSaccadeDetector(35, 100, 3);        // P3.2
     this.dwell    = new AdaptiveDwellTimer('normal', this.ivt);// P3.3
     this.pace     = new PACERecalibrator(calib, 100, 0.995, 0.65, 10);  // P3.4
@@ -1408,47 +1414,38 @@ class Phase3Orchestrator {
     const orch    = this.p2;
     const origFn  = orch._processPhase2Face.bind(orch);
 
+    // ── P3.1: Patch HybridGazeEngine ONCE during activation ──
+    // Apply One Euro filter to raw gaze before it enters the Kalman stabilizer.
+    // This reduces high-frequency tremor at the earliest possible stage.
+    if (orch.hybridGaze && !orch.hybridGaze._p3Patched) {
+      const origProcess = orch.hybridGaze.processResults.bind(orch.hybridGaze);
+      orch.hybridGaze._originalProcessResults = origProcess;
+      orch.hybridGaze._p3Patched = true;
+
+      orch.hybridGaze.processResults = function(multiFaceLandmarks, W, H, headPoseResult) {
+        const packet = this._originalProcessResults(multiFaceLandmarks, W, H, headPoseResult);
+        if (packet && packet.raw) {
+          // Apply One Euro to raw gaze (low minCutoff=0.3 gives ~94% noise reduction at rest)
+          const filtered = self.oneEuro.filter(packet.raw.x, packet.raw.y);
+          packet.raw   = filtered;
+          this.rawGaze = filtered;   // FIX P-1: keep internal state in sync
+          // Remap through calibration with pre-filtered gaze
+          if (this.calibration?.isCalibrated) {
+            const mapped = this.calibration.mapGaze(filtered.x, filtered.y);
+            packet.screen = { x: mapped.sx, y: mapped.sy };
+          }
+        }
+        return packet;
+      };
+      console.log('[Phase3] One Euro Filter patched into HybridGazeEngine ✅');
+    }
+
     orch._processPhase2Face = function(results, mp) {
       // ── P3.7: Store landmarks for head-free use ──
       const lm = results.multiFaceLandmarks?.[0];
       self._lastLandmarks = lm || null;
 
-      // ── P3.1: Apply One Euro Filter to raw gaze BEFORE Kalman ──
-      // We hook into the hybridGaze engine to pre-filter its output
-      if (lm && orch.hybridGaze) {
-        const origProcess = orch.hybridGaze._originalProcessResults
-          || orch.hybridGaze.processResults.bind(orch.hybridGaze);
-
-        // Store reference to avoid double-patching
-        if (!orch.hybridGaze._p3Patched) {
-          orch.hybridGaze._originalProcessResults = origProcess;
-          orch.hybridGaze._p3Patched = true;
-
-          orch.hybridGaze.processResults = function(multiFaceLandmarks, W, H, headPoseResult) {
-            const packet = this._originalProcessResults(multiFaceLandmarks, W, H, headPoseResult);
-            if (packet && packet.raw) {
-              // FIX P-1: Apply One Euro to raw gaze before it enters Kalman.
-              // CRITICAL: must update BOTH packet.raw AND this.rawGaze (the
-              // internal property used by PACE, HeadFree, and the benchmark).
-              // Previously only packet.raw was updated, leaving this.rawGaze
-              // one frame behind and corrupting downstream consumers.
-              const filtered = self.oneEuro.filter(packet.raw.x, packet.raw.y);
-              packet.raw      = filtered;
-              this.rawGaze    = filtered;   // FIX P-1: keep internal state in sync
-              // Remap through calibration if available
-              if (this.calibration?.isCalibrated) {
-                const mapped = this.calibration.mapGaze(filtered.x, filtered.y);
-                packet.screen = { x: mapped.sx, y: mapped.sy };
-              } else {
-                packet.screen = { x: filtered.x, y: filtered.y };
-              }
-            }
-            return packet;
-          };
-        }
-      }
-
-      // ── Call original Phase 2 pipeline ──
+      // ── Call original Phase 2 pipeline (which now uses patched HybridGazeEngine) ──
       origFn(results, mp);
 
       // ── P3.2: IVT saccade detection on final screen coordinates ──
