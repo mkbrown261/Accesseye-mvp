@@ -95,6 +95,10 @@ class Phase2InitController {
         setTimeout(async () => {
           try {
             await orch.activate(videoEl, canvasEl);
+            // Re-register gaze targets after mode switch
+            app._registerGazeTargets();
+            // Update system status bar
+            app._updateSystemStatus('tracking', 'Phase 2 Gaze');
           } catch (err) {
             console.warn('[Phase2Init] Activation error:', err.message);
           }

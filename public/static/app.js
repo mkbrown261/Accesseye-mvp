@@ -1260,6 +1260,17 @@ class AccessEyeApp {
       this.mpController = null;
     }
     this.cameraOn = false;
+
+    // Deactivate Phase 2 if running
+    if (this.phase2?.active) {
+      this.phase2.deactivate();
+    }
+
+    // Reset mode back to mouse simulation
+    this.mode = 'mouse';
+    const modeTabs = document.querySelectorAll('.mode-tab');
+    modeTabs.forEach(t => t.classList.toggle('active', t.dataset.mode === 'mouse'));
+
     $('#camera-placeholder').style.display = 'flex';
     $('#start-camera-btn').disabled = false;
     $('#start-camera-btn').innerHTML = '<i class="fas fa-play"></i> Start Camera';
@@ -1289,7 +1300,10 @@ class AccessEyeApp {
     if (!this.mpController) return;
 
     this.mpController.on('frame', ({ fps, latency }) => {
-      this._updateMetrics(fps, latency, Math.round(this.gazeEngine.confidence * 100));
+      // Phase 2 updates metrics itself with confidence; Phase 1 does it here
+      if (!this.phase2?.active) {
+        this._updateMetrics(fps, latency, Math.round(this.gazeEngine.confidence * 100));
+      }
     });
 
     this.mpController.on('face', ({ detected }) => {
@@ -1307,7 +1321,9 @@ class AccessEyeApp {
     });
 
     this.gazeEngine.on('gaze', ({ screen, confidence }) => {
-      if (this.mode !== 'gaze' || !this.cameraOn) return;
+      // Phase 2 orchestrator drives gaze directly when active — skip Phase 1 path
+      if (this.phase2?.active) return;
+      if (!this.cameraOn) return;
       this._updateGazeCursor(screen.x * window.innerWidth, screen.y * window.innerHeight);
       this._updateCoords(screen.x, screen.y);
       this.uiRegistry.updateGaze(screen.x * window.innerWidth, screen.y * window.innerHeight);
@@ -1317,6 +1333,8 @@ class AccessEyeApp {
   /* ── SIMULATION ─────────────────────────────────────────── */
   _setupSimulation() {
     this.sim.on('gaze', ({ screen, simulated }) => {
+      // Don't run simulation when Phase 2 is active (camera driving gaze)
+      if (this.phase2?.active) return;
       if (this.mode !== 'mouse') return;
       const sx = screen.x * window.innerWidth;
       const sy = screen.y * window.innerHeight;
@@ -1337,8 +1355,10 @@ class AccessEyeApp {
   }
 
   _startCursorFromMouse() {
-    // Show cursor while on demo page
+    // Show cursor while in mouse simulation mode
     document.addEventListener('mousemove', (e) => {
+      // Skip if Phase 2 is driving gaze from camera
+      if (this.phase2?.active) return;
       if (this.mode === 'mouse') {
         this.gazeCursor.style.display = 'block';
         this.gazeCursor.style.left = `${e.clientX}px`;

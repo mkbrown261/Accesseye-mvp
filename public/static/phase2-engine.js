@@ -1423,27 +1423,38 @@ class Phase2Orchestrator {
     this.active = true;
     this.confidence.videoEl = videoEl;
 
-    // Patch Phase 1 MediaPipeController to redirect results through Phase 2
+    // ── Patch Phase 1 MediaPipeController to redirect results through Phase 2 ──
     const mp = this.app.mpController;
     if (mp) {
-      // Override the face results handler
       const self = this;
-      const origFaceHandler = mp._onFaceResults.bind(mp);
       mp._onFaceResults = function(results) {
         self._processPhase2Face(results, mp);
       };
     }
 
-    // Try to upgrade camera to higher FPS
-    // (Camera already started by Phase 1 — we read current FPS)
+    // ── Stop mouse simulation — camera is now driving gaze ──
+    if (this.app.sim?.active) {
+      this.app.sim.stop();
+    }
+
+    // ── Auto-switch UI to gaze mode ──
+    this.app.mode = 'gaze';
+    // Update mode tab UI
+    const modeTabs = document.querySelectorAll('.mode-tab');
+    modeTabs.forEach(t => {
+      t.classList.toggle('active', t.dataset.mode === 'gaze');
+    });
+    this.app._updateHint('Phase 2 active: look at buttons, <strong>pinch</strong> or <strong>air tap</strong> to activate.');
+
+    // ── Read actual camera FPS ──
     const track = videoEl?.srcObject?.getVideoTracks()[0];
     if (track) {
       const settings = track.getSettings();
       this.cameraFPS = settings.frameRate || 30;
     }
 
-    this.app.log.add(`Phase 2 activated | Camera: ${this.cameraFPS} FPS`, 'success');
-    this.app.toast.show('Phase 2 Active', `Hybrid gaze engine + AI intent running`, 'success', 'fas fa-brain', 3000);
+    this.app.log.add(`Phase 2 activated | Camera: ${this.cameraFPS} FPS | Hybrid gaze ON`, 'success');
+    this.app.toast.show('Phase 2 Active', `Hybrid gaze engine running at ${this.cameraFPS} FPS`, 'success', 'fas fa-brain', 3000);
     this._updatePhase2StatusUI();
   }
 
@@ -1455,7 +1466,13 @@ class Phase2Orchestrator {
     mp.faceDetected = !!(results.multiFaceLandmarks?.length > 0);
     mp._emit('face', { detected: mp.faceDetected, results });
 
-    if (!mp.faceDetected) { mp._clearCanvas(); return; }
+    if (!mp.faceDetected) {
+      mp._clearCanvas();
+      // Clear status when face lost
+      this.app._updateStatusItem('status-face', false, 'Not found', '');
+      this.app._updateStatusItem('status-gaze', false, 'No face', '');
+      return;
+    }
 
     const lm = results.multiFaceLandmarks[0];
     const W  = mp.videoEl.videoWidth  || 640;
@@ -1528,9 +1545,24 @@ class Phase2Orchestrator {
     // ── Forward to Phase 1 UI pipeline ──
     const screenX = biasFixed.x * window.innerWidth;
     const screenY = biasFixed.y * window.innerHeight;
+
+    // Always update gaze cursor + coords regardless of mode (camera is driving)
     this.app._updateGazeCursor(screenX, screenY);
     this.app._updateCoords(biasFixed.x, biasFixed.y);
     this.app.uiRegistry.updateGaze(screenX, screenY);
+
+    // Update top metrics bar (FPS / latency / confidence)
+    const totalConf = Math.round(confScore.total * 100);
+    this.app._updateMetrics(mp.fps || 30, Math.round(p2Latency), totalConf);
+
+    // Sync Phase 1 gaze engine state so calibration UI works
+    this.app.gazeEngine.rawGaze    = gazePacket.raw    || biasFixed;
+    this.app.gazeEngine.smoothGaze = biasFixed;
+    this.app.gazeEngine.confidence = confScore.total;
+
+    // Update face/gaze status indicators
+    this.app._updateStatusItem('status-face', true, 'Detected', 'active');
+    this.app._updateStatusItem('status-gaze', true, `${totalConf}% conf`, 'tracking');
 
     // ── Update Phase 2 status UI ──
     this._updatePhase2LiveUI(enhanced, confScore, headResult, saccadeResult, p2Latency);
