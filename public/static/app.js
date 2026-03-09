@@ -1668,6 +1668,7 @@ class AccessEyeApp {
 let app;
 document.addEventListener('DOMContentLoaded', () => {
   app = new AccessEyeApp();
+  window.app = app; // Expose for Phase 2 initialization
 
   // Expose public API for external use
   window.AccessEye = {
