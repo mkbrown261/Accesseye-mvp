@@ -1,151 +1,134 @@
-# AccessEye — Hybrid Gaze + Gesture Control System (v2)
+# AccessEye MVP
 
-## Project Overview
-- **Name**: AccessEye
-- **Version**: v2 (Phase 2 Hybrid Engine)
-- **Goal**: Touchless mobile/browser interaction for users with motor impairments using eye tracking + hand gesture detection — 100% on-device
-- **Key upgrade**: Phase 2 replaces the basic iris-center engine with a full **Hybrid Gaze Estimation System**
-
-## Live URLs
-- **Production**: https://accesseye-mvp.pages.dev
-- **Sandbox (dev)**: https://3000-i576bnl6bd9ekefqjmae6-0e616f0a.sandbox.novita.ai
+**Hands-free eye-tracking interface for Cloudflare Pages**
+Live: https://accesseye-mvp.pages.dev
+GitHub: https://github.com/mkbrown261/Accesseye-mvp
 
 ---
 
-## Phase 2 Architecture Pipeline
+## What it does
+
+AccessEye lets you control a computer with only your eyes. Look at a button and dwell on it to click — no hands needed. It runs entirely in the browser using your webcam, with no server-side processing.
+
+Key features:
+- **Real-time eye tracking** via MediaPipe FaceMesh (478 landmarks)
+- **Quality-gated calibration** — dot auto-advances only when gaze is stable; bad frames (blinks, saccades) are silently skipped
+- **9-point polynomial calibration** with iris-only signal for maximum accuracy
+- **Dwell-to-click** — look at any registered UI element for 350 ms to activate it
+- **AI intent prediction** — optional endpoint integration for predicting intended actions
+- **PACE micro-recalibration** — continuously refines the model during use
+- **Phase 2 gaze engine** — binocular iris tracking, head-pose compensation, OneEuro filtering
+- **Phase 3 upgrades** — IVT saccade detection, adaptive dwell, smooth pursuit calibration, head-free stabilization
+- **Gesture engine** — pinch and air-tap detection via hand landmarks
+
+---
+
+## Calibration (v8 — quality-gated)
+
+1. Open the app and click **Calibrate** (top bar)
+2. Click **Start Calibration**
+3. For each of the 9 dots:
+   - **Blue** = move your eyes to the dot
+   - **Amber** = gaze is stabilising — keep still
+   - **Green** = locked, collecting samples — the ring fills up automatically
+   - **Flash + shrink** = point captured, moves to next automatically
+4. After all 9 points the model is built. The cursor appears and tracks your eyes.
+
+**Tips:**
+- Sit 50–70 cm from screen, face centred in frame
+- For corner dots, move only your eyes (small head movement is fine)
+- If a dot stays amber, blink once to reset and try again
+- Recalibrate any time from the top bar
+
+---
+
+## Architecture
 
 ```
-Camera (120/60/30 FPS auto-negotiate)
-  ↓
-MediaPipe FaceMesh (468 + iris landmarks, refineLandmarks=true)
-  ↓
-P2.2  HeadPoseEstimator     — 6-DOF (yaw, pitch, roll) via solvePnP approximation
-  ↓
-P2.3  HybridGazeEngine      — iris offset (55%) + head pose (30%) + pupil boundary (15%)
-                               weighted fusion with eyelid aperture confidence
-  ↓
-P2.6  GazeConfidenceScorer  — brightness, occlusion, glare, head angle → 0–1 score
-  ↓
-P2.4  TemporalStabilizer    — Adaptive Kalman (R scales with confidence)
-                             + Velocity-adaptive EMA
-                             + Sliding window trimmed mean (7 frames)
-  ↓
-P2.5  MicroSaccadeFilter    — Stability window: 12px radius / 200ms
-                               Emits fixation/saccade events
-  ↓
-P2.7  DynamicCalibrationEngine — 9-point polynomial regression
-                                  + micro-update from confirmed interactions
-                                  + rolling bias drift correction
-  ↓
-P2.8  IntentPredictionEngine  — OpenAI gpt-5-mini via /api/intent (server-side proxy)
-                                 Inputs: gaze_coords, stability, head_pose, confidence, fixation_event
-  ↓
-UIElementRegistry — screen coords → bounding box hit detection + dwell timer
+Browser
+├── app.js                  Phase 1 — MediaPipe wiring, GazeEngine, CalibrationEngine (v8), CalibrationUI, UI registry, dwell
+├── phase2-engine.js        Phase 2 — HybridGazeEngine (binocular iris + head pose + pupil fusion)
+├── phase2-init.js          Phase 2 initialisation, camera patching, UI wiring
+└── phase3-engine.js        Phase 3 — OneEuro filter, IVT, PACE, adaptive dwell, head-free stabilizer
+
+Edge (Cloudflare Pages)
+└── src/index.tsx           Hono app — serves HTML shell + /api/intent endpoint
 ```
 
-## Currently Completed Features
-
-### Phase 1 (MVP Foundation)
-- [x] MediaPipe FaceMesh + Hands initialization (30 FPS, WebGL)
-- [x] Iris center gaze extraction (binocular average)
-- [x] Kalman 2D filter + EMA filter for smoothing
-- [x] 5-point polynomial regression calibration
-- [x] UIElementRegistry with dwell timer (350ms)
-- [x] Gesture engine: pinch, air-tap, open-palm with debounce
-- [x] Audio TTS feedback (Web Speech API)
-- [x] Mouse cursor simulation mode
-- [x] 4-page SPA: Home, Architecture, Live Demo, Docs
-- [x] Toast notifications, interaction log
-
-### Phase 2 (Hybrid Engine — NEW)
-- [x] **P2.1** HighFPSCameraController — 120→60→30 FPS fallback chain
-- [x] **P2.2** HeadPoseEstimator — 6-DOF solvePnP-approximation (yaw/pitch/roll)
-- [x] **P2.3** HybridGazeEngine — binocular iris + head pose + pupil boundary + eyelid aperture
-- [x] **P2.4** TemporalStabilizer — adaptive Kalman + velocity-EMA + trimmed-mean window
-- [x] **P2.5** MicroSaccadeFilter — 12px/200ms fixation stability, saccade suppression
-- [x] **P2.6** GazeConfidenceScorer — brightness/occlusion/glare/head-angle multi-factor score
-- [x] **P2.7** DynamicCalibrationEngine — 9-point + micro-update from interactions + bias correction
-- [x] **P2.8** IntentPredictionEngine — OpenAI /api/intent proxy with behavioral context payload
-- [x] **P2.9** GazeBenchmark — Phase 1 vs Phase 2 jitter/latency comparison (30s window)
-- [x] **Phase2Orchestrator** — wires all modules, patches MediaPipe face handler
-- [x] **Phase2InitController** — attaches orchestrator to AccessEyeApp at runtime
-- [x] **Phase 2 Status Panel** in Live Demo — confidence bar, head pose 6-DOF, fixation stats, AI intent, benchmark, micro-calib controls
-- [x] Low-light and glasses/glare warnings via toast notifications
-- [x] Dynamic calibration UI controls (reset micro-calib)
-- [x] API route `/api/intent` — server-side AI intent prediction proxy
-- [x] API route `/api/benchmark` — in-memory benchmark storage
-- [x] SVG favicon + updated nav badge (v2)
-
-## Functional Entry Points (API)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Main SPA (all 4 pages) |
-| `/static/app.js` | GET | Phase 1 core engine |
-| `/static/phase2-engine.js` | GET | Phase 2 modules |
-| `/static/phase2-init.js` | GET | Phase 2 wiring layer |
-| `/static/styles.css` | GET | Full stylesheet |
-| `/api/intent` | POST | AI intent prediction proxy |
-| `/api/benchmark` | POST | Store benchmark result |
-| `/api/benchmark/latest` | GET | Get latest benchmark |
-
-### /api/intent payload schema
-```json
-{
-  "gaze_coordinates": { "x": 0.5, "y": 0.5 },
-  "gaze_stability_duration": 350,
-  "head_pose_angle": { "yaw": -5.2, "pitch": 3.1, "roll": 0.8 },
-  "gaze_confidence": 0.82,
-  "fixation_event": true,
-  "focused_element": { "id": "btn-send", "label": "Send Message" },
-  "recent_elements": [...],
-  "gesture_history": [...],
-  "session_context": { "duration_s": 45, "activation_count": 3 }
-}
+**Gaze pipeline (per frame):**
+```
+MediaPipe FaceMesh
+  → iris landmark extraction (_computeIrisSignal)
+  → binocular average with per-eye quality weighting
+  → head-pose compensation (yaw/pitch)
+  → OneEuro filter (minCutoff 0.45 Hz, beta 0.05)
+  → CalibrationEngine.mapGaze (degree-3 ridge regression, 9-point iris-only model)
+  → HeadFreeStabilizer (EMA, compScale 0.60)
+  → TemporalStabilizer (Kalman R=0.005, EMA α=0.22)
+  → _updateGazeCursor (pixel position)
+  → UIElementRegistry dwell check
 ```
 
-## Performance Targets (Phase 2)
+**Calibration model:**
+- Signal: iris-only offset (no head/pupil fusion noise)
+- Points: 9 (4 corners at 0.08/0.92, 4 inner ring at 0.25/0.75, center)
+- Regression: degree-3 polynomial ridge (λ=0.01, 10 terms)
+- Normalisation: observed gaze range padded 18 % for edge extrapolation
+- Weights: corners 4×, interior 1×
+- Storage: localStorage key `accesseye_calib` (version 8)
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Camera FPS | 60 FPS ideal, 30 fallback | HighFPSCameraController auto-negotiates |
-| Gaze latency | < 80ms | Adaptive Kalman |
-| Focus detection | < 200ms | Micro-saccade 12px/200ms window |
-| Confidence threshold | > 0.6 | Below this: slow dwell / disable auto-select |
-| Accuracy (calibrated) | > 85% | 9-point + dynamic micro-update |
+---
 
-## Data Architecture
-
-| Storage | Key | Data |
-|---------|-----|------|
-| localStorage | `accesseye_calib` | Polynomial model, 9-pt calibration data |
-| localStorage | `accesseye_micro` | Micro-calib bias, interaction samples |
-| In-memory | `benchmarkResults[]` | Session benchmark reports |
-
-## User Guide
-
-1. **Launch**: Open https://accesseye-mvp.pages.dev → click "Launch Live Demo"
-2. **Start Camera**: Click "Start Camera" — grants webcam access, MediaPipe loads (~5s), Phase 2 activates automatically
-3. **Mouse Simulation**: Default mode — move cursor over buttons, click to activate
-4. **Gaze Mode**: Switch to "Gaze" tab — look at buttons, dwell 350ms to focus, pinch/air-tap to activate
-5. **Calibration**: Switch to "Calibrate" tab → "Start Calibration" — follow 5 on-screen dots
-6. **Phase 2 Panel** (scroll down in demo): Live confidence score, head pose angles, fixation stats, AI intent, benchmark controls
-7. **Benchmark**: Click "Run 30s Benchmark" — compare Phase 1 vs Phase 2 jitter/latency
-
-## Technology Stack
+## Tech stack
 
 | Layer | Technology |
-|-------|-----------|
-| Backend | Hono v4 + TypeScript on Cloudflare Workers |
-| Vision AI | MediaPipe FaceMesh (468+iris) + Hands (21pt) |
-| Signal processing | Custom Kalman, EMA, sliding window, solvePnP |
-| AI Intent | OpenAI gpt-5-mini via Genspark LLM proxy |
-| Frontend | Vanilla JS (SPA), TailwindCSS-inspired custom CSS |
-| Deployment | Cloudflare Pages (edge, HTTPS, zero-latency CDN) |
-| Privacy | 100% on-device — zero video/data egress |
+|---|---|
+| Framework | Hono 4.x on Cloudflare Pages |
+| Build | Vite 6 + @hono/vite-cloudflare-pages |
+| Eye tracking | MediaPipe FaceMesh + Hands (CDN) |
+| Styling | Tailwind CSS (CDN) + custom CSS |
+| Icons | Font Awesome 6 (CDN) |
+| Runtime | Cloudflare Workers (edge, no Node.js) |
 
-## Deployment Status
-- **Platform**: Cloudflare Pages
-- **Status**: ✅ Active
-- **Project**: accesseye-mvp
-- **Last Deployed**: 2026-03-09
+---
+
+## Deployment
+
+**Production URL:** https://accesseye-mvp.pages.dev
+**Platform:** Cloudflare Pages
+**Status:** ✅ Active
+
+```bash
+# Build
+npm run build
+
+# Deploy to Cloudflare Pages
+npx wrangler pages deploy dist --project-name accesseye-mvp
+
+# Local development
+npm run build
+pm2 start ecosystem.config.cjs
+```
+
+---
+
+## Development history (key milestones)
+
+| Commit | Change |
+|---|---|
+| `0e218e8` | Fix calibration stuck at pt1: separate recentFrames buffer for lock phase |
+| `305740b` | Calibration v8: quality-gated sampling, auto-advance on stable fixation |
+| `886406a` | Fix ptLabel ReferenceError + hide cursor during calibration |
+| `33d1184` | 9-point grid, shorter timing, head-movement tolerance |
+| `0401dc4` | Iris-only calibration signal, relaxed edge clamp, faster OneEuro |
+| `81e3f1b` | 7 peripheral accuracy improvements |
+| `f50c4f8` | 6 pipeline diagnostic fixes |
+| `7db2c7a` | Camera restart, recalibration, corner-stuck, over-scaling fixes |
+| `35319bd` | 12 precision improvements — jitter + accuracy |
+| `7de9a41` | Phase 3: ridge regression, 13-pt calib, IVT, PACE, head-free |
+
+---
+
+## License
+
+MIT — built by mkbrown261
