@@ -1132,8 +1132,9 @@ class CalibrationUI {
     this.gazeEngine = gazeEngine;
     this.log = log;
     this.toast = toast;
-    this.overlay = $('#calibration-overlay');
-    this.container = $('#calib-points-container');
+    this.overlay   = $('#calibration-overlay');     // dark background layer
+    this.container  = $('#calib-points-container');   // dots layer
+    this.hud        = $('#calib-hud');                // header/footer/tipbar layer
     this.progressFill = $('#calib-progress-fill');
     this.stepLabel = $('#calib-step-label');
     this.currentStep = -1;
@@ -1171,7 +1172,10 @@ class CalibrationUI {
     // Reset adaptive threshold for fresh calibration
     this._adaptiveSigmaThresh = 0.025;
     this._adaptiveSeedDone    = false;
-    this.overlay.style.display = 'flex';
+    // Show all three layers
+    if (this.overlay)   this.overlay.style.display   = 'block';
+    if (this.container) this.container.style.display  = 'block';
+    if (this.hud)       this.hud.style.display        = 'flex';
     const startBtn = $('#start-calib-btn');
     if (startBtn) { startBtn.disabled = false; startBtn.innerHTML = '<i class="fas fa-play"></i> Start Calibration'; }
     this._updateProgress(0);
@@ -1184,7 +1188,9 @@ class CalibrationUI {
   }
 
   hide() {
-    this.overlay.style.display = 'none';
+    if (this.overlay)   this.overlay.style.display   = 'none';
+    if (this.container) this.container.style.display  = 'none';
+    if (this.hud)       this.hud.style.display        = 'none';
     this._arenaW = 0;
     this._arenaH = 0;
   }
@@ -1199,21 +1205,23 @@ class CalibrationUI {
   _renderPoints() {
     this.container.innerHTML = '';
     const pts = this.calibEngine.CALIB_POINTS;
-    // PHASE-A: Use window dimensions, not container dimensions.
-    // The gaze cursor is placed at sx * window.innerWidth / sy * window.innerHeight.
-    // Dots must be placed in the same coordinate space.
     const W = window.innerWidth;
     const H = window.innerHeight;
     this._arenaW = W;
     this._arenaH = H;
+
+    // Min inset: 30px from each edge so the dot (radius 24px) never clips off-screen
+    const INSET = 30;
+    const clampX = x => Math.max(INSET, Math.min(W - INSET, x));
+    const clampY = y => Math.max(INSET, Math.min(H - INSET, y));
 
     pts.forEach((pt, i) => {
       const el = document.createElement('div');
       el.className = 'calib-point';
       el.id = `calib-pt-${i}`;
       el.innerHTML = `<span class="calib-num">${i + 1}</span>`;
-      el.style.left = `${pt.sx * W}px`;
-      el.style.top  = `${pt.sy * H}px`;
+      el.style.left = `${clampX(pt.sx * W)}px`;
+      el.style.top  = `${clampY(pt.sy * H)}px`;
       this.container.appendChild(el);
     });
   }

@@ -711,27 +711,28 @@ app.get('/', (c) => {
         <!-- RIGHT: Interactive Demo Area -->
         <div class="demo-main">
           <!-- Calibration Overlay -->
-          <div class="calibration-overlay" id="calibration-overlay" style="display:none">
+          <!-- Calibration: dark background (z 9000) -->
+          <div class="calibration-overlay" id="calibration-overlay" style="display:none"></div>
+
+          <!-- Calibration: dots layer (z 9001) — full viewport, no header blocking corners -->
+          <div class="calib-points-container" id="calib-points-container" style="display:none">
+            <!-- Points injected by JS -->
+          </div>
+
+          <!-- Calibration: HUD — header + footer + tip bar (z 9002) -->
+          <div class="calib-hud" id="calib-hud" style="display:none">
             <div class="calib-header">
               <h2><i class="fas fa-sliders-h"></i> Eye Tracking Calibration</h2>
               <p id="calib-instruction-text">Look at each dot and <strong>hold perfectly still</strong> — the dot turns green and advances automatically when your gaze is stable.</p>
               <div class="calib-progress-bar"><div class="calib-progress-fill" id="calib-progress-fill"></div></div>
               <span id="calib-step-label">Step 0 / 9</span>
             </div>
-            <div class="calib-points-container" id="calib-points-container">
-              <!-- Points injected by JS -->
-            </div>
-            <!-- Live tip bar — updated by JS per point zone -->
-            <div id="calib-tip-bar" style="
-              position:absolute; bottom:64px; left:0; right:0;
-              text-align:center; font-size:13px; color:#00d4ff;
-              padding:6px; background:rgba(10,14,26,0.7); pointer-events:none;
-              transition: opacity 0.3s;
-            "></div>
             <div class="calib-footer">
               <button class="btn-secondary" id="cancel-calib-btn"><i class="fas fa-times"></i> Cancel</button>
               <button class="btn-primary" id="start-calib-btn"><i class="fas fa-play"></i> Start Calibration</button>
             </div>
+            <!-- Live tip bar -->
+            <div id="calib-tip-bar"></div>
           </div>
 
           <!-- Gaze cursor (full page) -->

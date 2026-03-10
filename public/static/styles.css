@@ -878,43 +878,55 @@ body {
 
 /* Calibration overlay — FIX CAL-3: full-viewport fixed overlay so calibration
    points span the entire screen the user will actually gaze at.            */
+/* ── Layer 1: Dark background only — no content, no flex children ── */
 .calibration-overlay {
   position: fixed;
-  top: 0; left: 0;
-  width: 100vw;
-  height: 100vh;          /* PHASE-A: full viewport, no offset */
+  inset: 0;
   background: rgba(10, 14, 26, 0.97);
   z-index: 9000;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0;
-  padding: 0;
-  overflow: hidden;
+  pointer-events: none;   /* let HUD and dots receive events */
 }
 
-/* FIX CAL-3: header lives at the top of the fixed overlay */
+/* ── Layer 2: Dots — full viewport, dots positioned by JS ── */
+.calib-points-container {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: transparent;
+  z-index: 9001;
+}
+
+/* ── Layer 3: HUD — header at top, footer at bottom, tip bar above footer ── */
+.calib-hud {
+  position: fixed;
+  inset: 0;
+  z-index: 9002;
+  pointer-events: none;   /* container is pass-through */
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: stretch;
+}
+
 .calib-header {
   text-align: center;
   width: 100%;
-  padding: 20px 40px 12px;
-  background: rgba(10, 14, 26, 0.98);
-  z-index: 1;
+  padding: 16px 40px 10px;
+  background: rgba(10, 14, 26, 0.92);
+  pointer-events: auto;
   flex-shrink: 0;
 }
-.calib-header h2 { font-size: 1.4rem; font-weight: 800; margin-bottom: 6px; color: var(--accent-cyan); }
-.calib-header p { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px; }
+.calib-header h2 { font-size: 1.3rem; font-weight: 800; margin-bottom: 4px; color: var(--accent-cyan); }
+.calib-header p  { font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 8px; }
 
 .calib-progress-bar {
   width: 100%;
-  height: 6px;
+  height: 5px;
   background: var(--border-color);
   border-radius: 3px;
   overflow: hidden;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
-
 .calib-progress-fill {
   height: 100%;
   background: var(--accent-cyan);
@@ -922,23 +934,31 @@ body {
   transition: width 0.3s ease;
   width: 0%;
 }
+#calib-step-label { font-size: 0.78rem; color: var(--text-muted); }
 
-#calib-step-label { font-size: 0.8rem; color: var(--text-muted); }
-
-/* FIX CAL-1: was fixed 600×380 px — now fills remaining viewport height.
-   Points must span the same area the user gazes at during real use.       */
-.calib-points-container {
-  /* PHASE-A: Fixed to full viewport so dot positions at sx*window.innerWidth
-     match exactly — no header/footer offset displacing them */
-  position: fixed;
-  top: 0; left: 0;
-  width: 100vw;
-  height: 100vh;
+/* Tip bar: sits just above footer */
+#calib-tip-bar {
+  text-align: center;
+  font-size: 13px;
+  color: #00d4ff;
+  padding: 5px 16px;
+  background: rgba(10,14,26,0.80);
   pointer-events: none;
-  background: transparent;
+  flex-shrink: 0;
+  min-height: 28px;
 }
 
-/* v8 calibration dot — large with crosshair for precise fixation */
+.calib-footer {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  padding: 12px 40px 16px;
+  background: rgba(10, 14, 26, 0.92);
+  flex-shrink: 0;
+  pointer-events: auto;
+}
+
+/* ── Calibration dot ── */
 .calib-point {
   position: absolute;
   width: 48px;
@@ -954,8 +974,7 @@ body {
   user-select: none;
   pointer-events: none;
 }
-
-/* Small crosshair tick marks via pseudo-elements */
+/* Crosshair ticks */
 .calib-point::before,
 .calib-point::after {
   content: '';
@@ -966,7 +985,6 @@ body {
 }
 .calib-point::before { width: 1px; height: 14px; top: 50%; left: 50%; transform: translate(-50%,-50%); }
 .calib-point::after  { width: 14px; height: 1px; top: 50%; left: 50%; transform: translate(-50%,-50%); }
-
 /* Number label */
 .calib-point .calib-num {
   font-size: 11px;
@@ -980,26 +998,11 @@ body {
   pointer-events: none;
   user-select: none;
 }
-
-.calib-point.active {
-  border-color: var(--accent-cyan);
-  /* Box-shadow animated by JS — no CSS animation to avoid distraction */
-}
-
+.calib-point.active { border-color: var(--accent-cyan); }
 .calib-point.done {
   background: radial-gradient(circle, #00ff88 0%, #22c55e 60%);
   border-color: var(--accent-green);
   opacity: 0.7;
-}
-
-/* FIX CAL-3: footer anchored to the bottom of the fixed overlay */
-.calib-footer {
-  display: flex;
-  gap: 16px;
-  padding: 16px 40px 20px;
-  background: rgba(10, 14, 26, 0.98);
-  flex-shrink: 0;
-  z-index: 1;
 }
 
 /* ── GAZE CURSOR ────────────────────────────────────────────── */
