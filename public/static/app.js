@@ -1222,14 +1222,30 @@ class CalibrationUI {
     this.calibEngine.reset();
     this.calibEngine.calibData = [];
 
+    // FIX CURSOR-1: Hide the gaze cursor during calibration.
+    // While uncalibrated the cursor uses the fused-gaze * 7.0 uncalibrated
+    // fallback mapping, which places it at a screen corner when the iris is
+    // looking toward a corner dot.  This confuses the user into thinking
+    // calibration is broken.  We hide it until the model is built.
+    const gazeCursorEl = $('#global-gaze-cursor');
+    if (gazeCursorEl) gazeCursorEl.style.display = 'none';
+
     for (let i = 0; i < this.calibEngine.CALIB_POINTS.length; i++) {
-      await this._runStep(i);
+      try {
+        await this._runStep(i);
+      } catch (err) {
+        console.error(`[CalibrationUI] _runStep(${i}) threw:`, err);
+        // Continue to next point rather than freezing the whole calibration
+      }
     }
 
     // Build model
     const success = this.calibEngine.buildModel();
     this.hide();
     this.collecting = false;
+
+    // FIX CURSOR-1: Restore cursor visibility after calibration.
+    if (gazeCursorEl) gazeCursorEl.style.display = '';
 
     if (success) {
       // Post-calibration residual check — 9-point grid: 0-3 corners, 4+ interior
@@ -1280,6 +1296,8 @@ class CalibrationUI {
       // EASE-1: 9-point grid — corners (0-3), inner ring (4-7), center (8)
       const isCorner  = stepIdx < 4;
       const isMidEdge = false; // no mid-edges in 9-point grid
+      const pt = this.calibEngine.CALIB_POINTS[stepIdx];
+      const ptLabel = pt?.label || (isCorner ? 'Corner' : stepIdx < 8 ? 'Inner' : 'Center');
       this.log.add(`Point ${stepIdx + 1}: ${ptLabel} — ${isCorner ? 'look toward the CORNER' : stepIdx < 8 ? 'look at this area' : 'look at CENTER'}`, 'info');
 
       // Update live tip bar in overlay
