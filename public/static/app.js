@@ -197,6 +197,25 @@ class CalibrationEngine {
     this.calibData[pointIdx].samples.push({ gx: rawGazeX, gy: rawGazeY });
   }
 
+  /**
+   * PRECISION-4: Return instantaneous sample quality for a point.
+   * Compares the new sample to the running centroid of accepted samples.
+   * Returns 0-1 quality score. Used by CalibrationUI to show live feedback.
+   */
+  sampleQuality(pointIdx, newGX, newGY) {
+    const d = this.calibData[pointIdx];
+    if (!d || d.samples.length < 3) return 1.0; // not enough history yet
+    const cx = d.samples.reduce((s,v)=>s+v.gx,0)/d.samples.length;
+    const cy = d.samples.reduce((s,v)=>s+v.gy,0)/d.samples.length;
+    // Variance of recent samples
+    const varX = d.samples.reduce((s,v)=>s+(v.gx-cx)**2,0)/d.samples.length;
+    const varY = d.samples.reduce((s,v)=>s+(v.gy-cy)**2,0)/d.samples.length;
+    const sigma = Math.sqrt(varX + varY) || 0.001;
+    const dist  = Math.hypot(newGX - cx, newGY - cy);
+    // Quality: 1.0 when new sample is at centroid, 0 when >3σ away
+    return Math.max(0, 1 - dist / (sigma * 3));
+  }
+
   /* FIX EDGE-2: Return the trim fraction for a given point index */
   _trimFraction(pointIdx) {
     if (pointIdx < 4)  return this.CORNER_TRIM;    // corners
@@ -211,40 +230,52 @@ class CalibrationEngine {
     return this.INTERIOR_WEIGHT;
   }
 
-  /* After collecting samples, compute trimmed-mean gaze vector per point.
-   * FIX C-1: Sort by 2D Euclidean distance from centroid and discard the
-   * worst 20% rows TOGETHER (axis-coupled), so a blink frame that corrupts
-   * both gx and gy is removed as a unit. The old per-axis sort could remove
-   * a good gx row and a good gy row from *different* blink frames, leaving
-   * both axes contaminated.
+  /* PRECISION-4 / EDGE-2: Two-pass robust mean for each calibration point.
+   *
+   * Pass 1 — find the densest cluster:
+   *   Sort by 2D distance from initial centroid (same as before).
+   *   Take the closest (1-trimFrac) samples — these define the "core" cluster.
+   *
+   * Pass 2 — recompute centroid from the core cluster only, then run a second
+   *   trim: discard any sample >2σ from the core centroid.
+   *   This catches the case where a systematic saccade overshoot drags the
+   *   initial centroid off-target, making all distances relative to a wrong
+   *   anchor. Two-pass corrects this — the second pass anchors to the true
+   *   fixation cluster.
+   *
+   * Result: mean of the tightest, cleanest cluster of samples.
    */
   finalizePoint(pointIdx) {
     const d = this.calibData[pointIdx];
     if (!d || d.samples.length === 0) return false;
 
-    // Compute centroid of all samples
-    const cx = d.samples.reduce((s, v) => s + v.gx, 0) / d.samples.length;
-    const cy = d.samples.reduce((s, v) => s + v.gy, 0) / d.samples.length;
+    // ── Pass 1: coarse trim from initial centroid ──
+    const cx0 = d.samples.reduce((s, v) => s + v.gx, 0) / d.samples.length;
+    const cy0 = d.samples.reduce((s, v) => s + v.gy, 0) / d.samples.length;
 
-    // Rank by 2D distance from centroid (closest = most representative)
     const ranked = [...d.samples]
-      .map(s => ({ ...s, dist: Math.hypot(s.gx - cx, s.gy - cy) }))
+      .map(s => ({ ...s, dist: Math.hypot(s.gx - cx0, s.gy - cy0) }))
       .sort((a, b) => a.dist - b.dist);
 
-    // FIX EDGE-2: Use per-point trim rates instead of a global 35% cut.
-    // Corners trim only 20% — they have fewer valid extreme-position samples
-    // and we NEED those extremes to correctly map the screen edges.
-    // Interior points trim 30% (slightly less than old 35%) to keep 35 samples.
-    // With 50 samples per point:
-    //   corners  : trim 20% = 10 removed → 40 clean samples
-    //   mid-edges: trim 25% = 13 removed → 37 clean samples
-    //   interior : trim 30% = 15 removed → 35 clean samples
     const trimFrac = this._trimFraction(pointIdx);
-    const cut     = Math.floor(ranked.length * trimFrac);
-    const trimmed = ranked.slice(0, ranked.length - cut);  // keep closest (1-trimFrac)
+    const cut1     = Math.floor(ranked.length * trimFrac);
+    const core     = ranked.slice(0, ranked.length - cut1);
 
-    d.gx = trimmed.reduce((s, v) => s + v.gx, 0) / trimmed.length;
-    d.gy = trimmed.reduce((s, v) => s + v.gy, 0) / trimmed.length;
+    // ── Pass 2: recompute centroid from core, then 2σ filter ──
+    const cx1 = core.reduce((s, v) => s + v.gx, 0) / core.length;
+    const cy1 = core.reduce((s, v) => s + v.gy, 0) / core.length;
+
+    // Standard deviation of the core cluster
+    const varX = core.reduce((s, v) => s + (v.gx - cx1) ** 2, 0) / core.length;
+    const varY = core.reduce((s, v) => s + (v.gy - cy1) ** 2, 0) / core.length;
+    const sigma = Math.sqrt(varX + varY) || 1e-6;
+
+    // Keep only samples within 2σ of core centroid
+    const tight = core.filter(v => Math.hypot(v.gx - cx1, v.gy - cy1) <= sigma * 2.0);
+    const final = tight.length >= 3 ? tight : core; // fallback to core if too few
+
+    d.gx = final.reduce((s, v) => s + v.gx, 0) / final.length;
+    d.gy = final.reduce((s, v) => s + v.gy, 0) / final.length;
     return true;
   }
 
@@ -274,16 +305,17 @@ class CalibrationEngine {
     const rawMinX = Math.min(...allGX), rawMaxX = Math.max(...allGX);
     const rawMinY = Math.min(...allGY), rawMaxY = Math.max(...allGY);
 
-    // FIX EDGE-4: Pad the gaze range by 12% beyond the observed min/max.
+    // FIX EDGE-4 / PRECISION-8: Pad the gaze range by 18% beyond the observed min/max.
     // Problem: The normalization maps min→-0.5 and max→+0.5 exactly.
     // During actual use, gaze can go slightly beyond these bounds (the user
     // may look even more to the edge than during calibration). Without padding,
     // these values clip at ±0.5 in normalized space and the polynomial
     // extrapolates badly — causing the cursor to "stick" near but not quite
     // at the screen edge.
-    // With 12% padding: the corner gaze values map to ±0.44 (not ±0.5),
+    // With 18% padding: the corner gaze values map to ±0.42 (not ±0.5),
     // leaving room for the polynomial to extrapolate to the true edge.
-    const PAD = 0.12;
+    // (Increased from 12% — user reports cursor just short of corners)
+    const PAD = 0.18;
     const rangeX = rawMaxX - rawMinX;
     const rangeY = rawMaxY - rawMinY;
     this.gazeRangeX = {
@@ -434,9 +466,14 @@ class CalibrationEngine {
       ? this._normalizeGaze(gx, this.model.gazeRangeX) : gx;
     const normGY = this.model.gazeRangeY
       ? this._normalizeGaze(gy, this.model.gazeRangeY) : gy;
+    // PRECISION-8: Relax clamping from [0,1] to [-0.02, 1.02] to allow slight
+    // extrapolation at screen edges. The polynomial may predict just outside [0,1]
+    // for extreme corner gaze values — hard-clamping to exactly 0 or 1 causes the
+    // cursor to stop ~5-10px short of the true screen edge.
+    // The final screen-pixel calculation already keeps the cursor on-screen.
     return {
-      sx: clamp(this._applyModel(this.model.x, normGX, normGY), 0, 1),
-      sy: clamp(this._applyModel(this.model.y, normGX, normGY), 0, 1)
+      sx: clamp(this._applyModel(this.model.x, normGX, normGY), -0.02, 1.02),
+      sy: clamp(this._applyModel(this.model.y, normGX, normGY), -0.02, 1.02)
     };
   }
 
@@ -463,7 +500,7 @@ class CalibrationEngine {
       localStorage.setItem('accesseye_calib', JSON.stringify({
         model:     this.model,
         calibData: this.calibData.map(d => ({ sx: d.sx, sy: d.sy, gx: d.gx, gy: d.gy, label: d.label })),
-        version:   6,  // FIX EDGE: v6 includes padded gazeRange + edge-weighted regression
+        version:   7,  // PRECISION: v7 = iris-only calib + 18% gaze padding + relaxed clamp
         timestamp: Date.now()
       }));
     } catch(_) {}
@@ -474,8 +511,9 @@ class CalibrationEngine {
       const raw = localStorage.getItem('accesseye_calib');
       if (!raw) return false;
       const data = JSON.parse(raw);
-      // Accept v3/v4/v5/v6 models. v3/v4 lack gazeRange — mapGaze handles this gracefully.
-      if (![3, 4, 5, 6].includes(data.version)) {
+      // Accept v3/v4/v5/v6/v7 models. v3/v4 lack gazeRange — mapGaze handles this gracefully.
+      // v7 adds iris-only calibration samples + 18% gaze padding + relaxed mapGaze clamp.
+      if (![3, 4, 5, 6, 7].includes(data.version)) {
         localStorage.removeItem('accesseye_calib'); return false;
       }
       this.model      = data.model;
@@ -1269,76 +1307,150 @@ class CalibrationUI {
         }
       }
 
-      // FIX EDGE-6: Larger dot + stronger pulse animation for corners/edges.
-      // Small dots at corners are hard to fixate precisely on. Scale them up
-      // so the user has a bigger target to look at.
+      // PRECISION-6: Dot animation redesign for maximum fixation accuracy.
+      // Problem with previous approach: dot started at 2.2× scale and shrank back
+      // to 1.0× at sampling start. This moving target DURING settle time caused the
+      // user to track the shrinking dot rather than fixate on a stable point.
+      // New approach:
+      //   Phase A (settle): Large dot with pulsing ring to ATTRACT attention to the corner.
+      //                     User moves eyes to the dot and settles. (2500ms / 1800ms / 1200ms)
+      //   Phase B (pre-sample): Dot snaps to FIXED sampling size (1.3× corner, 1.0× others)
+      //                         with a brief FREEZE period (400ms) for final gaze settling.
+      //   Phase C (sampling):  Dot stays completely STILL — no shrinking, no animation.
+      //                         Only color changes (green/yellow/red) give feedback.
+      //   Phase D (done):      Quick flash green then shrink.
+      //
+      // WHY: A stable, non-moving target during sampling is the single biggest
+      // factor for landing the cursor on the dot. Movement = tracking saccades ≠ fixation.
       if (ptEl) {
-        const startScale = isCorner ? 2.2 : isMidEdge ? 1.8 : 1.5;
+        const startScale = isCorner ? 2.0 : isMidEdge ? 1.6 : 1.4;
         ptEl.style.transform = `translate(-50%, -50%) scale(${startScale})`;
-        ptEl.style.transition = 'transform 0.3s ease';
-        // Add breathing animation hint
+        ptEl.style.transition = 'transform 0.4s ease-out';
         ptEl.style.boxShadow = isCorner
-          ? '0 0 0 8px rgba(0,212,255,0.3), 0 0 0 16px rgba(0,212,255,0.15)'
-          : '0 0 0 6px rgba(0,212,255,0.25)';
+          ? '0 0 0 10px rgba(0,212,255,0.35), 0 0 0 20px rgba(0,212,255,0.15)'
+          : '0 0 0 7px rgba(0,212,255,0.28)';
       }
 
       // FIX EDGE-6: Much longer settling delay for corners (2500ms) and edges (1800ms).
       // Corners require the most head+eye movement and need extra settle time.
       // Old 1500ms corners / 1000ms others was too short — gaze hadn't stabilized.
       const settleMs = isCorner ? 2500 : isMidEdge ? 1800 : 1200;
+      // PRECISION-6: Extra freeze time AFTER animation stops, BEFORE sampling starts.
+      // This gives the eye a moment to land precisely on the now-stable target.
+      const freezeMs = isCorner ? 450 : isMidEdge ? 300 : 200;
 
       setTimeout(() => {
+        // Phase B: snap to fixed sample size + freeze
+        const sampleScale = isCorner ? 1.3 : isMidEdge ? 1.1 : 1.0;
         if (ptEl) {
-          ptEl.style.transform = 'translate(-50%, -50%) scale(1.0)';
-          ptEl.style.boxShadow = '';
+          ptEl.style.transition = 'transform 0.15s ease-out, box-shadow 0.15s ease-out';
+          ptEl.style.transform = `translate(-50%, -50%) scale(${sampleScale})`;
+          ptEl.style.boxShadow = '0 0 0 3px rgba(255,255,255,0.6)'; // clean white ring = "now looking here"
         }
-        this.sampleCount = 0;
-        this.calibEngine.calibData[stepIdx] = {
-          ...this.calibEngine.CALIB_POINTS[stepIdx],
-          samples: []
-        };
 
-        this._sampleInterval = setInterval(() => {
-          // FIX SCOPE-8: Use PURE raw gaze from Phase 1 GazeEngine for calibration.
-          // Phase 2/3 apply One Euro + Kalman smoothing which displaces the gaze
-          // vector from where it truly is — calibrating with smoothed gaze creates
-          // a systematic lag bias in the model. Always use the unsmoothed Phase 1
-          // rawGaze which reflects the actual iris position measurement.
-          let rawGaze = this.gazeEngine.rawGaze;
+        setTimeout(() => {
+          // Phase C: sampling — DOT DOES NOT MOVE
+          this.sampleCount = 0;
+          this.calibEngine.calibData[stepIdx] = {
+            ...this.calibEngine.CALIB_POINTS[stepIdx],
+            samples: []
+          };
+          // Remove transition so color changes are instant
+          if (ptEl) ptEl.style.transition = 'background 0.1s ease';
 
-          // Only fall back to Phase 2 raw if Phase 1 doesn't have data yet
-          if (!rawGaze || (rawGaze.x === 0.5 && rawGaze.y === 0.5)) {
-            const p2 = window.app?.phase2;
-            if (p2?.active) rawGaze = p2.hybridGaze?.rawGaze;
-          }
-          if (!rawGaze || (rawGaze.x === 0.5 && rawGaze.y === 0.5)) {
-            rawGaze = { x: 0.5, y: 0.5 };
-          }
+          // PRECISION-7: Track whether this interval has been cleared to prevent
+          // the "one extra sample after clearInterval" race condition.
+          let intervalDone = false;
 
-          this.calibEngine.addCalibSample(stepIdx, rawGaze.x, rawGaze.y);
-          this.sampleCount++;
+          this._sampleInterval = setInterval(() => {
+            if (intervalDone) return; // race-condition guard
 
-          // Visual: shrink the dot as samples fill up (progress indicator)
-          if (ptEl && this.sampleCount % 5 === 0) {
-            const sz = 1.0 - (this.sampleCount / this.SAMPLES) * 0.35;
-            ptEl.style.transform = `translate(-50%, -50%) scale(${Math.max(sz, 0.65)})`;
-          }
+            // PRECISION-5/3: Use the IRIS-ONLY unfiltered signal for calibration.
+            // Priority chain (best → fallback):
+            //   1. Phase3 _irisOnlyGaze — pure iris offset, no head/pupil fusion, no OneEuro
+            //   2. Phase2 _irisOnlyGaze — iris-only from HybridGazeEngine pre-fusion
+            //   3. Phase3 _trueRawGaze  — fused but pre-OneEuro (better than smoothed)
+            //   4. Phase1 rawGaze       — iris offset in Phase-1-only mode (already pure iris)
+            //
+            // WHY iris-only:  The fused signal mixes iris (0.55) with head-pose (0.15) and
+            // pupil (0.15).  Head/pupil components add ~0.03-0.05 units of noise relative to
+            // the true fixation target.  During calibration the head is still, so the extra
+            // signals only degrade accuracy.  Pure iris → model learns the true eye geometry.
+            let rawGaze = null;
+            const p2orch = window.app?.phase2;
+            const p3orch = window.app?.phase3;
 
-          const progress = (stepIdx + this.sampleCount / this.SAMPLES) / this.calibEngine.CALIB_POINTS.length;
-          this._updateProgress(progress);
-
-          if (this.sampleCount >= this.SAMPLES) {
-            clearInterval(this._sampleInterval);
-            this.calibEngine.finalizePoint(stepIdx);
-            if (ptEl) {
-              ptEl.style.transform = 'translate(-50%, -50%) scale(0.6)';
-              ptEl.classList.remove('active');
-              ptEl.classList.add('done');
+            // 1st: Phase3 iris-only (best - pre-fusion, pre-filter)
+            if (p3orch?.active && p2orch?.hybridGaze?._irisOnlyGaze) {
+              rawGaze = p2orch.hybridGaze._irisOnlyGaze;
             }
-            // Brief visual confirmation before moving to next point
-            setTimeout(resolve, 200);
-          }
-        }, 50); // ~20 FPS sampling
+            // 2nd: Phase2 iris-only (no Phase3 active - still pre-fusion)
+            if (!rawGaze && p2orch?.active && p2orch?.hybridGaze?._irisOnlyGaze) {
+              rawGaze = p2orch.hybridGaze._irisOnlyGaze;
+            }
+            // 3rd: Phase3 true raw (fused but pre-OneEuro)
+            if (!rawGaze && p3orch?.active && p2orch?.hybridGaze?._trueRawGaze) {
+              rawGaze = p2orch.hybridGaze._trueRawGaze;
+            }
+            // 4th: Phase2 true raw
+            if (!rawGaze && p2orch?.active && p2orch?.hybridGaze?._trueRawGaze) {
+              rawGaze = p2orch.hybridGaze._trueRawGaze;
+            }
+            // 5th: Phase1 rawGaze (pure iris in Phase1 mode)
+            if (!rawGaze) rawGaze = this.gazeEngine.rawGaze;
+            // Fallback
+            if (!rawGaze || (rawGaze.x === 0.5 && rawGaze.y === 0.5)) {
+              rawGaze = { x: 0.5, y: 0.5 };
+            }
+
+            // PRECISION-4: Live quality score — color the dot green/yellow/red
+            // PRECISION-6: DOT DOES NOT CHANGE SIZE during sampling — only color
+            const quality = this.calibEngine.sampleQuality(stepIdx, rawGaze.x, rawGaze.y);
+            if (ptEl && this.sampleCount > 5) {
+              if (quality > 0.65) {
+                ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #00d4ff 60%)';
+              } else if (quality > 0.35) {
+                ptEl.style.background = 'radial-gradient(circle, #fbbf24 0%, #f59e0b 60%)';
+              } else {
+                ptEl.style.background = 'radial-gradient(circle, #ef4444 0%, #dc2626 60%)';
+              }
+              // Update tip bar with live quality
+              const tipBar = $('#calib-tip-bar');
+              if (tipBar && this.sampleCount % 5 === 0) {
+                const qPct = Math.round(quality * 100);
+                tipBar.textContent = quality > 0.65
+                  ? `✓ Good fixation (${qPct}%) — hold steady`
+                  : quality > 0.35
+                  ? `⚡ Gaze drifting (${qPct}%) — stare directly at the center of the dot`
+                  : `⚠ Poor fixation (${qPct}%) — look AT the dot number, stop moving your eyes`;
+                tipBar.style.color = quality > 0.65 ? '#4ade80' : quality > 0.35 ? '#fbbf24' : '#ef4444';
+              }
+            }
+
+            this.calibEngine.addCalibSample(stepIdx, rawGaze.x, rawGaze.y);
+            this.sampleCount++;
+
+            // PRECISION-6: NO shrinking during sampling. Progress shown only in bar.
+            const progress = (stepIdx + this.sampleCount / this.SAMPLES) / this.calibEngine.CALIB_POINTS.length;
+            this._updateProgress(progress);
+
+            if (this.sampleCount >= this.SAMPLES) {
+              intervalDone = true;
+              clearInterval(this._sampleInterval);
+              this.calibEngine.finalizePoint(stepIdx);
+              if (ptEl) {
+                ptEl.style.transition = 'transform 0.2s ease, background 0.2s ease';
+                ptEl.style.transform = 'translate(-50%, -50%) scale(0.5)';
+                ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #22c55e 60%)'; // flash green = done
+                ptEl.style.boxShadow = '';
+                ptEl.classList.remove('active');
+                ptEl.classList.add('done');
+              }
+              // Brief visual confirmation before moving to next point
+              setTimeout(resolve, 250);
+            }
+          }, 50); // ~20 FPS sampling
+        }, freezeMs);
       }, settleMs);
     });
   }
@@ -1924,13 +2036,17 @@ class AccessEyeApp {
   /* ── GAZE CURSOR ────────────────────────────────────────── */
   _updateGazeCursor(px, py) {
     if (!this.gazeCursor) return;
+    // PRECISION-8: Clamp cursor pixels to screen bounds (even with relaxed mapGaze clamp)
+    const W = window.innerWidth, H = window.innerHeight;
+    const cpx = clamp(px, 0, W);
+    const cpy = clamp(py, 0, H);
     this.gazeCursor.style.display = 'block';
-    this.gazeCursor.style.left = `${px}px`;
-    this.gazeCursor.style.top  = `${py}px`;
+    this.gazeCursor.style.left = `${cpx}px`;
+    this.gazeCursor.style.top  = `${cpy}px`;
 
     // Track last screen position for intent timer and Phase 3
-    this._lastScreenX = px;
-    this._lastScreenY = py;
+    this._lastScreenX = cpx;
+    this._lastScreenY = cpy;
 
     // Update camera feed dot
     const videoEl = $('#demo-video');

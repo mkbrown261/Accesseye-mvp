@@ -357,12 +357,26 @@ class HybridGazeEngine {
     const fusedX = wIris  * irisSignal.x  + wHead * headSignal.x  + wPupil * pupilSignal.x;
     const fusedY = wIris  * irisSignal.y  + wHead * headSignal.y  + wPupil * pupilSignal.y;
 
+    // PRECISION-5: Store IRIS-ONLY signal separately for calibration.
+    // The fused signal (iris + head + pupil) adds noise during calibration:
+    // head-pose jitter and pupil-signal noise both shift the gaze estimate away
+    // from the true fixation point. During calibration the user's head is still,
+    // so the iris-only signal is CLEANER and maps more directly to screen position.
+    // CalibrationUI reads _irisOnlyGaze instead of rawGaze for maximum precision.
+    this._irisOnlyGaze = { x: irisSignal.x, y: irisSignal.y };
+
     this.rawGaze = { x: fusedX, y: fusedY };
 
     // ── Calibration mapping ──
     let screen;
     if (this.calibration.isCalibrated) {
-      const mapped = this.calibration.mapGaze(fusedX, fusedY);
+      // PRECISION-5: Use IRIS-ONLY signal as input to the calibration model.
+      // The model was trained on iris-only samples (CalibrationUI now uses _irisOnlyGaze).
+      // If we map the FUSED signal (iris+head+pupil) through a model trained on iris-only,
+      // the head/pupil components create a systematic offset (~2-4% of screen width).
+      // Using the same iris-only signal at inference time → model input matches training input.
+      // Head-pose compensation is still applied via the fused rawGaze for display purposes.
+      const mapped = this.calibration.mapGaze(irisSignal.x, irisSignal.y);
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
       // FIX D-2 + SCOPE-4: Phase 2 uncalibrated fallback.
@@ -1815,7 +1829,14 @@ class Phase2Orchestrator {
     this.app._updateMetrics(mp.fps || 30, Math.round(p2Latency), totalConf);
 
     // Sync Phase 1 gaze engine state so calibration UI works
-    this.app.gazeEngine.rawGaze    = gazePacket.raw    || biasFixed;
+    // PRECISION-5: Use _irisOnlyGaze for rawGaze (iris-only, pre-fusion, pre-filter).
+    // The calibration model is now trained on iris-only samples, so CalibrationUI
+    // must read the iris-only signal to get consistent samples.
+    const trueRaw = this.hybridGaze?._irisOnlyGaze
+      || this.hybridGaze?._trueRawGaze
+      || gazePacket.raw
+      || biasFixed;
+    this.app.gazeEngine.rawGaze    = trueRaw;
     this.app.gazeEngine.smoothGaze = biasFixed;
     this.app.gazeEngine.confidence = confScore.total;
 

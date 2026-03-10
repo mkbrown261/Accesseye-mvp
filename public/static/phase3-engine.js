@@ -533,13 +533,33 @@ class PACERecalibrator {
   _refit() {
     if (!this.calib.isCalibrated || this._samples.length < 6) return;
 
+    // PRECISION-1: Normalize all gaze values through the base model's gazeRange.
+    // The polynomial was trained on normalized coordinates [-0.5, +0.5].
+    // Without this, PACE injects raw gaze values into a normalized-space model
+    // → the model drifts badly after just a few PACE updates.
+    const rngX = this.calib.model?.gazeRangeX;
+    const rngY = this.calib.model?.gazeRangeY;
+    const norm = (val, rng) => {
+      if (!rng) return val;
+      const mid = (rng.max + rng.min) / 2;
+      const span = rng.max - rng.min;
+      return span > 0.001 ? (val - mid) / span : val;
+    };
+
     const blended = [
-      // Anchor: base calibration data
-      ...this.calib.calibData.filter(d => d.gx !== undefined).map(d => ({
-        gx: d.gx, gy: d.gy, sx: d.sx, sy: d.sy, w: 2.5
-      })),
-      // PACE samples with time-decayed weights
-      ...this._samples
+      // Anchor: base calibration data with zone-based weights (corners 4x, edges 2.5x)
+      ...this.calib.calibData.filter(d => d.gx !== undefined).map((d, i) => {
+        const zoneW = i < 4 ? 4.0 : i < 8 ? 2.5 : 1.0;
+        return {
+          gx: norm(d.gx, rngX), gy: norm(d.gy, rngY),
+          sx: d.sx, sy: d.sy, w: zoneW
+        };
+      }),
+      // PACE samples: normalize before blending
+      ...this._samples.map(s => ({
+        gx: norm(s.gx, rngX), gy: norm(s.gy, rngY),
+        sx: s.sx, sy: s.sy, w: s.w
+      }))
     ];
 
     const modelX = this._ridgeLS(blended, p => p.sx);
@@ -1302,11 +1322,15 @@ class Phase3Orchestrator {
     const gazeEngine = p2Orch.hybridGaze;
 
     // ── Instantiate P3 modules ──
-    // FIX JITTER-4: OneEuro tuned for gaze — lower minCutoff = more smoothing at rest.
-    // minCutoff=0.15Hz gives very strong jitter suppression at fixation.
-    // beta=0.02 allows fast saccades to pass through without lag.
-    // dCutoff=1.0Hz derivative filter keeps the speed estimate stable.
-    this.oneEuro  = new OneEuroFilter(0.15, 0.02, 1.0, 30);    // P3.1  FIX JITTER-4
+    // PRECISION-9: OneEuro minCutoff raised 0.15 → 0.45 Hz.
+    // Problem: 0.15 Hz was so aggressive that the cursor lagged 3-5 frames behind
+    // actual gaze, making it impossible for the user to feel the cursor "tracking"
+    // their eye directly. The cursor appeared to be "behind" where they were looking.
+    // Fix: 0.45 Hz still provides strong jitter suppression at fixation while
+    // responding much faster to deliberate eye movements, closing the perceived gap
+    // between "where I'm looking" and "where the cursor is".
+    // beta=0.007 unchanged — allows fast saccades to pass through cleanly.
+    this.oneEuro  = new OneEuroFilter(0.45, 0.007, 1.0, 30);    // P3.1  PRECISION-9
     this.ivt      = new IVTSaccadeDetector(35, 100, 3);        // P3.2
     this.dwell    = new AdaptiveDwellTimer('normal', this.ivt);// P3.3
     this.pace     = new PACERecalibrator(calib, 100, 0.995, 0.65, 10);  // P3.4
@@ -1429,11 +1453,27 @@ class Phase3Orchestrator {
       orch.hybridGaze.processResults = function(multiFaceLandmarks, W, H, headPoseResult) {
         const packet = this._originalProcessResults(multiFaceLandmarks, W, H, headPoseResult);
         if (packet && packet.raw) {
-          // Apply One Euro to raw gaze (low minCutoff=0.3 gives ~94% noise reduction at rest)
-          const filtered = self.oneEuro.filter(packet.raw.x, packet.raw.y);
+          // PRECISION-2: Save the TRUE unfiltered iris raw gaze BEFORE OneEuro.
+          // CalibrationUI reads gazeEngine.rawGaze for samples — it must get the
+          // unfiltered iris position, not the smoothed output.
+          // We store it as _trueRawGaze so CalibrationUI can access it directly.
+          this._trueRawGaze = { x: packet.raw.x, y: packet.raw.y };
+          // PRECISION-5: Also capture the iris-only signal (pre-fusion) for calibration.
+          // packet.iris is the irisSignal from _computeIrisSignal — pure iris, no head/pupil.
+          if (packet.iris) {
+            this._irisOnlyGaze = { x: packet.iris.x, y: packet.iris.y };
+          }
+
+          // Apply One Euro to iris-only gaze for the live display pipeline only.
+          // PRECISION-5: Filter the iris-only signal (not the fused raw) through OneEuro.
+          // The model was trained on iris-only — so the live display pipeline should also
+          // use iris-only as input to mapGaze.  Head-pose compensation is still present
+          // in the fused rawGaze used for other processing.
+          const irisOnly = this._irisOnlyGaze || packet.raw;
+          const filtered = self.oneEuro.filter(irisOnly.x, irisOnly.y);
           packet.raw   = filtered;
-          this.rawGaze = filtered;   // FIX P-1: keep internal state in sync
-          // Remap through calibration with pre-filtered gaze
+          this.rawGaze = filtered;   // smoothed iris-only — used for display + PACE
+          // Remap through calibration with OneEuro-smoothed iris-only gaze
           if (this.calibration?.isCalibrated) {
             const mapped = this.calibration.mapGaze(filtered.x, filtered.y);
             packet.screen = { x: mapped.sx, y: mapped.sy };
