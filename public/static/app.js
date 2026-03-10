@@ -125,28 +125,30 @@ class CalibrationEngine {
      * Mid-edge points (TLM/TRM/BLM/BRM) catch peripheral distortion
      * that the 5-pt model misses (~12% accuracy gain at edges).
      */
-    // FIX SCOPE-1: Move corners from 0.10/0.90 → 0.05/0.95 so the calibration
-    // model is trained on the true screen extremes. Previous 0.10 corners only
-    // covered 80% of screen width/height, so looking at a true screen edge was
-    // always extrapolating outside the training domain → scope felt too tight.
+    // EASE-1: 9-point grid — corners at 0.08/0.92 (reachable with eyes-only),
+    // 4 inner-ring points at 0.25/0.75, and center.
+    // WHY 9 not 13: The previous 13-point grid with corners at 0.05/0.95 forced
+    // extreme eye strain to the very screen edge — many users need small head
+    // movements to reach those points.  Head movement during calibration adds
+    // noise and instability.  Moving corners to 0.08/0.92 means ~90% of the
+    // screen is covered while remaining comfortably reachable with eyes alone.
+    // 9 points × 30 samples = ~25 seconds vs 13 × 50 = ~75 seconds.
+    // The degree-3 polynomial only needs 10 coefficients — 9 points is sufficient
+    // for a well-conditioned fit, and the padding + extrapolation handles the
+    // last 8% of screen edge without explicit corner samples there.
     this.CALIB_POINTS = [
-      // ── 4 corners (highest priority — structural anchors) ──
-      { sx: 0.05, sy: 0.05, label: 'Top-Left'        },
-      { sx: 0.95, sy: 0.05, label: 'Top-Right'       },
-      { sx: 0.05, sy: 0.95, label: 'Bottom-Left'     },
-      { sx: 0.95, sy: 0.95, label: 'Bottom-Right'    },
-      // ── 4 mid-edge points (peripheral accuracy, new in v3) ──
-      { sx: 0.50, sy: 0.05, label: 'Top-Center'      },
-      { sx: 0.50, sy: 0.95, label: 'Bottom-Center'   },
-      { sx: 0.05, sy: 0.50, label: 'Mid-Left'        },
-      { sx: 0.95, sy: 0.50, label: 'Mid-Right'       },
-      // ── 4 mid-quadrant interior points ──
-      { sx: 0.28, sy: 0.28, label: 'Inner-TL'        },
-      { sx: 0.72, sy: 0.28, label: 'Inner-TR'        },
-      { sx: 0.28, sy: 0.72, label: 'Inner-BL'        },
-      { sx: 0.72, sy: 0.72, label: 'Inner-BR'        },
+      // ── 4 corners — close enough to reach with eyes alone ──
+      { sx: 0.08, sy: 0.08, label: 'Top-Left'     },
+      { sx: 0.92, sy: 0.08, label: 'Top-Right'    },
+      { sx: 0.08, sy: 0.92, label: 'Bottom-Left'  },
+      { sx: 0.92, sy: 0.92, label: 'Bottom-Right' },
+      // ── 4 inner-ring points ──
+      { sx: 0.25, sy: 0.25, label: 'Inner-TL'     },
+      { sx: 0.75, sy: 0.25, label: 'Inner-TR'     },
+      { sx: 0.25, sy: 0.75, label: 'Inner-BL'     },
+      { sx: 0.75, sy: 0.75, label: 'Inner-BR'     },
       // ── Center ──
-      { sx: 0.50, sy: 0.50, label: 'Center'          }
+      { sx: 0.50, sy: 0.50, label: 'Center'       }
     ];
 
     this.calibData = [];          // [{sx, sy, gx, gy, samples[]}]
@@ -155,26 +157,23 @@ class CalibrationEngine {
     // FIX ACC-2: Increase samples per point 25→40 for more robust outlier removal.
     // With 40 samples we can trim 35% (14 samples) and still have 26 clean samples
     // per point, vs 25*20%=5 trimmed before (insufficient for outlier rejection).
-    this.SAMPLES_PER_POINT = 50;   // FIX EDGE-1: Increased 40→50 so 30% trim still keeps 35 clean samples
+    // EASE-1: 30 samples per point (was 50). With a 2-pass robust mean
+    // this is plenty — the extra 20 samples added time/fatigue without
+    // meaningfully improving accuracy once outliers are trimmed.
+    this.SAMPLES_PER_POINT = 30;
     this.RIDGE_LAMBDA      = 0.01;  // regularisation strength (λ)
-    this.MIN_POINTS_FOR_MODEL = 6;  // minimum calibration points to build model
+    this.MIN_POINTS_FOR_MODEL = 5;  // minimum calibration points to build model
 
-    // FIX EDGE-2: Per-point trim rates. Corner/edge points trim LESS (20%) so their
-    // extreme gaze readings aren't discarded. Interior points still trim 30%.
-    // Without this, the 35% global trim removes the very corner samples that
-    // define the outer extent of the eye's range — pulling the model inward.
-    this.CORNER_TRIM   = 0.20;  // 4 corners (idx 0-3): trim only 20% of samples
-    this.MIDEDGE_TRIM  = 0.25;  // 4 mid-edges (idx 4-7): trim 25%
-    this.INTERIOR_TRIM = 0.30;  // 4 inner + center (idx 8-12): trim 30%
+    // EASE-1: Uniform 20% trim — enough to remove blink/saccade outliers
+    // without discarding legitimate corner data.
+    this.CORNER_TRIM   = 0.20;
+    this.MIDEDGE_TRIM  = 0.20;
+    this.INTERIOR_TRIM = 0.20;
 
-    // FIX EDGE-3: Regression weights per point zone.
-    // Corners and mid-edges are structurally more important for the polynomial
-    // than interior points — they define the mapping at the extremes.
-    // Upweighting them forces the regression to fit edges precisely even if
-    // it means slightly worse fit at interior points.
-    this.CORNER_WEIGHT   = 4.0;  // corners get 4× weight
-    this.MIDEDGE_WEIGHT  = 2.5;  // mid-edges get 2.5×
-    this.INTERIOR_WEIGHT = 1.0;  // interior points baseline
+    // FIX EDGE-3: Regression weights — corners still weighted higher
+    this.CORNER_WEIGHT   = 4.0;
+    this.MIDEDGE_WEIGHT  = 2.0;
+    this.INTERIOR_WEIGHT = 1.0;
 
     // Event system (used to notify GazeEngine of calibration completion)
     this._callbacks = {};
@@ -216,17 +215,15 @@ class CalibrationEngine {
     return Math.max(0, 1 - dist / (sigma * 3));
   }
 
-  /* FIX EDGE-2: Return the trim fraction for a given point index */
+  /* EASE-1: Return trim fraction for a given point index (9-point grid) */
   _trimFraction(pointIdx) {
-    if (pointIdx < 4)  return this.CORNER_TRIM;    // corners
-    if (pointIdx < 8)  return this.MIDEDGE_TRIM;   // mid-edges
-    return this.INTERIOR_TRIM;                      // interior + center
+    if (pointIdx < 4)  return this.CORNER_TRIM;    // corners 0-3
+    return this.INTERIOR_TRIM;                      // inner ring + center
   }
 
-  /* FIX EDGE-3: Return the regression weight for a given point index */
+  /* EASE-1: Return regression weight for a given point index (9-point grid) */
   _pointWeight(pointIdx) {
     if (pointIdx < 4)  return this.CORNER_WEIGHT;
-    if (pointIdx < 8)  return this.MIDEDGE_WEIGHT;
     return this.INTERIOR_WEIGHT;
   }
 
@@ -1130,9 +1127,8 @@ class CalibrationUI {
     this.currentStep = -1;
     this.collecting = false;
     this.sampleCount = 0;
-    // FIX EDGE-1: Increased from 40 to 50 samples per point so corner points
-    // have enough data even after the reduced (20%) trim
-    this.SAMPLES = 50;
+    // EASE-1: 30 samples matches the new CalibrationEngine.SAMPLES_PER_POINT
+    this.SAMPLES = 30;
     this._onComplete = null;
     this._sampleInterval = null;
     this._arenaW = 0;   // set in _renderPoints after layout
@@ -1236,35 +1232,30 @@ class CalibrationUI {
     this.collecting = false;
 
     if (success) {
-      // FIX EDGE-7: Post-calibration residual check.
-      // Compute per-point error and log edge accuracy separately.
-      // If corner/edge errors are significantly worse than center, warn user.
+      // Post-calibration residual check — 9-point grid: 0-3 corners, 4+ interior
       const W = window.innerWidth, H = window.innerHeight;
       const residuals = this.calibEngine.getResiduals(W, H);
-      const cornerResiduals  = residuals.filter((_, i) => i < 4);
-      const edgeResiduals    = residuals.filter((_, i) => i >= 4 && i < 8);
-      const interiorResiduals = residuals.filter((_, i) => i >= 8);
+      const cornerResiduals   = residuals.filter((_, i) => i < 4);
+      const interiorResiduals = residuals.filter((_, i) => i >= 4);
 
       const avg = arr => arr.length ? arr.reduce((s,r) => s + r.errorPx, 0) / arr.length : 0;
       const cornerErr   = avg(cornerResiduals).toFixed(0);
-      const edgeErr     = avg(edgeResiduals).toFixed(0);
       const interiorErr = avg(interiorResiduals).toFixed(0);
       const totalErr    = avg(residuals).toFixed(0);
 
-      this.log.add(`Calibration residuals — corners: ${cornerErr}px, edges: ${edgeErr}px, interior: ${interiorErr}px, total: ${totalErr}px`, 'info');
+      this.log.add(`Calibration done — corners: ${cornerErr}px, interior: ${interiorErr}px, total: ${totalErr}px avg error`, 'info');
 
       const cornerErrNum = parseFloat(cornerErr);
       if (cornerErrNum > 80) {
         this.toast.show(
-          'Calibration Complete — Edge accuracy low',
-          `Corner error: ${cornerErr}px. For best results: sit closer, look all the way to screen corners, recalibrate.`,
+          'Calibration Complete — check corners',
+          `Corner error: ${cornerErr}px. Try looking a little further toward the corner dots, then recalibrate.`,
           'warn', 'fas fa-exclamation-triangle'
         );
-        this.log.add(`⚠ Corner error ${cornerErr}px exceeds 80px. Try: sit 50-70cm away, look to true screen corners, recalibrate.`, 'warn');
       } else if (cornerErrNum > 50) {
-        this.toast.show('Calibration Complete ✓', `Accuracy: ${totalErr}px avg. Good — edge points slightly off, should still work well.`, 'success', 'fas fa-sliders-h');
+        this.toast.show('Calibration Complete ✓', `${totalErr}px avg error — good. Recalibrate if corners feel off.`, 'success', 'fas fa-sliders-h');
       } else {
-        this.toast.show('Calibration Complete ✓', `Excellent accuracy: ${totalErr}px average error across all points.`, 'success', 'fas fa-sliders-h');
+        this.toast.show('Calibration Complete ✓', `${totalErr}px avg error — excellent precision!`, 'success', 'fas fa-sliders-h');
       }
 
       if (this._onComplete) this._onComplete(true);
@@ -1286,23 +1277,19 @@ class CalibrationUI {
       const ptEl = $(`#calib-pt-${stepIdx}`);
       if (ptEl) ptEl.classList.add('active');
 
-      // FIX EDGE-6: Point zone labels for clearer user guidance
-      const ptLabel = this.calibEngine.CALIB_POINTS[stepIdx].label;
+      // EASE-1: 9-point grid — corners (0-3), inner ring (4-7), center (8)
       const isCorner  = stepIdx < 4;
-      const isMidEdge = stepIdx >= 4 && stepIdx < 8;
-      this.log.add(`Point ${stepIdx + 1}: ${ptLabel} — ${isCorner ? 'look to the CORNER' : isMidEdge ? 'look to the EDGE' : 'look at center area'}`, 'info');
+      const isMidEdge = false; // no mid-edges in 9-point grid
+      this.log.add(`Point ${stepIdx + 1}: ${ptLabel} — ${isCorner ? 'look toward the CORNER' : stepIdx < 8 ? 'look at this area' : 'look at CENTER'}`, 'info');
 
       // Update live tip bar in overlay
       const tipBar = $('#calib-tip-bar');
       if (tipBar) {
         if (isCorner) {
-          tipBar.textContent = `⚠ CORNER point — look all the way to the CORNER of your screen. Keep head still, move only your eyes.`;
+          tipBar.textContent = `⚠ CORNER — move your eyes toward the corner. Small natural head movement is OK.`;
           tipBar.style.color = '#fbbf24';
-        } else if (isMidEdge) {
-          tipBar.textContent = `📍 EDGE point — look all the way to the screen edge. Eyes fully to the side/top/bottom.`;
-          tipBar.style.color = '#60a5fa';
         } else {
-          tipBar.textContent = `✓ Interior point — look at the circle. Keep your head still.`;
+          tipBar.textContent = `✓ Look at the dot. Keep your head relaxed.`;
           tipBar.style.color = '#4ade80';
         }
       }
@@ -1323,7 +1310,7 @@ class CalibrationUI {
       // WHY: A stable, non-moving target during sampling is the single biggest
       // factor for landing the cursor on the dot. Movement = tracking saccades ≠ fixation.
       if (ptEl) {
-        const startScale = isCorner ? 2.0 : isMidEdge ? 1.6 : 1.4;
+        const startScale = isCorner ? 1.8 : 1.4;
         ptEl.style.transform = `translate(-50%, -50%) scale(${startScale})`;
         ptEl.style.transition = 'transform 0.4s ease-out';
         ptEl.style.boxShadow = isCorner
@@ -1331,17 +1318,16 @@ class CalibrationUI {
           : '0 0 0 7px rgba(0,212,255,0.28)';
       }
 
-      // FIX EDGE-6: Much longer settling delay for corners (2500ms) and edges (1800ms).
-      // Corners require the most head+eye movement and need extra settle time.
-      // Old 1500ms corners / 1000ms others was too short — gaze hadn't stabilized.
-      const settleMs = isCorner ? 2500 : isMidEdge ? 1800 : 1200;
-      // PRECISION-6: Extra freeze time AFTER animation stops, BEFORE sampling starts.
-      // This gives the eye a moment to land precisely on the now-stable target.
-      const freezeMs = isCorner ? 450 : isMidEdge ? 300 : 200;
+      // EASE-1: Shorter settle times — corners 1200ms, interior 700ms.
+      // The old 2500ms corner settle caused fatigue and wasn't needed once
+      // we switched to a 9-point grid with reachable corners.
+      const settleMs = isCorner ? 1200 : 700;
+      // PRECISION-6: Short freeze before sampling so gaze lands precisely.
+      const freezeMs = isCorner ? 300 : 150;
 
       setTimeout(() => {
         // Phase B: snap to fixed sample size + freeze
-        const sampleScale = isCorner ? 1.3 : isMidEdge ? 1.1 : 1.0;
+        const sampleScale = isCorner ? 1.3 : 1.0;
         if (ptEl) {
           ptEl.style.transition = 'transform 0.15s ease-out, box-shadow 0.15s ease-out';
           ptEl.style.transform = `translate(-50%, -50%) scale(${sampleScale})`;

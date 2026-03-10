@@ -632,10 +632,10 @@ class TemporalStabilizer {
       : 0;
     this._velX = p2.lerp(this._velX, Math.abs(kx - (this._prevX??kx)), 0.3);
     this._velY = p2.lerp(this._velY, Math.abs(ky - (this._prevY??ky)), 0.3);
-    // FIX JITTER-3: Raised lower alpha 0.15→0.12 (more smoothing at rest),
-    // max alpha 0.65→0.60 (slightly less reactive on fast moves = smoother)
+    // EASE-2: at-rest alpha 0.18 (was 0.12), max 0.70 (was 0.60).
+    // Higher floor = cursor feels live and responsive even at slow movements.
     const velScore = p2.clamp((velMag - 0.008) / 0.042, 0, 1);
-    const alpha = p2.lerp(0.12, 0.60, velScore);
+    const alpha = p2.lerp(0.18, 0.70, velScore);
 
     if (this._ex === null) { this._ex = kx; this._ey = ky; }
     else {
@@ -1579,14 +1579,13 @@ class Phase2Orchestrator {
     this.camera     = new HighFPSCameraController();
     this.headPose   = new HeadPoseEstimator();
     this.hybridGaze = new HybridGazeEngine(app.calibration, this.headPose);
-    // FIX JITTER-1: TemporalStabilizer tuned for fluidity.
-    // kalmanR: 0.008 (was 0.005) — smoother at rest, less jitter on tiny movements
-    // emaAlpha: 0.18 (was 0.22) — heavier smoothing, maintains flow on saccades
-    // windowSize: 6 (was 5) — extra frame for median helps with random spikes
-    this.stabilizer = new TemporalStabilizer({ kalmanR: 0.008, emaAlpha: 0.18, windowSize: 6 });
-    // FIX JITTER-2: MicroSaccadeFilter radius 18→14px. 18px was grouping
-    // nearby targets together. 14px still suppresses micro-tremor.
-    this.saccade    = new MicroSaccadeFilter(14, 160);
+    // EASE-2: TemporalStabilizer tuned for responsiveness over smoothness.
+    // kalmanR: 0.005 (lowered from 0.008) — slightly more responsive
+    // emaAlpha: 0.22 (raised from 0.18) — faster at-rest response
+    // windowSize: 5 (reduced from 6) — smaller window = faster tracking
+    this.stabilizer = new TemporalStabilizer({ kalmanR: 0.005, emaAlpha: 0.22, windowSize: 5 });
+    // EASE-2: MicroSaccadeFilter radius 18px, duration 140ms — balanced
+    this.saccade    = new MicroSaccadeFilter(18, 140);
     this.confidence = new GazeConfidenceScorer(null); // videoEl assigned on camera start
     this.dynCalib   = new DynamicCalibrationEngine(app.calibration);
     this.intent     = new IntentPredictionEngine('/api/intent');

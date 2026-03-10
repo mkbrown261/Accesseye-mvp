@@ -1336,7 +1336,13 @@ class Phase3Orchestrator {
     this.pace     = new PACERecalibrator(calib, 100, 0.995, 0.65, 10);  // P3.4
     this.pursuit  = new SmoothPursuitCalibrator(calib, gazeEngine);     // P3.5
     this.validator= new CalibrationValidator(calib, gazeEngine, 80);    // P3.6
-    this.headFree = new HeadFreeStabilizer(0.15, 0.85, 40);             // P3.7
+    // EASE-2: HeadFreeStabilizer tuned for tolerating natural head movement.
+    // compScale 0.85 → 0.60: less aggressive compensation so small head movements
+    // don't cause the cursor to over-correct and jitter.
+    // emaAlpha 0.15 → 0.25: faster face-center tracking so the reference updates
+    // quickly when the user naturally adjusts position.
+    // maxDispPx 40 → 60: wider tolerance before confidence penalty kicks in.
+    this.headFree = new HeadFreeStabilizer(0.25, 0.60, 60);             // P3.7  EASE-2
 
     this.active   = false;
     this._frameCounter = 0;
