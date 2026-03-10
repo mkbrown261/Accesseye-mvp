@@ -714,7 +714,7 @@ app.get('/', (c) => {
           <div class="calibration-overlay" id="calibration-overlay" style="display:none">
             <div class="calib-header">
               <h2><i class="fas fa-sliders-h"></i> Eye Tracking Calibration</h2>
-              <p id="calib-instruction-text">Look at each numbered dot. <strong>Move only your eyes — small natural head movement is fine for corners.</strong></p>
+              <p id="calib-instruction-text">Look at each dot and <strong>hold perfectly still</strong> — the dot turns green and advances automatically when your gaze is stable.</p>
               <div class="calib-progress-bar"><div class="calib-progress-fill" id="calib-progress-fill"></div></div>
               <span id="calib-step-label">Step 0 / 9</span>
             </div>

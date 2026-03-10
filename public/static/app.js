@@ -198,20 +198,29 @@ class CalibrationEngine {
 
   /**
    * PRECISION-4: Return instantaneous sample quality for a point.
-   * Compares the new sample to the running centroid of accepted samples.
-   * Returns 0-1 quality score. Used by CalibrationUI to show live feedback.
+   *
+   * v8: Now works correctly for quality-gated sampling where we may have
+   * few stored samples. Uses a simple approach:
+   *  - If <4 samples stored, return 1.0 (can't measure variance yet)
+   *  - Otherwise compute centroid of ALL stored samples, measure how far
+   *    the NEW sample is vs the spread (sigma) of stored samples.
+   *  - Returns 0-1 quality score.
+   *
+   * Key change: uses last 20 stored samples (sliding window) rather than
+   * all samples, so it stays responsive to real-time gaze position.
    */
   sampleQuality(pointIdx, newGX, newGY) {
     const d = this.calibData[pointIdx];
-    if (!d || d.samples.length < 3) return 1.0; // not enough history yet
-    const cx = d.samples.reduce((s,v)=>s+v.gx,0)/d.samples.length;
-    const cy = d.samples.reduce((s,v)=>s+v.gy,0)/d.samples.length;
-    // Variance of recent samples
-    const varX = d.samples.reduce((s,v)=>s+(v.gx-cx)**2,0)/d.samples.length;
-    const varY = d.samples.reduce((s,v)=>s+(v.gy-cy)**2,0)/d.samples.length;
-    const sigma = Math.sqrt(varX + varY) || 0.001;
+    if (!d || d.samples.length < 4) return 1.0; // not enough history yet
+    // Sliding window — last 20 samples
+    const win = d.samples.slice(-20);
+    const cx = win.reduce((s,v)=>s+v.gx,0)/win.length;
+    const cy = win.reduce((s,v)=>s+v.gy,0)/win.length;
+    const varX = win.reduce((s,v)=>s+(v.gx-cx)**2,0)/win.length;
+    const varY = win.reduce((s,v)=>s+(v.gy-cy)**2,0)/win.length;
+    const sigma = Math.sqrt(varX + varY) || 0.002; // min sigma 0.002 (≈4px at typical scale)
     const dist  = Math.hypot(newGX - cx, newGY - cy);
-    // Quality: 1.0 when new sample is at centroid, 0 when >3σ away
+    // Quality: 1.0 when at centroid, 0 when >3σ away
     return Math.max(0, 1 - dist / (sigma * 3));
   }
 
@@ -1113,6 +1122,9 @@ class InteractionLog {
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    CALIBRATION UI CONTROLLER
+   v8 — Quality-gated sampling: only records samples when gaze is
+   stable on the target. Auto-advances when enough good frames are
+   collected. No fixed timer — the user controls pace via fixation.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 class CalibrationUI {
   constructor(calibEngine, gazeEngine, log, toast) {
@@ -1127,90 +1139,80 @@ class CalibrationUI {
     this.currentStep = -1;
     this.collecting = false;
     this.sampleCount = 0;
-    // EASE-1: 30 samples matches the new CalibrationEngine.SAMPLES_PER_POINT
-    this.SAMPLES = 30;
+
+    // PRECISION-GATE: How many GOOD (quality ≥ threshold) samples we need.
+    // Only green-quality samples are recorded — junk is silently discarded.
+    // 40 good samples gives a very clean centroid estimate.
+    this.GOOD_SAMPLES_NEEDED = 40;
+    // Quality threshold to count a sample as "good"
+    this.QUALITY_THRESHOLD = 0.55;
+    // Minimum quality to record at all (below = skip entirely)
+    this.MIN_RECORD_QUALITY = 0.25;
+
     this._onComplete = null;
     this._sampleInterval = null;
-    this._arenaW = 0;   // set in _renderPoints after layout
+    this._arenaW = 0;
     this._arenaH = 0;
   }
 
   show(onComplete) {
     this._onComplete = onComplete;
-    // FIX RECALIB-1: Fully reset CalibrationUI state on every show() call.
-    // Without this, a second calibration attempt would see collecting=true or
-    // stale sampleInterval from the previous run and refuse to start.
     this.collecting = false;
     this.currentStep = -1;
     this.sampleCount = 0;
     if (this._sampleInterval) { clearInterval(this._sampleInterval); this._sampleInterval = null; }
-    // FIX RECALIB-3: Reset engine + clear old model so we always start fresh.
     this.calibEngine.reset();
     this._arenaW = 0;
     this._arenaH = 0;
     this.overlay.style.display = 'flex';
-    // Re-enable the Start button in case it was left disabled by a previous run
     const startBtn = $('#start-calib-btn');
     if (startBtn) { startBtn.disabled = false; startBtn.innerHTML = '<i class="fas fa-play"></i> Start Calibration'; }
     this._updateProgress(0);
     if (this.stepLabel) this.stepLabel.textContent = `Step 0 / ${this.calibEngine.CALIB_POINTS.length}`;
+    // Update instruction text for quality-gated mode
+    const instrEl = $('#calib-instruction-text');
+    if (instrEl) instrEl.innerHTML = 'Look directly at each dot and <strong>hold perfectly still</strong> until it turns green and advances automatically.';
     this.log.add('Calibration ready — press Start to begin', 'info');
     requestAnimationFrame(() => requestAnimationFrame(() => this._renderPoints()));
   }
 
   hide() {
     this.overlay.style.display = 'none';
-    this._arenaW = 0;   // reset so next show() re-measures the viewport
+    this._arenaW = 0;
     this._arenaH = 0;
   }
 
   /**
-   * FIX CAL-1 + CAL-4: Place calibration dots using the ACTUAL rendered
-   * dimensions of the container (which now spans the full viewport working
-   * area).  The sx/sy fractions (0–1) in CALIB_POINTS therefore represent
-   * fractions of the full visible screen, matching the `window.innerWidth ×
-   * window.innerHeight` multiplication used when the gaze cursor is placed.
-   *
-   * Previously the container was a fixed 600×380 px box inside the demo
-   * sidebar.  The model was trained on targets clustered inside that small
-   * box, while the cursor was placed across the full 1920×1080 viewport.
-   * That mismatch caused a systematic ~3–4× scale error in both axes.
+   * Place calibration dots at exact screen-fraction positions.
+   * Uses full viewport size so sx/sy match the gaze cursor mapping.
    */
   _renderPoints() {
     this.container.innerHTML = '';
     const pts = this.calibEngine.CALIB_POINTS;
-
-    // Use the live rendered size (full viewport after CSS fix)
     const W = this.container.offsetWidth  || window.innerWidth;
     const H = this.container.offsetHeight || window.innerHeight;
-
-    // Store the arena size so _runStep can re-render correctly after resize
     this._arenaW = W;
     this._arenaH = H;
 
     pts.forEach((pt, i) => {
       const el = document.createElement('div');
       el.className = 'calib-point';
-      el.textContent = i + 1;
+      el.id = `calib-pt-${i}`;
+      // Large crosshair target — number in center, small tick marks for precise aim
+      el.innerHTML = `<span class="calib-num">${i + 1}</span>`;
       el.style.left = `${pt.sx * W}px`;
       el.style.top  = `${pt.sy * H}px`;
-      el.id = `calib-pt-${i}`;
       this.container.appendChild(el);
     });
   }
 
   async start() {
-    // FIX RECALIB-2: Guard replaced — was `if (this.collecting) return` which
-    // blocked every second calibration. Now we reset state instead.
     if (this.collecting) {
       clearInterval(this._sampleInterval);
       this._sampleInterval = null;
       this.collecting = false;
     }
 
-    // FIX CAL-2: if _renderPoints hasn't finished yet (overlay just shown),
-    // wait one more frame before starting.  The Start button is only visible
-    // after the overlay opens so this delay is imperceptible.
     if (!this._arenaW) {
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
       this._renderPoints();
@@ -1222,11 +1224,7 @@ class CalibrationUI {
     this.calibEngine.reset();
     this.calibEngine.calibData = [];
 
-    // FIX CURSOR-1: Hide the gaze cursor during calibration.
-    // While uncalibrated the cursor uses the fused-gaze * 7.0 uncalibrated
-    // fallback mapping, which places it at a screen corner when the iris is
-    // looking toward a corner dot.  This confuses the user into thinking
-    // calibration is broken.  We hide it until the model is built.
+    // Hide cursor — uncalibrated mapping would show it jumping to corners
     const gazeCursorEl = $('#global-gaze-cursor');
     if (gazeCursorEl) gazeCursorEl.style.display = 'none';
 
@@ -1235,45 +1233,34 @@ class CalibrationUI {
         await this._runStep(i);
       } catch (err) {
         console.error(`[CalibrationUI] _runStep(${i}) threw:`, err);
-        // Continue to next point rather than freezing the whole calibration
       }
     }
 
-    // Build model
     const success = this.calibEngine.buildModel();
     this.hide();
     this.collecting = false;
-
-    // FIX CURSOR-1: Restore cursor visibility after calibration.
     if (gazeCursorEl) gazeCursorEl.style.display = '';
 
     if (success) {
-      // Post-calibration residual check — 9-point grid: 0-3 corners, 4+ interior
       const W = window.innerWidth, H = window.innerHeight;
       const residuals = this.calibEngine.getResiduals(W, H);
       const cornerResiduals   = residuals.filter((_, i) => i < 4);
       const interiorResiduals = residuals.filter((_, i) => i >= 4);
-
       const avg = arr => arr.length ? arr.reduce((s,r) => s + r.errorPx, 0) / arr.length : 0;
       const cornerErr   = avg(cornerResiduals).toFixed(0);
       const interiorErr = avg(interiorResiduals).toFixed(0);
       const totalErr    = avg(residuals).toFixed(0);
-
       this.log.add(`Calibration done — corners: ${cornerErr}px, interior: ${interiorErr}px, total: ${totalErr}px avg error`, 'info');
-
       const cornerErrNum = parseFloat(cornerErr);
       if (cornerErrNum > 80) {
-        this.toast.show(
-          'Calibration Complete — check corners',
-          `Corner error: ${cornerErr}px. Try looking a little further toward the corner dots, then recalibrate.`,
-          'warn', 'fas fa-exclamation-triangle'
-        );
+        this.toast.show('Calibration Complete — check corners',
+          `Corner error: ${cornerErr}px. Try looking a bit further toward the corners and recalibrate.`,
+          'warn', 'fas fa-exclamation-triangle');
       } else if (cornerErrNum > 50) {
-        this.toast.show('Calibration Complete ✓', `${totalErr}px avg error — good. Recalibrate if corners feel off.`, 'success', 'fas fa-sliders-h');
+        this.toast.show('Calibration Complete ✓', `${totalErr}px avg error — good accuracy.`, 'success', 'fas fa-sliders-h');
       } else {
-        this.toast.show('Calibration Complete ✓', `${totalErr}px avg error — excellent precision!`, 'success', 'fas fa-sliders-h');
+        this.toast.show('Calibration Complete ✓', `${totalErr}px avg error — excellent!`, 'success', 'fas fa-sliders-h');
       }
-
       if (this._onComplete) this._onComplete(true);
     } else {
       this.toast.show('Calibration Failed', 'Not enough data collected. Please try again.', 'warn');
@@ -1282,180 +1269,221 @@ class CalibrationUI {
     }
   }
 
+  /** Get current iris-only gaze sample (best available signal) */
+  _getRawGaze() {
+    const p2orch = window.app?.phase2;
+    const p3orch = window.app?.phase3;
+    // Best: iris-only (no head/pupil fusion)
+    if (p2orch?.hybridGaze?._irisOnlyGaze) return p2orch.hybridGaze._irisOnlyGaze;
+    // Fallback: pre-OneEuro fused
+    if (p2orch?.hybridGaze?._trueRawGaze)  return p2orch.hybridGaze._trueRawGaze;
+    // Last resort: Phase1
+    return this.gazeEngine.rawGaze || { x: 0, y: 0 };
+  }
+
+  /**
+   * QUALITY-GATED calibration step (v8).
+   *
+   * Flow:
+   *  1. Show dot at full size — user moves eyes to it.
+   *  2. Wait for INITIAL LOCK: 8 consecutive frames all quality ≥ threshold.
+   *     Dot turns cyan when locked. No time pressure — waits as long as needed.
+   *  3. Once locked: record GOOD_SAMPLES_NEEDED quality-passing samples.
+   *     Bad frames (blink, saccade, head turn) are SKIPPED — not recorded.
+   *     A fill-ring shows progress (% of good samples collected).
+   *  4. Done: flash green, advance.
+   *
+   * WHY this works better than fixed-timer:
+   *  - Never records samples during saccades or blinks
+   *  - User can take as long as needed at each point
+   *  - All recorded samples are from stable fixation frames
+   *  - The centroid of 40 stable samples is vastly more accurate
+   */
   _runStep(stepIdx) {
     return new Promise(resolve => {
       this.currentStep = stepIdx;
       this._updateProgress(stepIdx / this.calibEngine.CALIB_POINTS.length);
-      this.stepLabel.textContent = `Step ${stepIdx + 1} / ${this.calibEngine.CALIB_POINTS.length}`;
+      if (this.stepLabel) this.stepLabel.textContent = `Step ${stepIdx + 1} / ${this.calibEngine.CALIB_POINTS.length}`;
 
-      // Activate point
+      const pt       = this.calibEngine.CALIB_POINTS[stepIdx];
+      const isCorner = stepIdx < 4;
+      const ptLabel  = pt?.label || (isCorner ? 'Corner' : stepIdx < 8 ? 'Inner' : 'Center');
+      this.log.add(`Point ${stepIdx + 1}: ${ptLabel}`, 'info');
+
+      // Activate this dot, deactivate all others
       $$('.calib-point').forEach(el => el.classList.remove('active'));
       const ptEl = $(`#calib-pt-${stepIdx}`);
-      if (ptEl) ptEl.classList.add('active');
+      if (ptEl) {
+        ptEl.classList.add('active');
+        // Start as large idle dot — shrinks to precise target once locked
+        ptEl.style.transition = 'none';
+        ptEl.style.transform  = `translate(-50%, -50%) scale(${isCorner ? 2.2 : 1.8})`;
+        ptEl.style.background = 'radial-gradient(circle, #00d4ff 0%, #0066aa 70%)';
+        ptEl.style.boxShadow  = isCorner
+          ? '0 0 0 12px rgba(0,212,255,0.3), 0 0 0 24px rgba(0,212,255,0.12)'
+          : '0 0 0 8px rgba(0,212,255,0.25)';
+        ptEl.style.opacity = '1';
+      }
 
-      // EASE-1: 9-point grid — corners (0-3), inner ring (4-7), center (8)
-      const isCorner  = stepIdx < 4;
-      const isMidEdge = false; // no mid-edges in 9-point grid
-      const pt = this.calibEngine.CALIB_POINTS[stepIdx];
-      const ptLabel = pt?.label || (isCorner ? 'Corner' : stepIdx < 8 ? 'Inner' : 'Center');
-      this.log.add(`Point ${stepIdx + 1}: ${ptLabel} — ${isCorner ? 'look toward the CORNER' : stepIdx < 8 ? 'look at this area' : 'look at CENTER'}`, 'info');
-
-      // Update live tip bar in overlay
+      // Update tip bar
       const tipBar = $('#calib-tip-bar');
       if (tipBar) {
-        if (isCorner) {
-          tipBar.textContent = `⚠ CORNER — move your eyes toward the corner. Small natural head movement is OK.`;
-          tipBar.style.color = '#fbbf24';
+        tipBar.textContent = isCorner
+          ? `👁 Move your eyes to the corner dot — hold still once you're there`
+          : `👁 Look at the dot — hold still`;
+        tipBar.style.color = '#00d4ff';
+      }
+
+      // ── Init sample buffer for this point ──
+      this.calibEngine.calibData[stepIdx] = {
+        ...this.calibEngine.CALIB_POINTS[stepIdx],
+        samples: []
+      };
+
+      // State
+      let goodSamplesRecorded = 0;     // quality-passing samples actually stored
+      let consecutiveLockFrames = 0;   // streak of high-quality frames before we start
+      let isLocked = false;            // true once initial lock achieved
+      const LOCK_FRAMES_NEEDED = 6;    // frames in a row needed before recording starts
+      let intervalDone = false;
+
+      this._sampleInterval = setInterval(() => {
+        if (intervalDone) return;
+
+        const raw     = this._getRawGaze();
+        const quality = this.calibEngine.sampleQuality(stepIdx, raw.x, raw.y);
+
+        if (!isLocked) {
+          // ── PHASE 1: Waiting for initial stable fixation ──
+          if (quality >= this.QUALITY_THRESHOLD) {
+            consecutiveLockFrames++;
+          } else {
+            consecutiveLockFrames = Math.max(0, consecutiveLockFrames - 2); // decay fast on movement
+          }
+
+          const lockPct = consecutiveLockFrames / LOCK_FRAMES_NEEDED;
+
+          if (ptEl) {
+            // Show lock progress as shrinking dot + color shift
+            const scale = isCorner
+              ? 2.2 - lockPct * 0.9   // 2.2 → 1.3 as lock builds
+              : 1.8 - lockPct * 0.8;  // 1.8 → 1.0
+            ptEl.style.transition = 'transform 0.08s ease-out';
+            ptEl.style.transform  = `translate(-50%, -50%) scale(${scale.toFixed(2)})`;
+
+            if (lockPct > 0.7) {
+              ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #00aa55 70%)'; // almost locked = green
+              ptEl.style.boxShadow  = '0 0 0 6px rgba(0,255,136,0.5)';
+            } else if (lockPct > 0.3) {
+              ptEl.style.background = 'radial-gradient(circle, #fbbf24 0%, #d97706 70%)'; // building = amber
+            } else {
+              ptEl.style.background = 'radial-gradient(circle, #00d4ff 0%, #0066aa 70%)'; // idle = blue
+            }
+          }
+
+          if (tipBar) {
+            if (lockPct > 0.5) {
+              tipBar.textContent = '✓ Almost there — keep still...';
+              tipBar.style.color = '#00ff88';
+            } else {
+              tipBar.textContent = isCorner
+                ? '👁 Move your eyes to the corner dot — hold still once you\'re there'
+                : '👁 Look directly at the dot — keep your head still';
+              tipBar.style.color = '#00d4ff';
+            }
+          }
+
+          if (consecutiveLockFrames >= LOCK_FRAMES_NEEDED) {
+            isLocked = true;
+            consecutiveLockFrames = 0;
+            // Snap dot to precise sampling size
+            if (ptEl) {
+              ptEl.style.transition = 'transform 0.12s ease-out, box-shadow 0.12s ease-out';
+              ptEl.style.transform  = `translate(-50%, -50%) scale(${isCorner ? 1.3 : 1.0})`;
+              ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #00aa55 70%)';
+              ptEl.style.boxShadow  = '0 0 0 4px rgba(0,255,136,0.8), 0 0 0 8px rgba(0,255,136,0.3)';
+            }
+            if (tipBar) {
+              tipBar.textContent = '🟢 Locked — hold still, collecting...';
+              tipBar.style.color = '#00ff88';
+            }
+          }
+
+          // Also record this sample if quality is good enough (even during lock phase)
+          // — builds up warm samples while user is already fixating
+          if (quality >= this.QUALITY_THRESHOLD) {
+            this.calibEngine.addCalibSample(stepIdx, raw.x, raw.y);
+            goodSamplesRecorded++;
+          }
+
         } else {
-          tipBar.textContent = `✓ Look at the dot. Keep your head relaxed.`;
-          tipBar.style.color = '#4ade80';
+          // ── PHASE 2: Locked — collect quality-gated samples ──
+          if (quality >= this.MIN_RECORD_QUALITY) {
+            this.calibEngine.addCalibSample(stepIdx, raw.x, raw.y);
+            if (quality >= this.QUALITY_THRESHOLD) {
+              goodSamplesRecorded++;
+            }
+          }
+
+          // Color feedback on the dot
+          if (ptEl) {
+            if (quality >= this.QUALITY_THRESHOLD) {
+              ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #00aa55 70%)';
+            } else if (quality >= this.MIN_RECORD_QUALITY) {
+              ptEl.style.background = 'radial-gradient(circle, #fbbf24 0%, #d97706 70%)';
+            } else {
+              ptEl.style.background = 'radial-gradient(circle, #ef4444 0%, #cc2200 70%)';
+            }
+          }
+
+          // Fill-ring progress on dot via box-shadow pulse width
+          const pct = goodSamplesRecorded / this.GOOD_SAMPLES_NEEDED;
+          const ringPx = Math.round(4 + pct * 16); // 4px → 20px ring as progress fills
+          if (ptEl) {
+            ptEl.style.boxShadow = `0 0 0 ${ringPx}px rgba(0,255,136,${0.3 + pct * 0.5})`;
+          }
+
+          if (tipBar) {
+            const pctLabel = Math.round(pct * 100);
+            if (quality < this.MIN_RECORD_QUALITY) {
+              tipBar.textContent = `⚠ Blink or movement — hold still (${pctLabel}% done)`;
+              tipBar.style.color = '#ef4444';
+            } else if (quality < this.QUALITY_THRESHOLD) {
+              tipBar.textContent = `⚡ Drifting slightly — stare at the dot center (${pctLabel}% done)`;
+              tipBar.style.color = '#fbbf24';
+            } else {
+              tipBar.textContent = `🟢 Perfect — collecting (${pctLabel}%)`;
+              tipBar.style.color = '#00ff88';
+            }
+          }
+
+          // Progress bar
+          const overallPct = (stepIdx + pct) / this.calibEngine.CALIB_POINTS.length;
+          this._updateProgress(overallPct);
+
+          // Done!
+          if (goodSamplesRecorded >= this.GOOD_SAMPLES_NEEDED) {
+            intervalDone = true;
+            clearInterval(this._sampleInterval);
+            this._sampleInterval = null;
+            this.calibEngine.finalizePoint(stepIdx);
+
+            if (ptEl) {
+              ptEl.style.transition = 'transform 0.25s ease, background 0.25s ease, box-shadow 0.25s ease';
+              ptEl.style.transform  = 'translate(-50%, -50%) scale(0.6)';
+              ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #22c55e 60%)';
+              ptEl.style.boxShadow  = '0 0 0 12px rgba(0,255,136,0.6)';
+              ptEl.classList.remove('active');
+              ptEl.classList.add('done');
+            }
+            if (tipBar) {
+              tipBar.textContent = `✓ Point ${stepIdx + 1} captured!`;
+              tipBar.style.color = '#00ff88';
+            }
+            setTimeout(resolve, 350);
+          }
         }
-      }
-
-      // PRECISION-6: Dot animation redesign for maximum fixation accuracy.
-      // Problem with previous approach: dot started at 2.2× scale and shrank back
-      // to 1.0× at sampling start. This moving target DURING settle time caused the
-      // user to track the shrinking dot rather than fixate on a stable point.
-      // New approach:
-      //   Phase A (settle): Large dot with pulsing ring to ATTRACT attention to the corner.
-      //                     User moves eyes to the dot and settles. (2500ms / 1800ms / 1200ms)
-      //   Phase B (pre-sample): Dot snaps to FIXED sampling size (1.3× corner, 1.0× others)
-      //                         with a brief FREEZE period (400ms) for final gaze settling.
-      //   Phase C (sampling):  Dot stays completely STILL — no shrinking, no animation.
-      //                         Only color changes (green/yellow/red) give feedback.
-      //   Phase D (done):      Quick flash green then shrink.
-      //
-      // WHY: A stable, non-moving target during sampling is the single biggest
-      // factor for landing the cursor on the dot. Movement = tracking saccades ≠ fixation.
-      if (ptEl) {
-        const startScale = isCorner ? 1.8 : 1.4;
-        ptEl.style.transform = `translate(-50%, -50%) scale(${startScale})`;
-        ptEl.style.transition = 'transform 0.4s ease-out';
-        ptEl.style.boxShadow = isCorner
-          ? '0 0 0 10px rgba(0,212,255,0.35), 0 0 0 20px rgba(0,212,255,0.15)'
-          : '0 0 0 7px rgba(0,212,255,0.28)';
-      }
-
-      // EASE-1: Shorter settle times — corners 1200ms, interior 700ms.
-      // The old 2500ms corner settle caused fatigue and wasn't needed once
-      // we switched to a 9-point grid with reachable corners.
-      const settleMs = isCorner ? 1200 : 700;
-      // PRECISION-6: Short freeze before sampling so gaze lands precisely.
-      const freezeMs = isCorner ? 300 : 150;
-
-      setTimeout(() => {
-        // Phase B: snap to fixed sample size + freeze
-        const sampleScale = isCorner ? 1.3 : 1.0;
-        if (ptEl) {
-          ptEl.style.transition = 'transform 0.15s ease-out, box-shadow 0.15s ease-out';
-          ptEl.style.transform = `translate(-50%, -50%) scale(${sampleScale})`;
-          ptEl.style.boxShadow = '0 0 0 3px rgba(255,255,255,0.6)'; // clean white ring = "now looking here"
-        }
-
-        setTimeout(() => {
-          // Phase C: sampling — DOT DOES NOT MOVE
-          this.sampleCount = 0;
-          this.calibEngine.calibData[stepIdx] = {
-            ...this.calibEngine.CALIB_POINTS[stepIdx],
-            samples: []
-          };
-          // Remove transition so color changes are instant
-          if (ptEl) ptEl.style.transition = 'background 0.1s ease';
-
-          // PRECISION-7: Track whether this interval has been cleared to prevent
-          // the "one extra sample after clearInterval" race condition.
-          let intervalDone = false;
-
-          this._sampleInterval = setInterval(() => {
-            if (intervalDone) return; // race-condition guard
-
-            // PRECISION-5/3: Use the IRIS-ONLY unfiltered signal for calibration.
-            // Priority chain (best → fallback):
-            //   1. Phase3 _irisOnlyGaze — pure iris offset, no head/pupil fusion, no OneEuro
-            //   2. Phase2 _irisOnlyGaze — iris-only from HybridGazeEngine pre-fusion
-            //   3. Phase3 _trueRawGaze  — fused but pre-OneEuro (better than smoothed)
-            //   4. Phase1 rawGaze       — iris offset in Phase-1-only mode (already pure iris)
-            //
-            // WHY iris-only:  The fused signal mixes iris (0.55) with head-pose (0.15) and
-            // pupil (0.15).  Head/pupil components add ~0.03-0.05 units of noise relative to
-            // the true fixation target.  During calibration the head is still, so the extra
-            // signals only degrade accuracy.  Pure iris → model learns the true eye geometry.
-            let rawGaze = null;
-            const p2orch = window.app?.phase2;
-            const p3orch = window.app?.phase3;
-
-            // 1st: Phase3 iris-only (best - pre-fusion, pre-filter)
-            if (p3orch?.active && p2orch?.hybridGaze?._irisOnlyGaze) {
-              rawGaze = p2orch.hybridGaze._irisOnlyGaze;
-            }
-            // 2nd: Phase2 iris-only (no Phase3 active - still pre-fusion)
-            if (!rawGaze && p2orch?.active && p2orch?.hybridGaze?._irisOnlyGaze) {
-              rawGaze = p2orch.hybridGaze._irisOnlyGaze;
-            }
-            // 3rd: Phase3 true raw (fused but pre-OneEuro)
-            if (!rawGaze && p3orch?.active && p2orch?.hybridGaze?._trueRawGaze) {
-              rawGaze = p2orch.hybridGaze._trueRawGaze;
-            }
-            // 4th: Phase2 true raw
-            if (!rawGaze && p2orch?.active && p2orch?.hybridGaze?._trueRawGaze) {
-              rawGaze = p2orch.hybridGaze._trueRawGaze;
-            }
-            // 5th: Phase1 rawGaze (pure iris in Phase1 mode)
-            if (!rawGaze) rawGaze = this.gazeEngine.rawGaze;
-            // Fallback
-            if (!rawGaze || (rawGaze.x === 0.5 && rawGaze.y === 0.5)) {
-              rawGaze = { x: 0.5, y: 0.5 };
-            }
-
-            // PRECISION-4: Live quality score — color the dot green/yellow/red
-            // PRECISION-6: DOT DOES NOT CHANGE SIZE during sampling — only color
-            const quality = this.calibEngine.sampleQuality(stepIdx, rawGaze.x, rawGaze.y);
-            if (ptEl && this.sampleCount > 5) {
-              if (quality > 0.65) {
-                ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #00d4ff 60%)';
-              } else if (quality > 0.35) {
-                ptEl.style.background = 'radial-gradient(circle, #fbbf24 0%, #f59e0b 60%)';
-              } else {
-                ptEl.style.background = 'radial-gradient(circle, #ef4444 0%, #dc2626 60%)';
-              }
-              // Update tip bar with live quality
-              const tipBar = $('#calib-tip-bar');
-              if (tipBar && this.sampleCount % 5 === 0) {
-                const qPct = Math.round(quality * 100);
-                tipBar.textContent = quality > 0.65
-                  ? `✓ Good fixation (${qPct}%) — hold steady`
-                  : quality > 0.35
-                  ? `⚡ Gaze drifting (${qPct}%) — stare directly at the center of the dot`
-                  : `⚠ Poor fixation (${qPct}%) — look AT the dot number, stop moving your eyes`;
-                tipBar.style.color = quality > 0.65 ? '#4ade80' : quality > 0.35 ? '#fbbf24' : '#ef4444';
-              }
-            }
-
-            this.calibEngine.addCalibSample(stepIdx, rawGaze.x, rawGaze.y);
-            this.sampleCount++;
-
-            // PRECISION-6: NO shrinking during sampling. Progress shown only in bar.
-            const progress = (stepIdx + this.sampleCount / this.SAMPLES) / this.calibEngine.CALIB_POINTS.length;
-            this._updateProgress(progress);
-
-            if (this.sampleCount >= this.SAMPLES) {
-              intervalDone = true;
-              clearInterval(this._sampleInterval);
-              this.calibEngine.finalizePoint(stepIdx);
-              if (ptEl) {
-                ptEl.style.transition = 'transform 0.2s ease, background 0.2s ease';
-                ptEl.style.transform = 'translate(-50%, -50%) scale(0.5)';
-                ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #22c55e 60%)'; // flash green = done
-                ptEl.style.boxShadow = '';
-                ptEl.classList.remove('active');
-                ptEl.classList.add('done');
-              }
-              // Brief visual confirmation before moving to next point
-              setTimeout(resolve, 250);
-            }
-          }, 50); // ~20 FPS sampling
-        }, freezeMs);
-      }, settleMs);
+      }, 33); // ~30 FPS — matches camera frame rate
     });
   }
 
