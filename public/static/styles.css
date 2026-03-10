@@ -968,8 +968,8 @@ body {
 }
 
 @keyframes calib-active-pulse {
-  from { transform: translate(-50%,-50%) scale(1); }
-  to   { transform: translate(-50%,-50%) scale(1.4); }
+  from { box-shadow: 0 0 20px rgba(0, 212, 255, 0.4); }
+  to   { box-shadow: 0 0 50px rgba(0, 212, 255, 0.9); }
 }
 
 /* FIX CAL-3: footer anchored to the bottom of the fixed overlay */

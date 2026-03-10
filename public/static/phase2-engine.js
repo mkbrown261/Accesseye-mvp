@@ -365,14 +365,15 @@ class HybridGazeEngine {
       const mapped = this.calibration.mapGaze(fusedX, fusedY);
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
-      // Uncalibrated: enhanced head-pose-corrected estimate
+      // FIX SCOPE-4: Increase Phase 2 uncalibrated multipliers.
+      // iris offset range ±0.15 → with 6.0/8.0 we cover ~±0.90 screen fraction.
       const headX = lm[1].x;
       const headY = lm[1].y;
       const hYaw  = (headPoseResult?.yaw || 0) / 50;
       const hPit  = (headPoseResult?.pitch || 0) / 40;
       screen = {
-        x: p2.clamp(0.5 + fusedX * 3.2 + (0.5 - headX) * 0.7 + hYaw * 0.15, 0.02, 0.98),
-        y: p2.clamp(0.5 + fusedY * 3.8 + (headY - 0.5) * 0.9 + hPit * 0.15, 0.02, 0.98)
+        x: p2.clamp(0.5 + fusedX * 6.0 + (0.5 - headX) * 0.8 + hYaw * 0.15, 0.01, 0.99),
+        y: p2.clamp(0.5 + fusedY * 8.0 + (headY - 0.5) * 1.0 + hPit * 0.15, 0.01, 0.99)
       };
     }
 
@@ -428,10 +429,11 @@ class HybridGazeEngine {
     const rLowerY = [374,373,390].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const rHeight = Math.abs(rUpperY - rLowerY) || rSpan * 0.4;
 
-    // FIX ACC-5: Clamp eye height to min 40% of span to prevent div-by-near-zero
-    // when eyes are squinted, which would amplify Y noise dramatically.
-    const lH = Math.max(lHeight, lSpan * 0.30);
-    const rH = Math.max(rHeight, rSpan * 0.30);
+    // FIX ACC-5: Clamp eye height to min 18% of span (FIX SCOPE-5: lowered from 30%)
+    // Eye height is naturally 0.25-0.35× span; a 0.30 floor was artificially inflating
+    // the denominator, compressing Y gaze range. 0.18 is a safer floor.
+    const lH = Math.max(lHeight, lSpan * 0.18);
+    const rH = Math.max(rHeight, rSpan * 0.18);
 
     // Normalized iris displacement
     const lOX = lSpan > 0 ? (lIris.x - lMidX) / lSpan : 0;  // X by width

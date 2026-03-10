@@ -111,22 +111,26 @@ class CalibrationEngine {
      * Mid-edge points (TLM/TRM/BLM/BRM) catch peripheral distortion
      * that the 5-pt model misses (~12% accuracy gain at edges).
      */
+    // FIX SCOPE-1: Move corners from 0.10/0.90 → 0.05/0.95 so the calibration
+    // model is trained on the true screen extremes. Previous 0.10 corners only
+    // covered 80% of screen width/height, so looking at a true screen edge was
+    // always extrapolating outside the training domain → scope felt too tight.
     this.CALIB_POINTS = [
       // ── 4 corners (highest priority — structural anchors) ──
-      { sx: 0.10, sy: 0.10, label: 'Top-Left'        },
-      { sx: 0.90, sy: 0.10, label: 'Top-Right'       },
-      { sx: 0.10, sy: 0.90, label: 'Bottom-Left'     },
-      { sx: 0.90, sy: 0.90, label: 'Bottom-Right'    },
+      { sx: 0.05, sy: 0.05, label: 'Top-Left'        },
+      { sx: 0.95, sy: 0.05, label: 'Top-Right'       },
+      { sx: 0.05, sy: 0.95, label: 'Bottom-Left'     },
+      { sx: 0.95, sy: 0.95, label: 'Bottom-Right'    },
       // ── 4 mid-edge points (peripheral accuracy, new in v3) ──
-      { sx: 0.50, sy: 0.10, label: 'Top-Center'      },   // TLM / TRM
-      { sx: 0.50, sy: 0.90, label: 'Bottom-Center'   },   // BLM / BRM
-      { sx: 0.10, sy: 0.50, label: 'Mid-Left'        },
-      { sx: 0.90, sy: 0.50, label: 'Mid-Right'       },
+      { sx: 0.50, sy: 0.05, label: 'Top-Center'      },
+      { sx: 0.50, sy: 0.95, label: 'Bottom-Center'   },
+      { sx: 0.05, sy: 0.50, label: 'Mid-Left'        },
+      { sx: 0.95, sy: 0.50, label: 'Mid-Right'       },
       // ── 4 mid-quadrant interior points ──
-      { sx: 0.30, sy: 0.30, label: 'Inner-TL'        },
-      { sx: 0.70, sy: 0.30, label: 'Inner-TR'        },
-      { sx: 0.30, sy: 0.70, label: 'Inner-BL'        },
-      { sx: 0.70, sy: 0.70, label: 'Inner-BR'        },
+      { sx: 0.28, sy: 0.28, label: 'Inner-TL'        },
+      { sx: 0.72, sy: 0.28, label: 'Inner-TR'        },
+      { sx: 0.28, sy: 0.72, label: 'Inner-BL'        },
+      { sx: 0.72, sy: 0.72, label: 'Inner-BR'        },
       // ── Center ──
       { sx: 0.50, sy: 0.50, label: 'Center'          }
     ];
@@ -211,9 +215,33 @@ class CalibrationEngine {
     const pts = this.calibData.filter(d => d.gx !== undefined);
     if (pts.length < this.MIN_POINTS_FOR_MODEL) return false;
 
+    // FIX SCOPE-6: Compute the observed gaze range across all calibration points.
+    // Iris offset values are typically in range [-0.25, +0.25]. We store the
+    // min/max so mapGaze() can pre-normalize gaze to [-0.5, +0.5] before applying
+    // the polynomial. This stretches the effective output range to cover the full
+    // screen regardless of head position or eye geometry variations.
+    const allGX = pts.map(p => p.gx);
+    const allGY = pts.map(p => p.gy);
+    this.gazeRangeX = { min: Math.min(...allGX), max: Math.max(...allGX) };
+    this.gazeRangeY = { min: Math.min(...allGY), max: Math.max(...allGY) };
+
+    // Sanity: if range is too narrow (user didn't move eyes enough), use fallback
+    const rangeX = this.gazeRangeX.max - this.gazeRangeX.min;
+    const rangeY = this.gazeRangeY.max - this.gazeRangeY.min;
+    if (rangeX < 0.05) { this.gazeRangeX = { min: -0.15, max: 0.15 }; }
+    if (rangeY < 0.03) { this.gazeRangeY = { min: -0.10, max: 0.10 }; }
+
+    // Normalize calibration points to [-0.5, 0.5] before regression so the
+    // polynomial coefficients live in a well-conditioned space.
+    const normalizedPts = pts.map(p => ({
+      ...p,
+      gx: this._normalizeGaze(p.gx, this.gazeRangeX),
+      gy: this._normalizeGaze(p.gy, this.gazeRangeY)
+    }));
+
     const lambda = 0.015;  // FIX ACC-3: slightly higher λ for degree-3 stability
-    const modelX = this._ridgeRegression(pts, p => p.sx, lambda);
-    const modelY = this._ridgeRegression(pts, p => p.sy, lambda);
+    const modelX = this._ridgeRegression(normalizedPts, p => p.sx, lambda);
+    const modelY = this._ridgeRegression(normalizedPts, p => p.sy, lambda);
 
     if (!modelX || !modelY) return false;
 
@@ -222,18 +250,27 @@ class CalibrationEngine {
       y:      modelY,
       degree: 3,
       lambda: 0.015,
-      points: pts.length
+      points: pts.length,
+      gazeRangeX: this.gazeRangeX,
+      gazeRangeY: this.gazeRangeY
     };
     this.isCalibrated = true;
     this._saveToStorage();
 
     // FIX M-1: notify GazeEngine to capture reference eye span.
-    // The calibration was collected while the user was positioned in front of
-    // the camera, so rawGaze from the gaze engine reflects their real eye size.
-    // We emit an event that GazeEngine listens to in order to set _refEyeSpan.
     this._emit?.('calibrated', { points: pts.length });
 
     return true;
+  }
+
+  /**
+   * FIX SCOPE-6: Normalize a raw gaze value to [-0.5, 0.5] using observed range.
+   * This maps the user's actual iris displacement range to a fixed unit scale.
+   */
+  _normalizeGaze(val, range) {
+    const mid = (range.max + range.min) / 2;
+    const half = (range.max - range.min) / 2;
+    return half > 0 ? (val - mid) / (half * 2) : val;
   }
 
   /**
@@ -314,9 +351,15 @@ class CalibrationEngine {
   /* Map raw gaze to calibrated screen (0..1) coordinates */
   mapGaze(gx, gy) {
     if (!this.model) return { sx: 0.5, sy: 0.5 };
+    // FIX SCOPE-6: Pre-normalize gaze using observed range from calibration.
+    // This ensures the polynomial receives values in the same space it was trained on.
+    const normGX = this.model.gazeRangeX
+      ? this._normalizeGaze(gx, this.model.gazeRangeX) : gx;
+    const normGY = this.model.gazeRangeY
+      ? this._normalizeGaze(gy, this.model.gazeRangeY) : gy;
     return {
-      sx: clamp(this._applyModel(this.model.x, gx, gy), 0, 1),
-      sy: clamp(this._applyModel(this.model.y, gx, gy), 0, 1)
+      sx: clamp(this._applyModel(this.model.x, normGX, normGY), 0, 1),
+      sy: clamp(this._applyModel(this.model.y, normGX, normGY), 0, 1)
     };
   }
 
@@ -343,7 +386,7 @@ class CalibrationEngine {
       localStorage.setItem('accesseye_calib', JSON.stringify({
         model:     this.model,
         calibData: this.calibData.map(d => ({ sx: d.sx, sy: d.sy, gx: d.gx, gy: d.gy, label: d.label })),
-        version:   4,  // FIX ACC-3: bumped to v4 for degree-3 polynomial (10 coefficients)
+        version:   5,  // FIX SCOPE-6: v5 includes gazeRangeX/Y normalization data
         timestamp: Date.now()
       }));
     } catch(_) {}
@@ -354,9 +397,8 @@ class CalibrationEngine {
       const raw = localStorage.getItem('accesseye_calib');
       if (!raw) return false;
       const data = JSON.parse(raw);
-      // Accept v3 (degree-2, 6 coeff) and v4 (degree-3, 10 coeff) models.
-      // v3 models work with _applyModel's fallback path.
-      if (data.version !== 3 && data.version !== 4) {
+      // Accept v3/v4/v5 models. v3/v4 lack gazeRange — mapGaze handles this gracefully.
+      if (![3, 4, 5].includes(data.version)) {
         localStorage.removeItem('accesseye_calib'); return false;
       }
       this.model      = data.model;
@@ -562,10 +604,14 @@ class GazeEngine {
     // Right eye: upper lid 386,387,388 / lower lid 374,373,390
     const lUpperY = [159,160,161].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const lLowerY = [145,144,163].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
-    const leftEyeHeight  = Math.max(Math.abs(lUpperY - lLowerY), leftEyeSpan * 0.30);
+    // FIX SCOPE-2: Lower eye height floor from 0.30 → 0.18 of span.
+    // Eye height is typically 0.25-0.35× span. A floor of 0.30 effectively
+    // over-clamps squinted eyes, compressing Y gaze range. 0.18 is a safer
+    // floor that prevents divide-by-zero without over-smoothing vertical gaze.
+    const leftEyeHeight  = Math.max(Math.abs(lUpperY - lLowerY), leftEyeSpan * 0.18);
     const rUpperY = [386,387,388].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const rLowerY = [374,373,390].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
-    const rightEyeHeight = Math.max(Math.abs(rUpperY - rLowerY), rightEyeSpan * 0.30);
+    const rightEyeHeight = Math.max(Math.abs(rUpperY - rLowerY), rightEyeSpan * 0.18);
 
     // ── IRIS OFFSET ──
     // X offset: normalized by horizontal eye width (correct for horizontal gaze)
@@ -615,12 +661,16 @@ class GazeEngine {
     if (this.calibration.isCalibrated) {
       screenCoords = this.calibration.mapGaze(smoothResult.x, smoothResult.y);
     } else {
-      // Uncalibrated: use head-facing estimate
+      // FIX SCOPE-3: Increase uncalibrated multipliers.
+      // Iris offset (rawGX/Y) range is approximately ±0.15 to ±0.25.
+      // Old multipliers 3.5/4.0 only projected to ±0.525/±0.60 → gaze
+      // covered only ~60% of screen. New multipliers 6.0/8.0 project
+      // ±0.15 iris range to ±0.90 screen, covering ~90% each axis.
       const headX = lm[1].x;  // nose tip
       const headY = lm[1].y;
       screenCoords = {
-        sx: clamp(0.5 + smoothResult.x * 3.5 + (0.5 - headX) * 0.6, 0, 1),
-        sy: clamp(0.5 + smoothResult.y * 4.0 + (headY - 0.5) * 0.8, 0, 1)
+        sx: clamp(0.5 + smoothResult.x * 6.0 + (0.5 - headX) * 0.8, 0, 1),
+        sy: clamp(0.5 + smoothResult.y * 8.0 + (headY - 0.5) * 1.0, 0, 1)
       };
     }
 
@@ -1059,12 +1109,22 @@ class CalibrationUI {
 
       this.log.add(`Calibrating point ${stepIdx + 1}: ${this.calibEngine.CALIB_POINTS[stepIdx].label}`, 'info');
 
-      // FIX ACC-7: Longer settling delay 800ms→1200ms per point.
-      // This gives more time for gaze to stabilize on the target before sampling
-      // begins. The first 400ms after fixation onset contain more noise as the
-      // eye settles — discarding this initial transient significantly improves
-      // per-point accuracy, especially at eccentric (corner) positions.
+      // FIX SCOPE-7: Show a pulsing "look here" countdown ring on the dot
+      // so user knows when sampling is active (not just settling).
+      if (ptEl) {
+        ptEl.style.transform = 'translate(-50%, -50%) scale(1.5)';
+        ptEl.style.transition = 'transform 0.3s ease';
+      }
+
+      // FIX ACC-7: Longer settling delay → allow gaze to land on target.
+      // Use 1500ms for corner points (idx 0-3), 1000ms for others.
+      const isCorner = stepIdx < 4;
+      const settleMs = isCorner ? 1500 : 1000;
+
       setTimeout(() => {
+        if (ptEl) {
+          ptEl.style.transform = 'translate(-50%, -50%) scale(1.0)';
+        }
         this.sampleCount = 0;
         this.calibEngine.calibData[stepIdx] = {
           ...this.calibEngine.CALIB_POINTS[stepIdx],
@@ -1072,20 +1132,30 @@ class CalibrationUI {
         };
 
         this._sampleInterval = setInterval(() => {
-          // FIX CAL-4: Prefer Phase 2 HybridGazeEngine rawGaze when available.
-          // Also try the phase2 orchestrator directly if the alias is missing.
-          let rawGaze = null;
-          const p2 = window.app?.phase2;
-          if (p2?.active) {
-            rawGaze = p2.hybridGaze?.rawGaze;
+          // FIX SCOPE-8: Use PURE raw gaze from Phase 1 GazeEngine for calibration.
+          // Phase 2/3 apply One Euro + Kalman smoothing which displaces the gaze
+          // vector from where it truly is — calibrating with smoothed gaze creates
+          // a systematic lag bias in the model. Always use the unsmoothed Phase 1
+          // rawGaze which reflects the actual iris position measurement.
+          let rawGaze = this.gazeEngine.rawGaze;
+
+          // Only fall back to Phase 2 raw if Phase 1 doesn't have data yet
+          if (!rawGaze || (rawGaze.x === 0.5 && rawGaze.y === 0.5)) {
+            const p2 = window.app?.phase2;
+            if (p2?.active) rawGaze = p2.hybridGaze?.rawGaze;
           }
           if (!rawGaze || (rawGaze.x === 0.5 && rawGaze.y === 0.5)) {
-            rawGaze = this.gazeEngine.rawGaze;
+            rawGaze = { x: 0.5, y: 0.5 };
           }
-          if (!rawGaze) rawGaze = { x: 0.5, y: 0.5 };
 
           this.calibEngine.addCalibSample(stepIdx, rawGaze.x, rawGaze.y);
           this.sampleCount++;
+
+          // Visual: shrink the dot as samples fill up (progress indicator)
+          if (ptEl && this.sampleCount % 4 === 0) {
+            const sz = 1.0 - (this.sampleCount / this.SAMPLES) * 0.4;
+            ptEl.style.transform = `translate(-50%, -50%) scale(${Math.max(sz, 0.6)})`;
+          }
 
           const progress = (stepIdx + this.sampleCount / this.SAMPLES) / this.calibEngine.CALIB_POINTS.length;
           this._updateProgress(progress);
@@ -1093,12 +1163,16 @@ class CalibrationUI {
           if (this.sampleCount >= this.SAMPLES) {
             clearInterval(this._sampleInterval);
             this.calibEngine.finalizePoint(stepIdx);
-            if (ptEl) { ptEl.classList.remove('active'); ptEl.classList.add('done'); }
-            // FIX ACC-8: brief 150ms visual confirmation before moving to next point
-            setTimeout(resolve, 150);
+            if (ptEl) {
+              ptEl.style.transform = 'translate(-50%, -50%) scale(0.6)';
+              ptEl.classList.remove('active');
+              ptEl.classList.add('done');
+            }
+            // Brief visual confirmation before moving to next point
+            setTimeout(resolve, 200);
           }
-        }, 50); // ~20 FPS sampling (was 60ms/16FPS, now 50ms for better coverage)
-      }, 1200);
+        }, 50); // ~20 FPS sampling
+      }, settleMs);
     });
   }
 
@@ -1899,6 +1973,12 @@ class AccessEyeApp {
     const xEl = $('#gaze-x-val'), yEl = $('#gaze-y-val');
     if (xEl) xEl.textContent = (x * window.innerWidth).toFixed(0) + 'px';
     if (yEl) yEl.textContent = (y * window.innerHeight).toFixed(0) + 'px';
+    // Also update raw gaze display if available
+    const rawEl = $('#gaze-raw-val');
+    if (rawEl) {
+      const raw = this.gazeEngine?.rawGaze;
+      if (raw) rawEl.textContent = `raw:(${raw.x.toFixed(3)}, ${raw.y.toFixed(3)})`;
+    }
   }
 
   _updateCoordTarget(label) {
