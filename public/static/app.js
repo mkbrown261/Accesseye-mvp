@@ -1342,42 +1342,72 @@ class CalibrationUI {
 
       // State
       let goodSamplesRecorded = 0;     // quality-passing samples actually stored
-      let consecutiveLockFrames = 0;   // streak of high-quality frames before we start
+      let consecutiveLockFrames = 0;   // streak of stable frames needed to enter locked state
       let isLocked = false;            // true once initial lock achieved
-      const LOCK_FRAMES_NEEDED = 6;    // frames in a row needed before recording starts
+      const LOCK_FRAMES_NEEDED = 5;    // consecutive stable frames needed (reduced from 6)
       let intervalDone = false;
+
+      // PRECISION-GATE FIX: Keep a SEPARATE recent-frames buffer for computing
+      // gaze stability during the lock phase.  We must NOT use addCalibSample
+      // during lock phase because:
+      //  1. The very first frame may be a stale {x:0,y:0} fallback
+      //  2. sampleQuality() reads from calibData[].samples to compute sigma
+      //  3. If bad samples land in calibData first, sigma anchors to wrong centroid
+      //     and all subsequent real samples score 0 → lock never happens
+      // Solution: recentFrames[] is a local rolling buffer (last 30 raw values).
+      // sampleQuality is replaced here by a local stability check on recentFrames.
+      const recentFrames = [];  // local rolling buffer, never written to calibData
+      const RECENT_MAX = 30;
+
+      // Local stability score: how consistent are the last N frames?
+      // Returns 0-1. 1.0 = rock-steady, 0 = high variance.
+      const stabilityScore = () => {
+        if (recentFrames.length < 4) return 1.0; // not enough data yet = assume stable
+        const n   = recentFrames.length;
+        const cx  = recentFrames.reduce((s,v) => s + v.x, 0) / n;
+        const cy  = recentFrames.reduce((s,v) => s + v.y, 0) / n;
+        const varX = recentFrames.reduce((s,v) => s + (v.x-cx)**2, 0) / n;
+        const varY = recentFrames.reduce((s,v) => s + (v.y-cy)**2, 0) / n;
+        const sigma = Math.sqrt(varX + varY);
+        // "good" sigma for a steady gaze is < 0.015 (≈ 3px at typical iris scale)
+        // Returns 1.0 when sigma=0, 0 when sigma≥0.06
+        return Math.max(0, 1 - sigma / 0.06);
+      };
 
       this._sampleInterval = setInterval(() => {
         if (intervalDone) return;
 
         const raw     = this._getRawGaze();
-        const quality = this.calibEngine.sampleQuality(stepIdx, raw.x, raw.y);
+
+        // Always push to local rolling buffer (never touches calibData)
+        recentFrames.push({ x: raw.x, y: raw.y });
+        if (recentFrames.length > RECENT_MAX) recentFrames.shift();
+
+        const stability = stabilityScore();  // 0-1 local variance check
 
         if (!isLocked) {
           // ── PHASE 1: Waiting for initial stable fixation ──
-          if (quality >= this.QUALITY_THRESHOLD) {
+          if (stability >= this.QUALITY_THRESHOLD) {
             consecutiveLockFrames++;
           } else {
-            consecutiveLockFrames = Math.max(0, consecutiveLockFrames - 2); // decay fast on movement
+            consecutiveLockFrames = Math.max(0, consecutiveLockFrames - 2);
           }
 
           const lockPct = consecutiveLockFrames / LOCK_FRAMES_NEEDED;
 
           if (ptEl) {
-            // Show lock progress as shrinking dot + color shift
             const scale = isCorner
-              ? 2.2 - lockPct * 0.9   // 2.2 → 1.3 as lock builds
-              : 1.8 - lockPct * 0.8;  // 1.8 → 1.0
+              ? 2.2 - lockPct * 0.9
+              : 1.8 - lockPct * 0.8;
             ptEl.style.transition = 'transform 0.08s ease-out';
             ptEl.style.transform  = `translate(-50%, -50%) scale(${scale.toFixed(2)})`;
-
             if (lockPct > 0.7) {
-              ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #00aa55 70%)'; // almost locked = green
+              ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #00aa55 70%)';
               ptEl.style.boxShadow  = '0 0 0 6px rgba(0,255,136,0.5)';
             } else if (lockPct > 0.3) {
-              ptEl.style.background = 'radial-gradient(circle, #fbbf24 0%, #d97706 70%)'; // building = amber
+              ptEl.style.background = 'radial-gradient(circle, #fbbf24 0%, #d97706 70%)';
             } else {
-              ptEl.style.background = 'radial-gradient(circle, #00d4ff 0%, #0066aa 70%)'; // idle = blue
+              ptEl.style.background = 'radial-gradient(circle, #00d4ff 0%, #0066aa 70%)';
             }
           }
 
@@ -1387,8 +1417,8 @@ class CalibrationUI {
               tipBar.style.color = '#00ff88';
             } else {
               tipBar.textContent = isCorner
-                ? '👁 Move your eyes to the corner dot — hold still once you\'re there'
-                : '👁 Look directly at the dot — keep your head still';
+                ? '👁 Move your eyes to the corner dot — hold still'
+                : '👁 Look directly at the dot — keep still';
               tipBar.style.color = '#00d4ff';
             }
           }
@@ -1396,7 +1426,6 @@ class CalibrationUI {
           if (consecutiveLockFrames >= LOCK_FRAMES_NEEDED) {
             isLocked = true;
             consecutiveLockFrames = 0;
-            // Snap dot to precise sampling size
             if (ptEl) {
               ptEl.style.transition = 'transform 0.12s ease-out, box-shadow 0.12s ease-out';
               ptEl.style.transform  = `translate(-50%, -50%) scale(${isCorner ? 1.3 : 1.0})`;
@@ -1408,28 +1437,23 @@ class CalibrationUI {
               tipBar.style.color = '#00ff88';
             }
           }
-
-          // Also record this sample if quality is good enough (even during lock phase)
-          // — builds up warm samples while user is already fixating
-          if (quality >= this.QUALITY_THRESHOLD) {
-            this.calibEngine.addCalibSample(stepIdx, raw.x, raw.y);
-            goodSamplesRecorded++;
-          }
+          // Do NOT record to calibData during lock phase
 
         } else {
           // ── PHASE 2: Locked — collect quality-gated samples ──
-          if (quality >= this.MIN_RECORD_QUALITY) {
+          // Use stability score (local variance check) for quality gating
+          if (stability >= this.MIN_RECORD_QUALITY) {
             this.calibEngine.addCalibSample(stepIdx, raw.x, raw.y);
-            if (quality >= this.QUALITY_THRESHOLD) {
+            if (stability >= this.QUALITY_THRESHOLD) {
               goodSamplesRecorded++;
             }
           }
 
           // Color feedback on the dot
           if (ptEl) {
-            if (quality >= this.QUALITY_THRESHOLD) {
+            if (stability >= this.QUALITY_THRESHOLD) {
               ptEl.style.background = 'radial-gradient(circle, #00ff88 0%, #00aa55 70%)';
-            } else if (quality >= this.MIN_RECORD_QUALITY) {
+            } else if (stability >= this.MIN_RECORD_QUALITY) {
               ptEl.style.background = 'radial-gradient(circle, #fbbf24 0%, #d97706 70%)';
             } else {
               ptEl.style.background = 'radial-gradient(circle, #ef4444 0%, #cc2200 70%)';
@@ -1444,12 +1468,12 @@ class CalibrationUI {
           }
 
           if (tipBar) {
-            const pctLabel = Math.round(pct * 100);
-            if (quality < this.MIN_RECORD_QUALITY) {
-              tipBar.textContent = `⚠ Blink or movement — hold still (${pctLabel}% done)`;
+            const pctLabel = Math.round((goodSamplesRecorded / this.GOOD_SAMPLES_NEEDED) * 100);
+            if (stability < this.MIN_RECORD_QUALITY) {
+              tipBar.textContent = `⚠ Blink or movement detected — hold still (${pctLabel}% done)`;
               tipBar.style.color = '#ef4444';
-            } else if (quality < this.QUALITY_THRESHOLD) {
-              tipBar.textContent = `⚡ Drifting slightly — stare at the dot center (${pctLabel}% done)`;
+            } else if (stability < this.QUALITY_THRESHOLD) {
+              tipBar.textContent = `⚡ Slight drift — stare hard at the dot center (${pctLabel}% done)`;
               tipBar.style.color = '#fbbf24';
             } else {
               tipBar.textContent = `🟢 Perfect — collecting (${pctLabel}%)`;
