@@ -884,15 +884,15 @@ app.get('/', (c) => {
               <!-- AI Intent Engine -->
               <div class="p2-section p2-intent-section">
                 <div class="p2-section-title"><i class="fas fa-robot"></i> AI Intent Prediction</div>
-                <div class="p2-intent-result" id="p2-intent-result">Awaiting fixation...</div>
+                <div class="p2-intent-result" id="p2-intent-result">Starting camera to begin...</div>
                 <div class="p2-intent-meta">
                   <span class="p2-intent-conf-lbl">Confidence:</span>
-                  <span class="p2-intent-conf" id="p2-intent-conf">—</span>
+                  <span class="p2-intent-conf" id="p2-intent-conf">0%</span>
                 </div>
-                <div class="p2-intent-reason" id="p2-intent-reason"></div>
+                <div class="p2-intent-reason" id="p2-intent-reason">AI intent is ON — predictions update every fixation</div>
                 <div class="p2-intent-controls">
-                  <button class="p2-toggle-btn" id="p2-intent-toggle">
-                    <i class="fas fa-power-off"></i> Enable AI Intent
+                  <button class="p2-toggle-btn active" id="p2-intent-toggle">
+                    <i class="fas fa-power-off"></i> Disable AI Intent
                   </button>
                 </div>
               </div>

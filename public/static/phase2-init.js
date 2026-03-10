@@ -133,7 +133,10 @@ class Phase2InitController {
       // Auto-activate Phase 2 after camera + MediaPipe are ready
       const canvasEl = document.querySelector('#overlay-canvas');
 
-      if (videoEl && !orch.active) {
+      // FIX CAM-3: Always activate Phase 2 on camera start (not just first time).
+      // The old `!orch.active` guard prevented re-activation after camera restart.
+      // deactivate() now resets all state so re-activation is always safe.
+      if (videoEl) {
         // Small delay to ensure MediaPipe controller is wired
         setTimeout(async () => {
           try {
@@ -351,11 +354,12 @@ class Phase2InitController {
    BOOTSTRAP — run after DOMContentLoaded
 ───────────────────────────────────────────────────────────────────────── */
 const _p2init = new Phase2InitController();
+// FIX CAM-1: Expose globally so app.js _startCamera can reset activation state on stop/restart
+window._p2InitController = _p2init;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => _p2init.init());
 } else {
-  // DOM already ready (script loaded late)
   _p2init.init();
 }
 

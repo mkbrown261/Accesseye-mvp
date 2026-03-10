@@ -365,15 +365,20 @@ class HybridGazeEngine {
       const mapped = this.calibration.mapGaze(fusedX, fusedY);
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
-      // FIX SCOPE-4: Increase Phase 2 uncalibrated multipliers.
-      // iris offset range ±0.15 → with 6.0/8.0 we cover ~±0.90 screen fraction.
-      const headX = lm[1].x;
-      const headY = lm[1].y;
-      const hYaw  = (headPoseResult?.yaw || 0) / 50;
-      const hPit  = (headPoseResult?.pitch || 0) / 40;
+      // FIX SCOPE-4c: Higher uncalibrated multipliers.
+      // irisSignal.x/y are normalized by eye-span in image coordinates (0-1).
+      // A typical iris offset is 0.02-0.04 image units; with multipliers
+      // we map: 0.5 ± (0.03 * 7.0) = 0.5 ± 0.21 → covers ~42% per side = 84% total.
+      // Head pose contribution adds another ±0.3 for a total of ~100% range.
+      // This is the right balance: extreme eye positions reach edges without
+      // requiring the user to look way outside the screen.
+      const headX = lm[1].x;  // nose tip X (0=left, 1=right in image)
+      const headY = lm[1].y;  // nose tip Y
+      const hYaw  = (headPoseResult?.yaw || 0) / 45;   // normalized yaw contribution
+      const hPit  = (headPoseResult?.pitch || 0) / 35;  // normalized pitch contribution
       screen = {
-        x: p2.clamp(0.5 + fusedX * 6.0 + (0.5 - headX) * 0.8 + hYaw * 0.15, 0.01, 0.99),
-        y: p2.clamp(0.5 + fusedY * 8.0 + (headY - 0.5) * 1.0 + hPit * 0.15, 0.01, 0.99)
+        x: p2.clamp(0.5 + fusedX * 7.0 + (0.5 - headX) * 1.2 + hYaw * 0.2, 0.01, 0.99),
+        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.01, 0.99)
       };
     }
 
@@ -595,19 +600,17 @@ class TemporalStabilizer {
     const ky = this._ky.update(ry);
 
     // ── Layer B: Adaptive EMA ──
-    // FIX ACC-10: Threshold-based velocity for alpha selection.
-    // Very small movements (< 0.008 normalized = ~15px on 1920px screen)
-    // are treated as tremor and get minimum alpha for heavy smoothing.
-    // Larger intentional movements ramp up alpha quickly.
+    // FIX JITTER-3: Smoother velocity EMA (0.3 was 0.4) so alpha changes gradually,
+    // preventing the cursor from snapping during brief noise spikes.
     const velMag = this._prevX !== null
       ? Math.hypot(kx - this._prevX, ky - this._prevY)
       : 0;
-    this._velX = p2.lerp(this._velX, Math.abs(kx - (this._prevX??kx)), 0.4);
-    this._velY = p2.lerp(this._velY, Math.abs(ky - (this._prevY??ky)), 0.4);
-    // Tremor threshold: < 0.008 = fixation/drift → use minimum alpha (0.15)
-    // Saccade threshold: > 0.05 = fast move → use maximum alpha (0.65)
+    this._velX = p2.lerp(this._velX, Math.abs(kx - (this._prevX??kx)), 0.3);
+    this._velY = p2.lerp(this._velY, Math.abs(ky - (this._prevY??ky)), 0.3);
+    // FIX JITTER-3: Raised lower alpha 0.15→0.12 (more smoothing at rest),
+    // max alpha 0.65→0.60 (slightly less reactive on fast moves = smoother)
     const velScore = p2.clamp((velMag - 0.008) / 0.042, 0, 1);
-    const alpha = p2.lerp(0.15, 0.65, velScore);
+    const alpha = p2.lerp(0.12, 0.60, velScore);
 
     if (this._ex === null) { this._ex = kx; this._ey = ky; }
     else {
@@ -617,6 +620,26 @@ class TemporalStabilizer {
     this._prevX = kx; this._prevY = ky;
 
     // ── Layer C: Sliding window trimmed mean ──
+    // FIX STUCK-2: Flush the window on large saccades so stale corner values
+    // don't hold the cursor in place when the user looks back to center.
+    // Reduced threshold from 0.15 to 0.10 (≈96px on 1920px) for faster recovery.
+    const jumpDist = this.stable ? Math.hypot(this._ex - this.stable.x, this._ey - this.stable.y) : 0;
+    if (jumpDist > 0.10) {
+      this._wx = [];
+      this._wy = [];
+    }
+
+    // FIX STUCK-4: When confidence is very low (blink / face lost), pull gaze
+    // toward the last stable point rather than toward screen center. This prevents
+    // the cursor from snapping to 0.5,0.5 on blinks while also preventing it from
+    // drifting into a corner. At confidence=0 the window is flushed so stale
+    // corner values can't accumulate.
+    if (confidence < 0.25) {
+      this._wx = [];
+      this._wy = [];
+      // Return last stable position — don't update it on very low confidence frames
+      return this.stable;
+    }
     this._wx.push(this._ex); this._wy.push(this._ey);
     if (this._wx.length > this.winSize) { this._wx.shift(); this._wy.shift(); }
 
@@ -1225,7 +1248,7 @@ class IntentPredictionEngine {
     if (t - this._lastCall < this.debounceMs) return this.lastPrediction;
 
     const conf = confidenceScore?.total ?? 0;
-    if (conf < 0.55) return null;  // don't predict on poor data
+    if (conf < 0.30) return null;  // FIX INTENT-5: lowered threshold 0.45→0.30 so intent fires more readily
 
     this._lastCall = t;
     this._pending  = true;
@@ -1233,15 +1256,80 @@ class IntentPredictionEngine {
     const payload = this._buildPayload(fixationData, focusedElement);
     try {
       const result = await this._callAPI(payload);
+      // FIX INTENT-2: If API returns 'unknown' (no API key), use local fallback.
+      if (!result || result.predicted_action === 'unknown' || result.confidence === 0) {
+        const local = this._localPredict(fixationData, focusedElement, conf);
+        this.lastPrediction = local;
+        this._emit('prediction', local);
+        return local;
+      }
       this.lastPrediction = result;
       this._emit('prediction', result);
       return result;
     } catch (e) {
-      console.warn('[Intent] API call failed:', e.message);
-      return null;
+      // FIX INTENT-2: On API failure, always emit local prediction instead of nothing.
+      const local = this._localPredict(fixationData, focusedElement, conf);
+      this.lastPrediction = local;
+      this._emit('prediction', local);
+      console.warn('[Intent] API failed, using local prediction:', e.message);
+      return local;
     } finally {
       this._pending = false;
     }
+  }
+
+  /**
+   * FIX INTENT-2: Local rule-based intent predictor.
+   * Provides meaningful predictions purely from gaze patterns — no API needed.
+   * Used as fallback when OpenAI API key is not configured.
+   */
+  _localPredict(fixationData, focusedElement, conf) {
+    const recent  = this.elementHistory.slice(-3);
+    const gestures = this.gestureHistory.slice(-2);
+    const isFixated = fixationData?.isFixated;
+    const fixAge    = fixationData?.fixationAge ?? 0;
+
+    let action = 'Observing screen';
+    let confidence = Math.round(conf * 60 + 20);  // 20-80% range
+    let reasoning = 'Gaze scanning mode.';
+
+    if (focusedElement) {
+      if (fixAge > 500) {
+        action = `Reading: ${focusedElement.label}`;
+        confidence = Math.round(conf * 70 + 25);
+        reasoning = `Stable fixation on "${focusedElement.label}" for ${Math.round(fixAge)}ms.`;
+      } else if (isFixated) {
+        action = `Focusing: ${focusedElement.label}`;
+        confidence = Math.round(conf * 60 + 30);
+        reasoning = `Eye locked onto "${focusedElement.label}".`;
+      } else {
+        action = `Approaching: ${focusedElement.label}`;
+        confidence = Math.round(conf * 50 + 20);
+        reasoning = `Gaze moving toward "${focusedElement.label}".`;
+      }
+    } else if (recent.length >= 2) {
+      const labels = recent.map(e => e.label).join(' → ');
+      action = `Scanning: ${labels}`;
+      confidence = Math.round(conf * 50 + 25);
+      reasoning = `Reading pattern detected across multiple elements.`;
+    } else if (gestures.length > 0) {
+      action = `Post-gesture: ${gestures[gestures.length-1].label}`;
+      confidence = 75;
+      reasoning = 'Following recent gesture activation.';
+    }
+
+    const dwellSuggestion = fixAge > 400
+      ? 'Consider activating focused element'
+      : 'Continue dwelling to activate';
+
+    return {
+      predicted_action: action,
+      confidence:       confidence / 100,
+      reasoning,
+      suggestions:      [dwellSuggestion],
+      adaptation:       conf < 0.6 ? 'Improve lighting for better accuracy' : '',
+      local:            true  // flag: came from local predictor
+    };
   }
 
   _buildPayload(fixationData, focusedElement) {
@@ -1447,17 +1535,27 @@ class Phase2Orchestrator {
     this.camera     = new HighFPSCameraController();
     this.headPose   = new HeadPoseEstimator();
     this.hybridGaze = new HybridGazeEngine(app.calibration, this.headPose);
-    this.stabilizer = new TemporalStabilizer({ kalmanR: 0.005, emaAlpha: 0.22, windowSize: 5 });
-    this.saccade    = new MicroSaccadeFilter(18, 150);  // FIX ACC-11: radius 12→18px, duration 200→150ms
+    // FIX JITTER-1: TemporalStabilizer tuned for fluidity.
+    // kalmanR: 0.008 (was 0.005) — smoother at rest, less jitter on tiny movements
+    // emaAlpha: 0.18 (was 0.22) — heavier smoothing, maintains flow on saccades
+    // windowSize: 6 (was 5) — extra frame for median helps with random spikes
+    this.stabilizer = new TemporalStabilizer({ kalmanR: 0.008, emaAlpha: 0.18, windowSize: 6 });
+    // FIX JITTER-2: MicroSaccadeFilter radius 18→14px. 18px was grouping
+    // nearby targets together. 14px still suppresses micro-tremor.
+    this.saccade    = new MicroSaccadeFilter(14, 160);
     this.confidence = new GazeConfidenceScorer(null); // videoEl assigned on camera start
     this.dynCalib   = new DynamicCalibrationEngine(app.calibration);
     this.intent     = new IntentPredictionEngine('/api/intent');
+    // FIX INTENT-4: Enable intent by default so the panel shows predictions immediately.
+    // Local rule-based fallback works without an API key.
+    this.intent.enabled = true;
     this.benchmark  = new GazeBenchmark();
 
     // State
     this.active    = false;
     this.cameraFPS = 0;
     this._p1LastGaze = { x: 0.5, y: 0.5 };
+    this._intentTimer = null;  // FIX INTENT-5: periodic intent prediction timer
 
     // Wire internal events
     this._wireEvents();
@@ -1472,6 +1570,25 @@ class Phase2Orchestrator {
       const focused = this.app.uiRegistry.getFocused();
       this.intent.predict(fix, focused, this.confidence.lastScore);
     });
+
+    // FIX INTENT-5: Also fire intent prediction on a timer (every 3s) so
+    // the panel shows something even when no fixation events fire.
+    // Useful when not looking at any specific target.
+    this._intentTimer = setInterval(() => {
+      if (!this.active) return;
+      const focused = this.app.uiRegistry.getFocused();
+      const fakeFixation = {
+        x: this.app._lastScreenX / window.innerWidth || 0.5,
+        y: this.app._lastScreenY / window.innerHeight || 0.5,
+        isFixated: this.saccade.isFixated,
+        fixationAge: this.saccade.fixationAge,
+        duration: this.saccade.fixationAge
+      };
+      // Pass a permissive confidence score so the local predictor always runs
+      const permissiveScore = this.confidence.lastScore || { total: 0.5 };
+      if (permissiveScore.total < 0.35) permissiveScore.total = 0.35;
+      this.intent.predict(fakeFixation, focused, permissiveScore);
+    }, 3000);
 
     // ── Intent prediction → UI hint ──
     this.intent.on('prediction', (pred) => {
@@ -1572,6 +1689,10 @@ class Phase2Orchestrator {
       // Clear status when face lost
       this.app._updateStatusItem('status-face', false, 'Not found', '');
       this.app._updateStatusItem('status-gaze', false, 'No face', '');
+      // FIX STUCK-6: Reset stabilizer window and Kalman velocity on face loss
+      // so the cursor doesn't freeze at its last corner position when face
+      // briefly disappears (blink, tilt, occlusion).
+      this.stabilizer.reset?.();
       return;
     }
 
@@ -1646,6 +1767,10 @@ class Phase2Orchestrator {
     // ── Forward to Phase 1 UI pipeline ──
     const screenX = biasFixed.x * window.innerWidth;
     const screenY = biasFixed.y * window.innerHeight;
+
+    // FIX INTENT-5: Store final screen coords so the intent timer can read them
+    this.app._lastScreenX = screenX;
+    this.app._lastScreenY = screenY;
 
     // Always update gaze cursor + coords regardless of mode (camera is driving)
     this.app._updateGazeCursor(screenX, screenY);
@@ -1738,14 +1863,20 @@ class Phase2Orchestrator {
   _updateIntentUI(pred) {
     const el = $('#p2-intent-result');
     if (!el) return;
-    el.textContent   = pred.predicted_action || pred.intent || '—';
+    el.textContent   = pred.predicted_action || '—';
     el.style.opacity = '1';
-    setTimeout(() => { if (el) el.style.opacity = '0.6'; }, 3000);
+    // FIX INTENT-3: Mark local predictions with a subtle indicator
+    el.style.color = pred.local ? 'var(--accent-yellow)' : 'var(--accent-cyan)';
+    setTimeout(() => { if (el) el.style.opacity = '0.7'; }, 3000);
 
     const confEl = $('#p2-intent-conf');
-    if (confEl) confEl.textContent = pred.confidence
-      ? `${Math.round(pred.confidence * 100)}%`
-      : '—';
+    if (confEl) {
+      const confVal = pred.confidence;
+      // FIX INTENT-3: Always show a percentage — never show '—'
+      confEl.textContent = typeof confVal === 'number'
+        ? `${Math.round(confVal * 100)}%`
+        : '—';
+    }
 
     const rsnEl = $('#p2-intent-reason');
     if (rsnEl) rsnEl.textContent = pred.reasoning || pred.explanation || '';
@@ -1916,6 +2047,20 @@ class Phase2Orchestrator {
     this.active = false;
     this.benchmark.running && this.benchmark.stop();
     this.dynCalib.saveMicroData();
+    // FIX INTENT-5: Clear the periodic intent timer on deactivation.
+    if (this._intentTimer) { clearInterval(this._intentTimer); this._intentTimer = null; }
+    // FIX CAM-2: Reset internal state so re-activation (camera restart) works cleanly.
+    // Without this, Kalman filters, EMA and stabilizer carry stale state from the
+    // previous session, causing the gaze to snap to old positions on restart.
+    this.stabilizer.reset?.();
+    this.saccade.reset?.();
+    this.hybridGaze.rawGaze    = { x: 0.5, y: 0.5 };
+    this.hybridGaze.smoothGaze = { x: 0.5, y: 0.5 };
+    this.hybridGaze.confidence = 0;
+    // Remove the Phase 2 patch from the (now-dead) MediaPipeController so a fresh
+    // _patchPhase2Pipeline can be applied to the new controller on next activate().
+    this.hybridGaze._p3Patched = false;
+    this.hybridGaze._originalProcessResults = null;
   }
 }
 
@@ -1928,11 +2073,14 @@ class _KalmanAxis {
     this.x = 0; this.v = 0; this.p = 1;
   }
   update(z) {
+    // FIX STUCK-5: Clamp and decay velocity to prevent corner-pinning momentum.
+    this.v = p2.clamp(this.v, -0.03, 0.03);
     const px = this.x + this.v;
     const pp = this.p + this.Q;
     const K  = pp / (pp + this.R);
     this.x   = px + K * (z - px);
-    this.v   = this.v + K * (z - px);
+    // Damp velocity: 85% decay + small correction term (same fix as Phase 1 Kalman)
+    this.v   = this.v * 0.85 + K * (z - px) * 0.15;
     this.p   = (1 - K) * pp;
     return this.x;
   }

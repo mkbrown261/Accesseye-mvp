@@ -49,6 +49,12 @@ class KalmanFilter2D {
 
   _update(axis, measurement) {
     const dt = 1; // normalized step
+
+    // FIX STUCK-1: Clamp velocity BEFORE predict so runaway momentum from fast
+    // saccades can't keep pushing the cursor into a corner. Tighter clamp (0.03)
+    // than before to stop corner-pinning while still allowing smooth tracking.
+    this[`${axis}_v`] = clamp(this[`${axis}_v`], -0.03, 0.03);
+
     // Predict
     let pred_x = this[`${axis}_x`] + this[`${axis}_v`] * dt;
     let pred_p = this[`${axis}_p`] + this.Q;
@@ -56,7 +62,9 @@ class KalmanFilter2D {
     // Update (Kalman gain)
     const K = pred_p / (pred_p + this.R);
     this[`${axis}_x`] = pred_x + K * (measurement - pred_x);
-    this[`${axis}_v`] = this[`${axis}_v`] + K * (measurement - pred_x) / dt;
+    // FIX STUCK-1b: Damp the velocity update so it decays faster — velocity
+    // should reflect current motion, not memory of a previous fast saccade.
+    this[`${axis}_v`] = this[`${axis}_v`] * 0.85 + K * (measurement - pred_x) / dt * 0.15;
     this[`${axis}_p`] = (1 - K) * pred_p;
 
     return this[`${axis}_x`];
@@ -67,6 +75,12 @@ class KalmanFilter2D {
       x: this._update('x', mx),
       y: this._update('y', my)
     };
+  }
+
+  /** FIX STUCK-1: Damp velocity toward zero — call when confidence is low */
+  dampVelocity(factor = 0.5) {
+    this.x_v *= factor;
+    this.y_v *= factor;
   }
 
   reset() { this._init('x'); this._init('y'); }
@@ -412,6 +426,12 @@ class CalibrationEngine {
     this.calibData    = [];
     this.model        = null;
     this.isCalibrated = false;
+    // FIX RECALIB-3: Also clear range normalization state so a fresh
+    // calibration always recomputes the observed iris range from scratch.
+    this.gazeRangeX   = null;
+    this.gazeRangeY   = null;
+    // Clear localStorage so the old model doesn't reload on next page load
+    try { localStorage.removeItem('accesseye_calib'); } catch(_) {}
   }
 }
 
@@ -578,6 +598,10 @@ class GazeEngine {
   processResults(multiFaceLandmarks, videoWidth, videoHeight) {
     if (!multiFaceLandmarks || multiFaceLandmarks.length === 0) {
       this.confidence = 0;
+      // FIX STUCK-3: When face is lost, damp Kalman velocity so the cursor
+      // doesn't drift into a corner and stay there. Decay velocity to zero
+      // so the next valid frame gets a clean starting momentum.
+      this.kalman.dampVelocity(0.0);  // zero out velocity immediately on face loss
       return null;
     }
 
@@ -661,16 +685,15 @@ class GazeEngine {
     if (this.calibration.isCalibrated) {
       screenCoords = this.calibration.mapGaze(smoothResult.x, smoothResult.y);
     } else {
-      // FIX SCOPE-3: Increase uncalibrated multipliers.
-      // Iris offset (rawGX/Y) range is approximately ±0.15 to ±0.25.
-      // Old multipliers 3.5/4.0 only projected to ±0.525/±0.60 → gaze
-      // covered only ~60% of screen. New multipliers 6.0/8.0 project
-      // ±0.15 iris range to ±0.90 screen, covering ~90% each axis.
+      // FIX SCOPE-3c: Higher uncalibrated multipliers.
+      // iris offset (normalized by eye span) is typically ±0.02–0.04 image units.
+      // Multiplier 7.0 maps ±0.03 → ±0.21, covering ~42% per side = 84% total range.
+      // Head-position term handles off-center faces and adds coverage near edges.
       const headX = lm[1].x;  // nose tip
       const headY = lm[1].y;
       screenCoords = {
-        sx: clamp(0.5 + smoothResult.x * 6.0 + (0.5 - headX) * 0.8, 0, 1),
-        sy: clamp(0.5 + smoothResult.y * 8.0 + (headY - 0.5) * 1.0, 0, 1)
+        sx: clamp(0.5 + smoothResult.x * 7.0 + (0.5 - headX) * 1.2, 0, 1),
+        sy: clamp(0.5 + smoothResult.y * 7.0 + (headY - 0.5) * 1.3, 0, 1)
       };
     }
 
@@ -1007,14 +1030,24 @@ class CalibrationUI {
 
   show(onComplete) {
     this._onComplete = onComplete;
-    this.calibEngine.reset();
+    // FIX RECALIB-1: Fully reset CalibrationUI state on every show() call.
+    // Without this, a second calibration attempt would see collecting=true or
+    // stale sampleInterval from the previous run and refuse to start.
+    this.collecting = false;
     this.currentStep = -1;
+    this.sampleCount = 0;
+    if (this._sampleInterval) { clearInterval(this._sampleInterval); this._sampleInterval = null; }
+    // FIX RECALIB-3: Reset engine + clear old model so we always start fresh.
+    this.calibEngine.reset();
+    this._arenaW = 0;
+    this._arenaH = 0;
     this.overlay.style.display = 'flex';
+    // Re-enable the Start button in case it was left disabled by a previous run
+    const startBtn = $('#start-calib-btn');
+    if (startBtn) { startBtn.disabled = false; startBtn.innerHTML = '<i class="fas fa-play"></i> Start Calibration'; }
     this._updateProgress(0);
-    this.log.add('Calibration started', 'info');
-    // FIX CAL-2: defer _renderPoints until after the browser has painted the
-    // full-viewport overlay so offsetWidth/Height return correct dimensions.
-    // Double-rAF ensures the flex layout has fully resolved before we query.
+    if (this.stepLabel) this.stepLabel.textContent = `Step 0 / ${this.calibEngine.CALIB_POINTS.length}`;
+    this.log.add('Calibration ready — press Start to begin', 'info');
     requestAnimationFrame(() => requestAnimationFrame(() => this._renderPoints()));
   }
 
@@ -1060,7 +1093,13 @@ class CalibrationUI {
   }
 
   async start() {
-    if (this.collecting) return;
+    // FIX RECALIB-2: Guard replaced — was `if (this.collecting) return` which
+    // blocked every second calibration. Now we reset state instead.
+    if (this.collecting) {
+      clearInterval(this._sampleInterval);
+      this._sampleInterval = null;
+      this.collecting = false;
+    }
 
     // FIX CAL-2: if _renderPoints hasn't finished yet (overlay just shown),
     // wait one more frame before starting.  The Start button is only visible
@@ -1555,6 +1594,30 @@ class AccessEyeApp {
 
     this.log.add('Requesting camera access...', 'info');
 
+    // FIX CAM-1: Fully tear down previous session before restarting.
+    // Restarting without cleanup left the old MediaPipe controller running,
+    // Phase 2 patched to the old controller, and duplicate event listeners.
+    if (this.mpController) {
+      this.mpController.stop();
+      this.mpController = null;
+    }
+    // Deactivate Phase 2 so it re-activates cleanly on the new camera stream.
+    if (this.phase2?.active) {
+      this.phase2.deactivate();
+    }
+    // FIX CAM-RESTART: Always reset the _activated guard so phase2-init
+    // will re-patch the brand-new MediaPipeController on every restart.
+    if (window._p2InitController) {
+      window._p2InitController._activated = false;
+    }
+    // FIX CAM-RESTART: Clear all gaze-engine callbacks so _wireMediaPipeEvents
+    // doesn't accumulate duplicate 'gaze' listeners on each restart.
+    this.gazeEngine._callbacks = {};
+
+    // Reset Phase 1 gaze engine state
+    this.gazeEngine.reset();
+    this.cameraOn = false;
+
     // Initialize MediaPipe
     const videoEl  = $('#demo-video');
     const canvasEl = $('#overlay-canvas');
@@ -1608,6 +1671,15 @@ class AccessEyeApp {
     if (this.phase2?.active) {
       this.phase2.deactivate();
     }
+    // FIX CAM-RESTART: Always reset Phase 2 activation state so restart works cleanly.
+    if (window._p2InitController) {
+      window._p2InitController._activated = false;
+    }
+    // FIX CAM-RESTART: Clear accumulated gaze-engine event listeners so the
+    // next _wireMediaPipeEvents() call starts fresh (no duplicate handlers).
+    this.gazeEngine._callbacks = {};
+    // Reset gaze engine state
+    this.gazeEngine.reset();
 
     // Reset mode back to mouse simulation
     this.mode = 'mouse';
@@ -1726,6 +1798,10 @@ class AccessEyeApp {
     this.gazeCursor.style.display = 'block';
     this.gazeCursor.style.left = `${px}px`;
     this.gazeCursor.style.top  = `${py}px`;
+
+    // Track last screen position for intent timer and Phase 3
+    this._lastScreenX = px;
+    this._lastScreenY = py;
 
     // Update camera feed dot
     const videoEl = $('#demo-video');

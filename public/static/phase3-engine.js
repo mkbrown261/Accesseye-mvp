@@ -1302,7 +1302,11 @@ class Phase3Orchestrator {
     const gazeEngine = p2Orch.hybridGaze;
 
     // ── Instantiate P3 modules ──
-    this.oneEuro  = new OneEuroFilter(0.3, 0.05, 1.0, 30);    // P3.1  FIX ACC-1: minCutoff 1.0→0.3, beta 0.02→0.05
+    // FIX JITTER-4: OneEuro tuned for gaze — lower minCutoff = more smoothing at rest.
+    // minCutoff=0.15Hz gives very strong jitter suppression at fixation.
+    // beta=0.02 allows fast saccades to pass through without lag.
+    // dCutoff=1.0Hz derivative filter keeps the speed estimate stable.
+    this.oneEuro  = new OneEuroFilter(0.15, 0.02, 1.0, 30);    // P3.1  FIX JITTER-4
     this.ivt      = new IVTSaccadeDetector(35, 100, 3);        // P3.2
     this.dwell    = new AdaptiveDwellTimer('normal', this.ivt);// P3.3
     this.pace     = new PACERecalibrator(calib, 100, 0.995, 0.65, 10);  // P3.4
