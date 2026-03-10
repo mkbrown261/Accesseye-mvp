@@ -278,13 +278,17 @@ class CalibrationEngine {
   }
 
   /**
-   * FIX SCOPE-6: Normalize a raw gaze value to [-0.5, 0.5] using observed range.
-   * This maps the user's actual iris displacement range to a fixed unit scale.
+   * FIX SCOPE-6 / FIX D-5: Normalize a raw gaze value using observed range.
+   * Maps [range.min, range.max] → [-0.5, +0.5]
+   * Formula: (val - mid) / fullRange  where fullRange = max-min
+   * This was previously dividing by (half*2) which is the same as fullRange — correct.
+   * Output range: [-0.5, +0.5] (center = 0, extremes = ±0.5)
    */
   _normalizeGaze(val, range) {
-    const mid = (range.max + range.min) / 2;
-    const half = (range.max - range.min) / 2;
-    return half > 0 ? (val - mid) / (half * 2) : val;
+    const mid       = (range.max + range.min) / 2;
+    const fullRange = range.max - range.min;
+    // Clamp to a small epsilon to avoid division by zero
+    return fullRange > 0.001 ? (val - mid) / fullRange : val;
   }
 
   /**
@@ -543,8 +547,12 @@ class GestureEngine {
 class GazeEngine {
   constructor(calibration) {
     this.calibration = calibration;
+    // FIX D-4: EMA alpha reduced from 0.25 → 0.15.
+    // Phase 1 EMA is the only smoothing in non-Phase-2 mode.
+    // 0.25 was causing ~3-4 frame lag on fast eye movements.
+    // 0.15 provides a better balance of smoothness vs responsiveness.
     this.kalman = new KalmanFilter2D(0.008, 0.0002);
-    this.ema = new EMAFilter(0.25);
+    this.ema = new EMAFilter(0.15);
 
     // MediaPipe Face Mesh iris landmark indices
     // Left eye iris:  landmarks 468-472
@@ -650,8 +658,13 @@ class GazeEngine {
     const rightOffsetX = rightEyeSpan   > 0 ? (rightIrisCenter.x - rightEyeMidX) / rightEyeSpan   : 0;
     const rightOffsetY = rightEyeHeight > 0 ? (rightIrisCenter.y - rightEyeMidY) / rightEyeHeight : 0;
 
-    // Average of both eyes (binocular gaze vector)
-    const rawGX = (leftOffsetX + rightOffsetX) / 2;
+    // FIX D-1: Negate X offset to correct for camera mirroring.
+    // MediaPipe FaceMesh reports landmarks in camera space where x increases
+    // left→right from the camera's perspective. Since the user faces the camera,
+    // their left = camera's right → a positive iris offset in camera x means the
+    // user is looking LEFT (from their perspective). Negating corrects this.
+    // Without this fix, looking left moves cursor right and vice versa.
+    const rawGX = -((leftOffsetX + rightOffsetX) / 2);
     const rawGY = (leftOffsetY + rightOffsetY) / 2;
 
     // ── CONFIDENCE ──
@@ -685,14 +698,14 @@ class GazeEngine {
     if (this.calibration.isCalibrated) {
       screenCoords = this.calibration.mapGaze(smoothResult.x, smoothResult.y);
     } else {
-      // FIX SCOPE-3c: Higher uncalibrated multipliers.
-      // iris offset (normalized by eye span) is typically ±0.02–0.04 image units.
-      // Multiplier 7.0 maps ±0.03 → ±0.21, covering ~42% per side = 84% total range.
-      // Head-position term handles off-center faces and adds coverage near edges.
-      const headX = lm[1].x;  // nose tip
+      // FIX D-2 + SCOPE-3: Uncalibrated fallback mapping.
+      // rawGX is already negated (camera-space corrected). The nose tip x is in
+      // camera space; (headX - 0.5) = positive when face is camera-right = user-left,
+      // so we negate it to push screen coords toward user's right when face is there.
+      const headX = lm[1].x;  // nose tip (camera space, NOT mirrored)
       const headY = lm[1].y;
       screenCoords = {
-        sx: clamp(0.5 + smoothResult.x * 7.0 + (0.5 - headX) * 1.2, 0, 1),
+        sx: clamp(0.5 + smoothResult.x * 7.0 - (headX - 0.5) * 1.2, 0, 1),
         sy: clamp(0.5 + smoothResult.y * 7.0 + (headY - 0.5) * 1.3, 0, 1)
       };
     }
@@ -1500,6 +1513,7 @@ class AccessEyeApp {
     this._tryLoadCalibration();
     this._setupSimulation();
     this._setupHeroButtons();
+    this._setupDebugPanel();
     this._startCursorFromMouse(); // Default: mouse sim for demos
   }
 
@@ -2055,6 +2069,117 @@ class AccessEyeApp {
       const raw = this.gazeEngine?.rawGaze;
       if (raw) rawEl.textContent = `raw:(${raw.x.toFixed(3)}, ${raw.y.toFixed(3)})`;
     }
+    // Update diagnostic debug panel
+    this._updateDebugPanel(x, y);
+  }
+
+  /* ── GAZE DIAGNOSTIC DEBUG PANEL ────────────────────────────────────────
+   * Shows real-time pipeline values to diagnose axis inversion, scope issues,
+   * mapping errors, and head-pose compensation.
+   * Shortcut: Alt+D to toggle.
+   * All values are live — update every gaze frame when camera is running.
+   ─────────────────────────────────────────────────────────────────────── */
+  _setupDebugPanel() {
+    this._debugVisible = false;
+    this._debugScopeX  = { min: 1, max: 0 };  // track observed raw X range
+    this._debugScopeY  = { min: 1, max: 0 };  // track observed raw Y range
+    this._debugFPS     = 0;
+    this._debugFrameT  = performance.now();
+    this._debugFrameCount = 0;
+
+    const panel  = $('#gaze-debug-panel');
+    const toggle = $('#debug-toggle-btn');
+    const close  = $('#debug-close-btn');
+
+    const show = () => {
+      this._debugVisible = true;
+      if (panel)  panel.style.display = 'block';
+      if (toggle) toggle.style.display = 'none';
+    };
+    const hide = () => {
+      this._debugVisible = false;
+      if (panel)  panel.style.display = 'none';
+      if (toggle) toggle.style.display = 'block';
+    };
+
+    if (toggle) toggle.addEventListener('click', show);
+    if (close)  close.addEventListener('click', hide);
+
+    // Alt+D keyboard shortcut
+    document.addEventListener('keydown', e => {
+      if (e.altKey && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        this._debugVisible ? hide() : show();
+      }
+    });
+  }
+
+  _updateDebugPanel(screenX, screenY) {
+    if (!this._debugVisible) return;
+
+    // FPS tracking
+    this._debugFrameCount++;
+    const now = performance.now();
+    if (now - this._debugFrameT >= 1000) {
+      this._debugFPS = this._debugFrameCount;
+      this._debugFrameCount = 0;
+      this._debugFrameT = now;
+    }
+
+    // Get raw gaze from active engine
+    const raw  = this.gazeEngine?.rawGaze || { x: 0, y: 0 };
+    const conf = this.gazeEngine?.confidence ?? 0;
+    const calib = this.calibration?.isCalibrated ? 'YES' : 'NO';
+
+    // Scope tracking (running min/max of raw gaze)
+    if (raw.x < this._debugScopeX.min) this._debugScopeX.min = raw.x;
+    if (raw.x > this._debugScopeX.max) this._debugScopeX.max = raw.x;
+    if (raw.y < this._debugScopeY.min) this._debugScopeY.min = raw.y;
+    if (raw.y > this._debugScopeY.max) this._debugScopeY.max = raw.y;
+
+    // Direction arrow (4 quadrants)
+    const cx = screenX - 0.5, cy = screenY - 0.5;
+    let dir = '·';
+    const th = 0.12;  // threshold to show direction
+    if      (Math.abs(cx) > th && Math.abs(cx) > Math.abs(cy)) dir = cx > 0 ? '→' : '←';
+    else if (Math.abs(cy) > th) dir = cy > 0 ? '↓' : '↑';
+    else if (Math.abs(cx) > th*0.5 || Math.abs(cy) > th*0.5)
+      dir = (cx > 0 ? 'R' : 'L') + '/' + (cy > 0 ? 'D' : 'U');
+
+    // Head pose from Phase 2 if available
+    let hpYaw = '—', hpPitch = '—';
+    const p2orch = window.app?.phase2;
+    if (p2orch?.active) {
+      const hp = p2orch.hybridGaze?.calibration?.isCalibrated !== undefined
+        ? null : null;
+      // Read from last p2 enhanced packet stored on orchestrator
+      if (p2orch._lastHeadPose) {
+        hpYaw   = p2orch._lastHeadPose.yaw?.toFixed(1)   + '°';
+        hpPitch = p2orch._lastHeadPose.pitch?.toFixed(1) + '°';
+      }
+    }
+
+    const phase = p2orch?.active ? 'P2' + (window.app?.phase3?.active ? '+P3' : '') : 'P1';
+
+    // Update DOM
+    const set = (id, val) => { const el = $(`#${id}`); if (el) el.textContent = val; };
+    set('dbg-raw-gx',  raw.x.toFixed(4));
+    set('dbg-raw-gy',  raw.y.toFixed(4));
+    set('dbg-screen-x', screenX.toFixed(3));
+    set('dbg-screen-y', screenY.toFixed(3));
+    set('dbg-px', (screenX * window.innerWidth).toFixed(0)  + 'px');
+    set('dbg-py', (screenY * window.innerHeight).toFixed(0) + 'px');
+    set('dbg-conf',  (conf * 100).toFixed(0) + '%');
+    set('dbg-calib', calib);
+    set('dbg-hp-yaw',   hpYaw);
+    set('dbg-hp-pitch', hpPitch);
+    set('dbg-phase', phase);
+    set('dbg-fps',   this._debugFPS);
+    set('dbg-direction', dir);
+    set('dbg-scope-x-min', this._debugScopeX.min < 1 ? this._debugScopeX.min.toFixed(3) : '—');
+    set('dbg-scope-x-max', this._debugScopeX.max > 0 ? this._debugScopeX.max.toFixed(3) : '—');
+    set('dbg-scope-y-min', this._debugScopeY.min < 1 ? this._debugScopeY.min.toFixed(3) : '—');
+    set('dbg-scope-y-max', this._debugScopeY.max > 0 ? this._debugScopeY.max.toFixed(3) : '—');
   }
 
   _updateCoordTarget(label) {

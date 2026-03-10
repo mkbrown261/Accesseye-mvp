@@ -73,7 +73,7 @@ Based on this gaze pattern, predict the user's most likely intended action.`
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'gpt-5-mini',
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user',   content: userPrompt }
@@ -130,6 +130,25 @@ app.post('/api/benchmark', async (c) => {
 app.get('/api/benchmark/latest', (c) => {
   const last = benchmarkResults[benchmarkResults.length - 1]
   return c.json(last || { error: 'No benchmark data yet' })
+})
+
+/* ════════════════════════════════════════════════════════════════
+   Health + Config Check
+   GET /api/health
+   Returns: system status, OpenAI key presence, build version.
+   IMPORTANT: Never expose the actual key — only confirm presence.
+════════════════════════════════════════════════════════════════ */
+app.get('/api/health', (c) => {
+  const hasKey = !!(c.env?.OPENAI_API_KEY)
+  return c.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    openai_key_configured: hasKey,
+    // FIX: openai_key is NEVER returned — only presence flag
+    base_url: c.env?.OPENAI_BASE_URL || 'https://www.genspark.ai/api/llm_proxy/v1',
+    version: '2.0.0',
+    phases: ['Phase1-GazeEngine', 'Phase2-HybridGaze', 'Phase3-OneEuro']
+  })
 })
 
 // Main app - single page application
@@ -1219,6 +1238,106 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
     <div class="audio-toggle" id="audio-toggle" title="Toggle Audio Feedback">
       <i class="fas fa-volume-up" id="audio-icon"></i>
     </div>
+
+    <!-- ── GAZE DIAGNOSTIC OVERLAY ────────────────────────────────────────────
+         Real-time debug panel showing raw iris offsets, screen projection,
+         confidence, head-pose angles, and pipeline stage values.
+         Toggle with keyboard shortcut: Alt+D (or click the toggle button).
+         Helps diagnose axis inversion, scope issues, and mapping errors.
+    ─────────────────────────────────────────────────────────────────────── -->
+    <div id="gaze-debug-panel" style="
+      display:none;
+      position:fixed;
+      bottom:12px;
+      left:12px;
+      z-index:99999;
+      background:rgba(10,14,26,0.93);
+      border:1px solid #00d4ff44;
+      border-radius:10px;
+      padding:12px 16px;
+      min-width:260px;
+      font-family:monospace;
+      font-size:11px;
+      color:#e0e0e0;
+      box-shadow:0 4px 24px #000a;
+      pointer-events:none;
+    ">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;pointer-events:auto;">
+        <span style="color:#00d4ff;font-weight:bold;font-size:12px;">⚙ Gaze Diagnostics</span>
+        <span style="cursor:pointer;color:#888;font-size:13px;" id="debug-close-btn" title="Close (Alt+D)">✕</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 12px;line-height:1.7;">
+        <!-- Row 1: Raw iris offset -->
+        <span style="color:#888;">rawGX</span>
+        <span id="dbg-raw-gx" style="color:#00d4ff;">—</span>
+        <span style="color:#888;">rawGY</span>
+        <span id="dbg-raw-gy" style="color:#00d4ff;">—</span>
+
+        <!-- Row 2: Mapped screen (0-1) -->
+        <span style="color:#888;">screenX</span>
+        <span id="dbg-screen-x" style="color:#4ade80;">—</span>
+        <span style="color:#888;">screenY</span>
+        <span id="dbg-screen-y" style="color:#4ade80;">—</span>
+
+        <!-- Row 3: Screen pixels -->
+        <span style="color:#888;">px</span>
+        <span id="dbg-px" style="color:#facc15;">—</span>
+        <span style="color:#888;">py</span>
+        <span id="dbg-py" style="color:#facc15;">—</span>
+
+        <!-- Row 4: Confidence -->
+        <span style="color:#888;">confidence</span>
+        <span id="dbg-conf" style="color:#fb923c;">—</span>
+        <span style="color:#888;">calib</span>
+        <span id="dbg-calib" style="color:#fb923c;">—</span>
+
+        <!-- Row 5: Head pose -->
+        <span style="color:#888;">hp.yaw</span>
+        <span id="dbg-hp-yaw" style="color:#c084fc;">—</span>
+        <span style="color:#888;">hp.pitch</span>
+        <span id="dbg-hp-pitch" style="color:#c084fc;">—</span>
+
+        <!-- Row 6: Phase -->
+        <span style="color:#888;">phase</span>
+        <span id="dbg-phase" style="color:#f0abfc;">—</span>
+        <span style="color:#888;">fps</span>
+        <span id="dbg-fps" style="color:#f0abfc;">—</span>
+      </div>
+
+      <!-- Axis direction test: shows L/R/U/D arrow based on gaze quadrant -->
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid #ffffff11;">
+        <span style="color:#888;">direction:</span>
+        <span id="dbg-direction" style="color:#fff;font-size:16px;margin-left:6px;">·</span>
+        <span style="color:#555;font-size:10px;margin-left:4px;">(verify axes)</span>
+      </div>
+      <!-- Scope check bar -->
+      <div style="margin-top:6px;">
+        <span style="color:#888;font-size:10px;">X scope: </span>
+        <span id="dbg-scope-x-min" style="color:#666;">—</span>
+        <span style="color:#444;"> .. </span>
+        <span id="dbg-scope-x-max" style="color:#666;">—</span>
+        <span style="color:#888;font-size:10px;margin-left:8px;">Y: </span>
+        <span id="dbg-scope-y-min" style="color:#666;">—</span>
+        <span style="color:#444;"> .. </span>
+        <span id="dbg-scope-y-max" style="color:#666;">—</span>
+      </div>
+    </div>
+
+    <!-- Debug toggle button (always visible, bottom-left corner) -->
+    <button id="debug-toggle-btn" title="Toggle Gaze Diagnostics (Alt+D)" style="
+      position:fixed;
+      bottom:12px;
+      left:12px;
+      z-index:99998;
+      background:rgba(0,212,255,0.12);
+      border:1px solid #00d4ff44;
+      border-radius:6px;
+      color:#00d4ff;
+      padding:4px 8px;
+      font-size:11px;
+      cursor:pointer;
+      font-family:monospace;
+    ">⚙ Debug</button>
 
   </div><!-- end #app-root -->
 

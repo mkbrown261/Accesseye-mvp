@@ -365,19 +365,19 @@ class HybridGazeEngine {
       const mapped = this.calibration.mapGaze(fusedX, fusedY);
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
-      // FIX SCOPE-4c: Higher uncalibrated multipliers.
-      // irisSignal.x/y are normalized by eye-span in image coordinates (0-1).
-      // A typical iris offset is 0.02-0.04 image units; with multipliers
-      // we map: 0.5 ± (0.03 * 7.0) = 0.5 ± 0.21 → covers ~42% per side = 84% total.
-      // Head pose contribution adds another ±0.3 for a total of ~100% range.
-      // This is the right balance: extreme eye positions reach edges without
-      // requiring the user to look way outside the screen.
-      const headX = lm[1].x;  // nose tip X (0=left, 1=right in image)
+      // FIX D-2 + SCOPE-4: Phase 2 uncalibrated fallback.
+      // fusedX is already negated (D-1 fix in _computeIrisSignal).
+      // nose tip headX is in camera space (0=camera-left=user-right).
+      // Use -(headX - 0.5) so face displaced camera-right → cursor left (correct).
+      // FIX D-9: hYaw sign must be NEGATIVE to match _computeHeadPoseSignal convention.
+      //   HeadPoseEstimator yaw: positive = nose turned camera-right = user turned LEFT.
+      //   Looking left (positive yaw) → cursor should move LEFT → subtract from screen.x.
+      const headX = lm[1].x;  // nose tip X (camera space)
       const headY = lm[1].y;  // nose tip Y
-      const hYaw  = (headPoseResult?.yaw || 0) / 45;   // normalized yaw contribution
-      const hPit  = (headPoseResult?.pitch || 0) / 35;  // normalized pitch contribution
+      const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
+      const hPit  = (headPoseResult?.pitch || 0) / 35;
       screen = {
-        x: p2.clamp(0.5 + fusedX * 7.0 + (0.5 - headX) * 1.2 + hYaw * 0.2, 0.01, 0.99),
+        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.01, 0.99),
         y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.01, 0.99)
       };
     }
@@ -455,8 +455,10 @@ class HybridGazeEngine {
     const wL = totalQ > 0 ? lQuality / totalQ : 0.5;
     const wR = totalQ > 0 ? rQuality / totalQ : 0.5;
 
-    // Weighted binocular average
-    const x = wL * lOX + wR * rOX;
+    // FIX D-1: Negate X before weighted binocular average to correct camera mirroring.
+    // MediaPipe x increases left→right in camera space; user's left = camera's right.
+    // Positive lOX/rOX means iris displaced toward camera-right = user looking LEFT.
+    const x = -(wL * lOX + wR * rOX);  // negated to fix left/right inversion
     const y = wL * lOY + wR * rOY;
 
     // Confidence: eye span relative to face width, penalize asymmetry
@@ -469,10 +471,14 @@ class HybridGazeEngine {
 
   _computeHeadPoseSignal(hp) {
     if (!hp || !hp.valid) return { x: 0, y: 0 };
-    // Convert head angles to normalized gaze displacement
-    // Yaw → horizontal shift, pitch → vertical shift
-    const x = p2.clamp(-hp.yaw  / 50, -0.5, 0.5);
-    const y = p2.clamp(-hp.pitch / 40, -0.5, 0.5);
+    // FIX D-7: Head pose yaw/pitch to screen displacement.
+    // HeadPoseEstimator.yaw: positive = nose displaced camera-right = user turned LEFT.
+    // For gaze: turning left should move cursor left → x displacement = -yaw/50.
+    // HOWEVER: since iris X is already negated (D-1), and head pose is computed
+    // from camera-space landmarks, we must also negate yaw contribution.
+    // Pitch: positive = nose below eye midpoint = looking down → screen y increases.
+    const x = p2.clamp(-hp.yaw  / 50, -0.5, 0.5);  // same sign convention as iris
+    const y = p2.clamp( hp.pitch / 40, -0.5, 0.5);  // positive pitch = looking down
     return { x, y };
   }
 
@@ -493,8 +499,13 @@ class HybridGazeEngine {
 
     // Displacement from face center
     const faceMidX = faceLeft && faceRight ? (faceLeft.x + faceRight.x)/2 : 0.5;
+
+    // FIX D-8: Negate X to match iris signal convention (camera space → user space).
+    // Pupil cx is in camera space: positive = camera-right = user-left.
+    // Without negation the pupil signal fights the corrected iris signal.
+    const rawX = faceSpan > 0 ? (cx - faceMidX) / faceSpan : 0;
     return {
-      x: faceSpan > 0 ? (cx - faceMidX) / faceSpan : 0,
+      x: -rawX,   // negated to match D-1 iris mirroring fix
       y: cy - 0.5
     };
   }
@@ -1039,21 +1050,34 @@ class DynamicCalibrationEngine {
   _microUpdate() {
     if (!this.base.isCalibrated || this.microSamples.length < 5) return;
 
+    // FIX D-3: Apply the same gazeRangeX/Y normalization as the base model.
+    // The base CalibrationEngine normalizes gaze to [-0.5, +0.5] before fitting.
+    // Without this, micro-samples feed raw gaze coordinates while the polynomial
+    // was trained on normalized coordinates → severe mismatch causes drift.
+    const rngX = this.base.model?.gazeRangeX;
+    const rngY = this.base.model?.gazeRangeY;
+    const norm = (val, rng) => {
+      if (!rng) return val;
+      const mid = (rng.max + rng.min) / 2;
+      const fullRange = rng.max - rng.min;
+      return fullRange > 0.001 ? (val - mid) / fullRange : val;
+    };
+
     const blended = [
-      // Original calibration points — high anchor weight
+      // Original calibration points — high anchor weight (already normalized in model)
       ...this.base.calibData.filter(d => d.gx !== undefined).map(d => ({
-        gx: d.gx, gy: d.gy, sx: d.sx, sy: d.sy, w: 2.0
+        gx: norm(d.gx, rngX), gy: norm(d.gy, rngY), sx: d.sx, sy: d.sy, w: 2.0
       })),
-      // Micro-samples with time-decayed weights
-      ...this.microSamples.map(s => ({ gx: s.gx, gy: s.gy, sx: s.sx, sy: s.sy, w: s.w }))
+      // Micro-samples: normalize before regression
+      ...this.microSamples.map(s => ({
+        gx: norm(s.gx, rngX), gy: norm(s.gy, rngY), sx: s.sx, sy: s.sy, w: s.w
+      }))
     ];
 
-    // Use degree-2 ridge regression (same as base CalibrationEngine v3)
     const modelX = this._ridgeLS(blended, p => p.sx, this.MICRO_LAMBDA);
     const modelY = this._ridgeLS(blended, p => p.sy, this.MICRO_LAMBDA);
 
     if (modelX && modelY) {
-      // Update model preserving metadata
       this.base.model = {
         ...this.base.model,
         x: modelX, y: modelY,
@@ -1763,6 +1787,9 @@ class Phase2Orchestrator {
       );
     }
     this._p1LastGaze = { x: gazePacket.screen.x, y: gazePacket.screen.y };
+
+    // Store head pose for debug panel access
+    this._lastHeadPose = headResult;
 
     // ── Forward to Phase 1 UI pipeline ──
     const screenX = biasFixed.x * window.innerWidth;
