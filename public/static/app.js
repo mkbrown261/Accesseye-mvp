@@ -155,9 +155,26 @@ class CalibrationEngine {
     // FIX ACC-2: Increase samples per point 25→40 for more robust outlier removal.
     // With 40 samples we can trim 35% (14 samples) and still have 26 clean samples
     // per point, vs 25*20%=5 trimmed before (insufficient for outlier rejection).
-    this.SAMPLES_PER_POINT = 40;
+    this.SAMPLES_PER_POINT = 50;   // FIX EDGE-1: Increased 40→50 so 30% trim still keeps 35 clean samples
     this.RIDGE_LAMBDA      = 0.01;  // regularisation strength (λ)
     this.MIN_POINTS_FOR_MODEL = 6;  // minimum calibration points to build model
+
+    // FIX EDGE-2: Per-point trim rates. Corner/edge points trim LESS (20%) so their
+    // extreme gaze readings aren't discarded. Interior points still trim 30%.
+    // Without this, the 35% global trim removes the very corner samples that
+    // define the outer extent of the eye's range — pulling the model inward.
+    this.CORNER_TRIM   = 0.20;  // 4 corners (idx 0-3): trim only 20% of samples
+    this.MIDEDGE_TRIM  = 0.25;  // 4 mid-edges (idx 4-7): trim 25%
+    this.INTERIOR_TRIM = 0.30;  // 4 inner + center (idx 8-12): trim 30%
+
+    // FIX EDGE-3: Regression weights per point zone.
+    // Corners and mid-edges are structurally more important for the polynomial
+    // than interior points — they define the mapping at the extremes.
+    // Upweighting them forces the regression to fit edges precisely even if
+    // it means slightly worse fit at interior points.
+    this.CORNER_WEIGHT   = 4.0;  // corners get 4× weight
+    this.MIDEDGE_WEIGHT  = 2.5;  // mid-edges get 2.5×
+    this.INTERIOR_WEIGHT = 1.0;  // interior points baseline
 
     // Event system (used to notify GazeEngine of calibration completion)
     this._callbacks = {};
@@ -180,6 +197,20 @@ class CalibrationEngine {
     this.calibData[pointIdx].samples.push({ gx: rawGazeX, gy: rawGazeY });
   }
 
+  /* FIX EDGE-2: Return the trim fraction for a given point index */
+  _trimFraction(pointIdx) {
+    if (pointIdx < 4)  return this.CORNER_TRIM;    // corners
+    if (pointIdx < 8)  return this.MIDEDGE_TRIM;   // mid-edges
+    return this.INTERIOR_TRIM;                      // interior + center
+  }
+
+  /* FIX EDGE-3: Return the regression weight for a given point index */
+  _pointWeight(pointIdx) {
+    if (pointIdx < 4)  return this.CORNER_WEIGHT;
+    if (pointIdx < 8)  return this.MIDEDGE_WEIGHT;
+    return this.INTERIOR_WEIGHT;
+  }
+
   /* After collecting samples, compute trimmed-mean gaze vector per point.
    * FIX C-1: Sort by 2D Euclidean distance from centroid and discard the
    * worst 20% rows TOGETHER (axis-coupled), so a blink frame that corrupts
@@ -200,13 +231,17 @@ class CalibrationEngine {
       .map(s => ({ ...s, dist: Math.hypot(s.gx - cx, s.gy - cy) }))
       .sort((a, b) => a.dist - b.dist);
 
-    // FIX ACC-2: Discard the outermost 35% of samples (up from 20%).
-    // With 40 samples collected per point, trimming 35% removes 14 outlier frames
-    // (blinks, squints, involuntary saccades) while keeping 26 clean samples.
-    // This significantly improves per-point accuracy especially at corners where
-    // users tend to over/undershoot before settling.
-    const cut     = Math.floor(ranked.length * 0.35);
-    const trimmed = ranked.slice(0, ranked.length - cut);  // keep closest 65%
+    // FIX EDGE-2: Use per-point trim rates instead of a global 35% cut.
+    // Corners trim only 20% — they have fewer valid extreme-position samples
+    // and we NEED those extremes to correctly map the screen edges.
+    // Interior points trim 30% (slightly less than old 35%) to keep 35 samples.
+    // With 50 samples per point:
+    //   corners  : trim 20% = 10 removed → 40 clean samples
+    //   mid-edges: trim 25% = 13 removed → 37 clean samples
+    //   interior : trim 30% = 15 removed → 35 clean samples
+    const trimFrac = this._trimFraction(pointIdx);
+    const cut     = Math.floor(ranked.length * trimFrac);
+    const trimmed = ranked.slice(0, ranked.length - cut);  // keep closest (1-trimFrac)
 
     d.gx = trimmed.reduce((s, v) => s + v.gx, 0) / trimmed.length;
     d.gy = trimmed.reduce((s, v) => s + v.gy, 0) / trimmed.length;
@@ -236,24 +271,48 @@ class CalibrationEngine {
     // screen regardless of head position or eye geometry variations.
     const allGX = pts.map(p => p.gx);
     const allGY = pts.map(p => p.gy);
-    this.gazeRangeX = { min: Math.min(...allGX), max: Math.max(...allGX) };
-    this.gazeRangeY = { min: Math.min(...allGY), max: Math.max(...allGY) };
+    const rawMinX = Math.min(...allGX), rawMaxX = Math.max(...allGX);
+    const rawMinY = Math.min(...allGY), rawMaxY = Math.max(...allGY);
 
-    // Sanity: if range is too narrow (user didn't move eyes enough), use fallback
-    const rangeX = this.gazeRangeX.max - this.gazeRangeX.min;
-    const rangeY = this.gazeRangeY.max - this.gazeRangeY.min;
-    if (rangeX < 0.05) { this.gazeRangeX = { min: -0.15, max: 0.15 }; }
-    if (rangeY < 0.03) { this.gazeRangeY = { min: -0.10, max: 0.10 }; }
+    // FIX EDGE-4: Pad the gaze range by 12% beyond the observed min/max.
+    // Problem: The normalization maps min→-0.5 and max→+0.5 exactly.
+    // During actual use, gaze can go slightly beyond these bounds (the user
+    // may look even more to the edge than during calibration). Without padding,
+    // these values clip at ±0.5 in normalized space and the polynomial
+    // extrapolates badly — causing the cursor to "stick" near but not quite
+    // at the screen edge.
+    // With 12% padding: the corner gaze values map to ±0.44 (not ±0.5),
+    // leaving room for the polynomial to extrapolate to the true edge.
+    const PAD = 0.12;
+    const rangeX = rawMaxX - rawMinX;
+    const rangeY = rawMaxY - rawMinY;
+    this.gazeRangeX = {
+      min: rawMinX - rangeX * PAD,
+      max: rawMaxX + rangeX * PAD
+    };
+    this.gazeRangeY = {
+      min: rawMinY - rangeY * PAD,
+      max: rawMaxY + rangeY * PAD
+    };
+
+    // Sanity: if range is too narrow (user barely moved eyes), use safe fallback
+    if (rangeX < 0.05) { this.gazeRangeX = { min: -0.17, max: 0.17 }; }
+    if (rangeY < 0.03) { this.gazeRangeY = { min: -0.12, max: 0.12 }; }
 
     // Normalize calibration points to [-0.5, 0.5] before regression so the
     // polynomial coefficients live in a well-conditioned space.
-    const normalizedPts = pts.map(p => ({
+    // FIX EDGE-3: Attach per-point regression weights (corners=4×, mid-edges=2.5×)
+    // so the polynomial fits edge points more precisely.
+    const normalizedPts = pts.map((p, i) => ({
       ...p,
       gx: this._normalizeGaze(p.gx, this.gazeRangeX),
-      gy: this._normalizeGaze(p.gy, this.gazeRangeY)
+      gy: this._normalizeGaze(p.gy, this.gazeRangeY),
+      w:  this._pointWeight(i)   // FIX EDGE-3: weighted regression
     }));
 
-    const lambda = 0.015;  // FIX ACC-3: slightly higher λ for degree-3 stability
+    const lambda = 0.010;  // FIX EDGE-5: Slightly lower λ (0.015→0.010) because
+    // edge-weighting now anchors the polynomial strongly at extremes — we can
+    // afford less regularization without overfitting the interior.
     const modelX = this._ridgeRegression(normalizedPts, p => p.sx, lambda);
     const modelY = this._ridgeRegression(normalizedPts, p => p.sy, lambda);
 
@@ -404,7 +463,7 @@ class CalibrationEngine {
       localStorage.setItem('accesseye_calib', JSON.stringify({
         model:     this.model,
         calibData: this.calibData.map(d => ({ sx: d.sx, sy: d.sy, gx: d.gx, gy: d.gy, label: d.label })),
-        version:   5,  // FIX SCOPE-6: v5 includes gazeRangeX/Y normalization data
+        version:   6,  // FIX EDGE: v6 includes padded gazeRange + edge-weighted regression
         timestamp: Date.now()
       }));
     } catch(_) {}
@@ -415,8 +474,8 @@ class CalibrationEngine {
       const raw = localStorage.getItem('accesseye_calib');
       if (!raw) return false;
       const data = JSON.parse(raw);
-      // Accept v3/v4/v5 models. v3/v4 lack gazeRange — mapGaze handles this gracefully.
-      if (![3, 4, 5].includes(data.version)) {
+      // Accept v3/v4/v5/v6 models. v3/v4 lack gazeRange — mapGaze handles this gracefully.
+      if (![3, 4, 5, 6].includes(data.version)) {
         localStorage.removeItem('accesseye_calib'); return false;
       }
       this.model      = data.model;
@@ -1033,8 +1092,9 @@ class CalibrationUI {
     this.currentStep = -1;
     this.collecting = false;
     this.sampleCount = 0;
-    // FIX ACC-2: Increased from 25 to 40 samples per point for better outlier removal
-    this.SAMPLES = 40;
+    // FIX EDGE-1: Increased from 40 to 50 samples per point so corner points
+    // have enough data even after the reduced (20%) trim
+    this.SAMPLES = 50;
     this._onComplete = null;
     this._sampleInterval = null;
     this._arenaW = 0;   // set in _renderPoints after layout
@@ -1138,8 +1198,37 @@ class CalibrationUI {
     this.collecting = false;
 
     if (success) {
-      this.toast.show('Calibration Complete!', 'Gaze tracking is now calibrated for your eyes.', 'success', 'fas fa-sliders-h');
-      this.log.add('Calibration complete — model built successfully', 'success');
+      // FIX EDGE-7: Post-calibration residual check.
+      // Compute per-point error and log edge accuracy separately.
+      // If corner/edge errors are significantly worse than center, warn user.
+      const W = window.innerWidth, H = window.innerHeight;
+      const residuals = this.calibEngine.getResiduals(W, H);
+      const cornerResiduals  = residuals.filter((_, i) => i < 4);
+      const edgeResiduals    = residuals.filter((_, i) => i >= 4 && i < 8);
+      const interiorResiduals = residuals.filter((_, i) => i >= 8);
+
+      const avg = arr => arr.length ? arr.reduce((s,r) => s + r.errorPx, 0) / arr.length : 0;
+      const cornerErr   = avg(cornerResiduals).toFixed(0);
+      const edgeErr     = avg(edgeResiduals).toFixed(0);
+      const interiorErr = avg(interiorResiduals).toFixed(0);
+      const totalErr    = avg(residuals).toFixed(0);
+
+      this.log.add(`Calibration residuals — corners: ${cornerErr}px, edges: ${edgeErr}px, interior: ${interiorErr}px, total: ${totalErr}px`, 'info');
+
+      const cornerErrNum = parseFloat(cornerErr);
+      if (cornerErrNum > 80) {
+        this.toast.show(
+          'Calibration Complete — Edge accuracy low',
+          `Corner error: ${cornerErr}px. For best results: sit closer, look all the way to screen corners, recalibrate.`,
+          'warn', 'fas fa-exclamation-triangle'
+        );
+        this.log.add(`⚠ Corner error ${cornerErr}px exceeds 80px. Try: sit 50-70cm away, look to true screen corners, recalibrate.`, 'warn');
+      } else if (cornerErrNum > 50) {
+        this.toast.show('Calibration Complete ✓', `Accuracy: ${totalErr}px avg. Good — edge points slightly off, should still work well.`, 'success', 'fas fa-sliders-h');
+      } else {
+        this.toast.show('Calibration Complete ✓', `Excellent accuracy: ${totalErr}px average error across all points.`, 'success', 'fas fa-sliders-h');
+      }
+
       if (this._onComplete) this._onComplete(true);
     } else {
       this.toast.show('Calibration Failed', 'Not enough data collected. Please try again.', 'warn');
@@ -1159,23 +1248,49 @@ class CalibrationUI {
       const ptEl = $(`#calib-pt-${stepIdx}`);
       if (ptEl) ptEl.classList.add('active');
 
-      this.log.add(`Calibrating point ${stepIdx + 1}: ${this.calibEngine.CALIB_POINTS[stepIdx].label}`, 'info');
+      // FIX EDGE-6: Point zone labels for clearer user guidance
+      const ptLabel = this.calibEngine.CALIB_POINTS[stepIdx].label;
+      const isCorner  = stepIdx < 4;
+      const isMidEdge = stepIdx >= 4 && stepIdx < 8;
+      this.log.add(`Point ${stepIdx + 1}: ${ptLabel} — ${isCorner ? 'look to the CORNER' : isMidEdge ? 'look to the EDGE' : 'look at center area'}`, 'info');
 
-      // FIX SCOPE-7: Show a pulsing "look here" countdown ring on the dot
-      // so user knows when sampling is active (not just settling).
-      if (ptEl) {
-        ptEl.style.transform = 'translate(-50%, -50%) scale(1.5)';
-        ptEl.style.transition = 'transform 0.3s ease';
+      // Update live tip bar in overlay
+      const tipBar = $('#calib-tip-bar');
+      if (tipBar) {
+        if (isCorner) {
+          tipBar.textContent = `⚠ CORNER point — look all the way to the CORNER of your screen. Keep head still, move only your eyes.`;
+          tipBar.style.color = '#fbbf24';
+        } else if (isMidEdge) {
+          tipBar.textContent = `📍 EDGE point — look all the way to the screen edge. Eyes fully to the side/top/bottom.`;
+          tipBar.style.color = '#60a5fa';
+        } else {
+          tipBar.textContent = `✓ Interior point — look at the circle. Keep your head still.`;
+          tipBar.style.color = '#4ade80';
+        }
       }
 
-      // FIX ACC-7: Longer settling delay → allow gaze to land on target.
-      // Use 1500ms for corner points (idx 0-3), 1000ms for others.
-      const isCorner = stepIdx < 4;
-      const settleMs = isCorner ? 1500 : 1000;
+      // FIX EDGE-6: Larger dot + stronger pulse animation for corners/edges.
+      // Small dots at corners are hard to fixate precisely on. Scale them up
+      // so the user has a bigger target to look at.
+      if (ptEl) {
+        const startScale = isCorner ? 2.2 : isMidEdge ? 1.8 : 1.5;
+        ptEl.style.transform = `translate(-50%, -50%) scale(${startScale})`;
+        ptEl.style.transition = 'transform 0.3s ease';
+        // Add breathing animation hint
+        ptEl.style.boxShadow = isCorner
+          ? '0 0 0 8px rgba(0,212,255,0.3), 0 0 0 16px rgba(0,212,255,0.15)'
+          : '0 0 0 6px rgba(0,212,255,0.25)';
+      }
+
+      // FIX EDGE-6: Much longer settling delay for corners (2500ms) and edges (1800ms).
+      // Corners require the most head+eye movement and need extra settle time.
+      // Old 1500ms corners / 1000ms others was too short — gaze hadn't stabilized.
+      const settleMs = isCorner ? 2500 : isMidEdge ? 1800 : 1200;
 
       setTimeout(() => {
         if (ptEl) {
           ptEl.style.transform = 'translate(-50%, -50%) scale(1.0)';
+          ptEl.style.boxShadow = '';
         }
         this.sampleCount = 0;
         this.calibEngine.calibData[stepIdx] = {
@@ -1204,9 +1319,9 @@ class CalibrationUI {
           this.sampleCount++;
 
           // Visual: shrink the dot as samples fill up (progress indicator)
-          if (ptEl && this.sampleCount % 4 === 0) {
-            const sz = 1.0 - (this.sampleCount / this.SAMPLES) * 0.4;
-            ptEl.style.transform = `translate(-50%, -50%) scale(${Math.max(sz, 0.6)})`;
+          if (ptEl && this.sampleCount % 5 === 0) {
+            const sz = 1.0 - (this.sampleCount / this.SAMPLES) * 0.35;
+            ptEl.style.transform = `translate(-50%, -50%) scale(${Math.max(sz, 0.65)})`;
           }
 
           const progress = (stepIdx + this.sampleCount / this.SAMPLES) / this.calibEngine.CALIB_POINTS.length;

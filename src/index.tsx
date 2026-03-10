@@ -714,13 +714,20 @@ app.get('/', (c) => {
           <div class="calibration-overlay" id="calibration-overlay" style="display:none">
             <div class="calib-header">
               <h2><i class="fas fa-sliders-h"></i> Eye Tracking Calibration</h2>
-              <p>Look directly at each circle when it glows. Hold your gaze for 2 seconds.</p>
+              <p id="calib-instruction-text">Look directly at each numbered circle. <strong>For corner &amp; edge points — look all the way to the screen edge!</strong></p>
               <div class="calib-progress-bar"><div class="calib-progress-fill" id="calib-progress-fill"></div></div>
               <span id="calib-step-label">Step 0 / 13</span>
             </div>
             <div class="calib-points-container" id="calib-points-container">
               <!-- Points injected by JS -->
             </div>
+            <!-- Live tip bar — updated by JS per point zone -->
+            <div id="calib-tip-bar" style="
+              position:absolute; bottom:64px; left:0; right:0;
+              text-align:center; font-size:13px; color:#00d4ff;
+              padding:6px; background:rgba(10,14,26,0.7); pointer-events:none;
+              transition: opacity 0.3s;
+            "></div>
             <div class="calib-footer">
               <button class="btn-secondary" id="cancel-calib-btn"><i class="fas fa-times"></i> Cancel</button>
               <button class="btn-primary" id="start-calib-btn"><i class="fas fa-play"></i> Start Calibration</button>

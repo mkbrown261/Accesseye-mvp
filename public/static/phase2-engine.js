@@ -1064,10 +1064,16 @@ class DynamicCalibrationEngine {
     };
 
     const blended = [
-      // Original calibration points — high anchor weight (already normalized in model)
-      ...this.base.calibData.filter(d => d.gx !== undefined).map(d => ({
-        gx: norm(d.gx, rngX), gy: norm(d.gy, rngY), sx: d.sx, sy: d.sy, w: 2.0
-      })),
+      // FIX EDGE-3 (Phase 2): Original calibration points with zone-based weights.
+      // Corners (idx 0-3) get 4×, mid-edges (idx 4-7) get 2.5×, interior 1×.
+      // This matches the base CalibrationEngine weighting so micro-updates
+      // don't gradually erode the edge accuracy we worked hard to achieve.
+      ...this.base.calibData.filter(d => d.gx !== undefined).map((d, i) => {
+        const zoneW = i < 4 ? 4.0 : i < 8 ? 2.5 : 1.0;
+        return {
+          gx: norm(d.gx, rngX), gy: norm(d.gy, rngY), sx: d.sx, sy: d.sy, w: zoneW
+        };
+      }),
       // Micro-samples: normalize before regression
       ...this.microSamples.map(s => ({
         gx: norm(s.gx, rngX), gy: norm(s.gy, rngY), sx: s.sx, sy: s.sy, w: s.w
