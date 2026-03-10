@@ -879,14 +879,16 @@ body {
 /* Calibration overlay — FIX CAL-3: full-viewport fixed overlay so calibration
    points span the entire screen the user will actually gaze at.            */
 .calibration-overlay {
-  position: fixed;          /* FIX CAL-3: was absolute (confined to demo-main) */
-  inset: 0;                 /* cover the full viewport */
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw;
+  height: 100vh;          /* PHASE-A: full viewport, no offset */
   background: rgba(10, 14, 26, 0.97);
-  z-index: 9000;            /* above nav-bar and all panels */
+  z-index: 9000;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;  /* header at top, container fills middle */
+  justify-content: flex-start;
   gap: 0;
   padding: 0;
   overflow: hidden;
@@ -926,12 +928,14 @@ body {
 /* FIX CAL-1: was fixed 600×380 px — now fills remaining viewport height.
    Points must span the same area the user gazes at during real use.       */
 .calib-points-container {
-  position: relative;
-  flex: 1 1 auto;           /* fill all space between header and footer */
-  width: 100%;
-  background: rgba(10, 14, 26, 0.60);
-  border: none;
-  border-radius: 0;
+  /* PHASE-A: Fixed to full viewport so dot positions at sx*window.innerWidth
+     match exactly — no header/footer offset displacing them */
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  background: transparent;
 }
 
 /* v8 calibration dot — large with crosshair for precise fixation */

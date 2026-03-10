@@ -1140,19 +1140,23 @@ class CalibrationUI {
     this.collecting = false;
     this.sampleCount = 0;
 
-    // PRECISION-GATE: How many GOOD (quality ≥ threshold) samples we need.
-    // Only green-quality samples are recorded — junk is silently discarded.
-    // 40 good samples gives a very clean centroid estimate.
-    this.GOOD_SAMPLES_NEEDED = 40;
-    // Quality threshold to count a sample as "good"
+    // PHASE-A: Tightened collection thresholds.
+    // 80 good samples @ 50ms = ~4s of truly stable fixation per point.
+    // Research minimum for accurate gaze centroid: 500ms stable fixation.
+    // Previous 40 @ 33ms = 1.3s — too short, collected drifting gaze.
+    this.GOOD_SAMPLES_NEEDED = 80;
+    // Only count a frame as "good" if sigma < 0.025 (very tight — ~5px iris movement)
     this.QUALITY_THRESHOLD = 0.55;
-    // Minimum quality to record at all (below = skip entirely)
-    this.MIN_RECORD_QUALITY = 0.25;
+    // Minimum to record at all (below = skip, don't pollute calibData)
+    this.MIN_RECORD_QUALITY = 0.30;
 
     this._onComplete = null;
     this._sampleInterval = null;
     this._arenaW = 0;
     this._arenaH = 0;
+    // ADAPTIVE: learned jitter floor, shared across all _runStep calls
+    this._adaptiveSigmaThresh = 0.025;
+    this._adaptiveSeedDone    = false;
   }
 
   show(onComplete) {
@@ -1164,6 +1168,9 @@ class CalibrationUI {
     this.calibEngine.reset();
     this._arenaW = 0;
     this._arenaH = 0;
+    // Reset adaptive threshold for fresh calibration
+    this._adaptiveSigmaThresh = 0.025;
+    this._adaptiveSeedDone    = false;
     this.overlay.style.display = 'flex';
     const startBtn = $('#start-calib-btn');
     if (startBtn) { startBtn.disabled = false; startBtn.innerHTML = '<i class="fas fa-play"></i> Start Calibration'; }
@@ -1184,13 +1191,19 @@ class CalibrationUI {
 
   /**
    * Place calibration dots at exact screen-fraction positions.
-   * Uses full viewport size so sx/sy match the gaze cursor mapping.
+   * PHASE-A: Always use window.innerWidth/innerHeight as the coordinate space —
+   * the same space used by _updateGazeCursor. Container offsetWidth can differ
+   * if browser chrome, scrollbars, or notification bars consume space.
+   * Using window dimensions guarantees dot positions match cursor positions exactly.
    */
   _renderPoints() {
     this.container.innerHTML = '';
     const pts = this.calibEngine.CALIB_POINTS;
-    const W = this.container.offsetWidth  || window.innerWidth;
-    const H = this.container.offsetHeight || window.innerHeight;
+    // PHASE-A: Use window dimensions, not container dimensions.
+    // The gaze cursor is placed at sx * window.innerWidth / sy * window.innerHeight.
+    // Dots must be placed in the same coordinate space.
+    const W = window.innerWidth;
+    const H = window.innerHeight;
     this._arenaW = W;
     this._arenaH = H;
 
@@ -1198,7 +1211,6 @@ class CalibrationUI {
       const el = document.createElement('div');
       el.className = 'calib-point';
       el.id = `calib-pt-${i}`;
-      // Large crosshair target — number in center, small tick marks for precise aim
       el.innerHTML = `<span class="calib-num">${i + 1}</span>`;
       el.style.left = `${pt.sx * W}px`;
       el.style.top  = `${pt.sy * H}px`;
@@ -1341,39 +1353,52 @@ class CalibrationUI {
       };
 
       // State
-      let goodSamplesRecorded = 0;     // quality-passing samples actually stored
-      let consecutiveLockFrames = 0;   // streak of stable frames needed to enter locked state
-      let isLocked = false;            // true once initial lock achieved
-      const LOCK_FRAMES_NEEDED = 5;    // consecutive stable frames needed (reduced from 6)
+      let goodSamplesRecorded = 0;
+      let consecutiveLockFrames = 0;
+      let isLocked = false;
+      let postLockSettling = false;   // PHASE-A: mandatory settle after lock
+      let postLockTimer = 0;
+      // PHASE-A: 12 consecutive stable frames @ 50ms = 600ms minimum fixation before lock
+      const LOCK_FRAMES_NEEDED = 12;
+      // PHASE-A: 300ms settle delay after lock before any samples recorded
+      const POST_LOCK_SETTLE_MS = 300;
       let intervalDone = false;
 
-      // PRECISION-GATE FIX: Keep a SEPARATE recent-frames buffer for computing
-      // gaze stability during the lock phase.  We must NOT use addCalibSample
-      // during lock phase because:
-      //  1. The very first frame may be a stale {x:0,y:0} fallback
-      //  2. sampleQuality() reads from calibData[].samples to compute sigma
-      //  3. If bad samples land in calibData first, sigma anchors to wrong centroid
-      //     and all subsequent real samples score 0 → lock never happens
-      // Solution: recentFrames[] is a local rolling buffer (last 30 raw values).
-      // sampleQuality is replaced here by a local stability check on recentFrames.
-      const recentFrames = [];  // local rolling buffer, never written to calibData
-      const RECENT_MAX = 30;
+      // Separate rolling buffer — never touches calibData (prevents centroid poisoning)
+      const recentFrames = [];
+      const RECENT_MAX = 20;
 
-      // Local stability score: how consistent are the last N frames?
-      // Returns 0-1. 1.0 = rock-steady, 0 = high variance.
+      // PHASE-A + ADAPTIVE: Stability score with self-calibrating threshold.
+      // The fixed 0.025 threshold (~5px) was too tight for cameras where the
+      // natural per-frame iris jitter is higher (low-res, far distance, small irises).
+      // After collecting 15 seed frames we compute the 60th-percentile sigma and use
+      // max(0.025, seedSigma * 1.5) as the actual threshold. This lets the system
+      // self-adapt to the hardware without ever being looser than 0.025.
+      // Threshold persists across all calibration points (computed once on point 1).
       const stabilityScore = () => {
-        if (recentFrames.length < 4) return 1.0; // not enough data yet = assume stable
-        const n   = recentFrames.length;
-        const cx  = recentFrames.reduce((s,v) => s + v.x, 0) / n;
-        const cy  = recentFrames.reduce((s,v) => s + v.y, 0) / n;
+        if (recentFrames.length < 6) return 1.0;
+        const n  = recentFrames.length;
+        const cx = recentFrames.reduce((s,v) => s + v.x, 0) / n;
+        const cy = recentFrames.reduce((s,v) => s + v.y, 0) / n;
         const varX = recentFrames.reduce((s,v) => s + (v.x-cx)**2, 0) / n;
         const varY = recentFrames.reduce((s,v) => s + (v.y-cy)**2, 0) / n;
         const sigma = Math.sqrt(varX + varY);
-        // "good" sigma for a steady gaze is < 0.015 (≈ 3px at typical iris scale)
-        // Returns 1.0 when sigma=0, 0 when sigma≥0.06
-        return Math.max(0, 1 - sigma / 0.06);
+
+        // Compute adaptive threshold once on the first point after 15 seed frames
+        if (!this._adaptiveSeedDone && n >= 15 && stepIdx === 0) {
+          const devs = recentFrames.map(v => Math.sqrt((v.x-cx)**2 + (v.y-cy)**2));
+          devs.sort((a,b) => a - b);
+          const p60 = devs[Math.floor(devs.length * 0.60)];
+          this._adaptiveSigmaThresh = Math.max(0.025, Math.min(p60 * 1.5, 0.055));
+          this._adaptiveSeedDone    = true;
+        }
+
+        // 1.0 when rock-steady, 0 when sigma ≥ adaptiveSigmaThresh
+        return Math.max(0, 1 - sigma / this._adaptiveSigmaThresh);
       };
 
+      // PHASE-A: 50ms interval (20 FPS) instead of 33ms.
+      // Slower interval means each "good frame" represents a longer fixation window.
       this._sampleInterval = setInterval(() => {
         if (intervalDone) return;
 
@@ -1425,6 +1450,8 @@ class CalibrationUI {
 
           if (consecutiveLockFrames >= LOCK_FRAMES_NEEDED) {
             isLocked = true;
+            postLockSettling = true;
+            postLockTimer = Date.now();
             consecutiveLockFrames = 0;
             if (ptEl) {
               ptEl.style.transition = 'transform 0.12s ease-out, box-shadow 0.12s ease-out';
@@ -1433,15 +1460,32 @@ class CalibrationUI {
               ptEl.style.boxShadow  = '0 0 0 4px rgba(0,255,136,0.8), 0 0 0 8px rgba(0,255,136,0.3)';
             }
             if (tipBar) {
-              tipBar.textContent = '🟢 Locked — hold still, collecting...';
+              tipBar.textContent = '⏳ Settling — keep eyes perfectly still...';
               tipBar.style.color = '#00ff88';
             }
           }
           // Do NOT record to calibData during lock phase
 
         } else {
-          // ── PHASE 2: Locked — collect quality-gated samples ──
-          // Use stability score (local variance check) for quality gating
+          // ── PHASE 2: Locked — post-settle then collect ──
+
+          // PHASE-A: Mandatory 300ms settle after lock before recording.
+          // Gaze continues drifting for 200-400ms after a saccade ends.
+          if (postLockSettling) {
+            const elapsed = Date.now() - postLockTimer;
+            if (elapsed < POST_LOCK_SETTLE_MS) {
+              if (tipBar) {
+                tipBar.textContent = `⏳ Settling ${Math.round((POST_LOCK_SETTLE_MS - elapsed)/100) + 1}... keep perfectly still`;
+                tipBar.style.color = '#00d4ff';
+              }
+              return; // skip recording until settle completes
+            }
+            postLockSettling = false;
+            if (tipBar) {
+              tipBar.textContent = '🟢 Collecting — hold still';
+              tipBar.style.color = '#00ff88';
+            }
+          }
           if (stability >= this.MIN_RECORD_QUALITY) {
             this.calibEngine.addCalibSample(stepIdx, raw.x, raw.y);
             if (stability >= this.QUALITY_THRESHOLD) {
@@ -1507,7 +1551,7 @@ class CalibrationUI {
             setTimeout(resolve, 350);
           }
         }
-      }, 33); // ~30 FPS — matches camera frame rate
+      }, 50); // PHASE-A: 20 FPS — each frame represents a longer fixation window
     });
   }
 

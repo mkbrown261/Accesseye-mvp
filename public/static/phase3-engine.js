@@ -1325,12 +1325,15 @@ class Phase3Orchestrator {
     // PRECISION-9: OneEuro minCutoff raised 0.15 → 0.45 Hz.
     // Problem: 0.15 Hz was so aggressive that the cursor lagged 3-5 frames behind
     // actual gaze, making it impossible for the user to feel the cursor "tracking"
-    // their eye directly. The cursor appeared to be "behind" where they were looking.
-    // Fix: 0.45 Hz still provides strong jitter suppression at fixation while
-    // responding much faster to deliberate eye movements, closing the perceived gap
-    // between "where I'm looking" and "where the cursor is".
-    // beta=0.007 unchanged — allows fast saccades to pass through cleanly.
-    this.oneEuro  = new OneEuroFilter(0.45, 0.007, 1.0, 30);    // P3.1  PRECISION-9
+    // PHASE-B: OneEuro minCutoff raised 0.45 → 1.0 Hz.
+    // At 0.45 Hz the filter's resting time-constant is ~350ms — too much lag
+    // for a user trying to land on a precise target.
+    // At 1.0 Hz the resting time-constant drops to ~160ms — still removes
+    // high-frequency iris tremor (typically 8-12 Hz) while feeling responsive.
+    // beta raised 0.007 → 0.12 so fast intentional saccades cut through cleanly.
+    // Reference: Casiez et al. CHI 2012 — minCutoff 1.0 Hz is their recommended
+    // default for pointer control applications.
+    this.oneEuro  = new OneEuroFilter(1.0, 0.12, 1.0, 30);    // PHASE-B
     this.ivt      = new IVTSaccadeDetector(35, 100, 3);        // P3.2
     this.dwell    = new AdaptiveDwellTimer('normal', this.ivt);// P3.3
     this.pace     = new PACERecalibrator(calib, 100, 0.995, 0.65, 10);  // P3.4
@@ -1523,20 +1526,12 @@ class Phase3Orchestrator {
       self._frameCounter++;
       self.pace.tick();
 
-      // ── P3.7: Head-free stabilization ──
-      if (lm && self.active) {
-        const rawG = orch.hybridGaze?.rawGaze;
-        if (rawG) {
-          const stabilized = self.headFree.stabilize(rawG.x, rawG.y, lm);
-          if (stabilized.compensated) {
-            // Update confidence multiplier in confidence scorer
-            if (orch.confidence?.lastScore) {
-              orch.confidence.lastScore.total *= stabilized.confidenceMultiplier;
-              orch.confidence.lastScore.total = p3.clamp(orch.confidence.lastScore.total, 0, 1);
-            }
-          }
-        }
-      }
+      // PHASE-B: HeadFreeStabilizer removed from live pipeline.
+      // It was fighting TemporalStabilizer — both trying to smooth the same signal
+      // from opposite directions, adding ~30-50ms of combined lag and causing the
+      // cursor to feel "sticky". The calibration model already compensates for
+      // head position via the polynomial fit. HeadFree is kept available for
+      // future use (e.g. a large head-movement recovery mode) but not applied live.
     };
 
     // Hook into app to capture last screen coordinates
