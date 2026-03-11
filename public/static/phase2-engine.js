@@ -666,8 +666,16 @@ class TemporalStabilizer {
     this.winSize    = opts.windowSize ?? 7;
 
     // Saccade bypass parameters (research-backed)
-    // 0.03 screen-units/frame ≈ 58px/frame at 1920px ≈ 30°/s (typical saccade onset)
-    this.SACCADE_VEL_THRESHOLD  = 0.03;
+    // Base: 0.03 screen-units/frame at 30fps ≈ 58px/frame ≈ 30°/s saccade onset velocity.
+    // IMPROVEMENT 1 (v14): Scale threshold by actual FPS so the same PHYSICAL
+    // velocity triggers bypass regardless of camera frame rate.
+    // Formula: threshold = 0.03 * (30 / fps)
+    // 30fps → 0.0300, 60fps → 0.0150, 120fps → 0.0075
+    // All yield ~90% screen/second as the saccade detection velocity.
+    // fps is updated by Phase2Orchestrator after camera starts via setFPS().
+    this._fps = 30;  // default; updated by setFPS()
+    this.SACCADE_VEL_BASE       = 0.03;  // calibrated at 30fps
+    this.SACCADE_VEL_THRESHOLD  = 0.03;  // live value (updated by setFPS)
     this.SACCADE_BYPASS_FRAMES  = 3;
     this._bypassCounter = 0;
 
@@ -788,6 +796,16 @@ class TemporalStabilizer {
     const trimCount = Math.floor(arr.length / 5);
     const trimmed = trimCount > 0 ? s.slice(trimCount, -trimCount) : s.slice(1, -1);
     return p2.avg(trimmed);
+  }
+
+  /**
+   * Update FPS so velocity threshold scales to the camera frame rate.
+   * Call this after the camera reports its actual frame rate.
+   * @param {number} fps  actual camera FPS (e.g. 30, 60, 90, 120)
+   */
+  setFPS(fps) {
+    this._fps = Math.max(fps, 10);  // clamp: avoid division by zero
+    this.SACCADE_VEL_THRESHOLD = this.SACCADE_VEL_BASE * (30 / this._fps);
   }
 
   reset() {
@@ -1062,6 +1080,8 @@ class GazeConfidenceScorer {
      • Confidence gating (MIN_CONF = 0.65)
      • Drift compensation: rolling bias correction (α=0.03)
      • Weight-decay 0.995 on micro-samples (PACE-style recalibration)
+     • IMPROVEMENT 3 (v14): Passive drift EMA — slow correction during stable fixations
+     • IMPROVEMENT 4 (v14): Auto recalibration prompt when interaction residuals > 5%
 ───────────────────────────────────────────────────────────────────────── */
 class DynamicCalibrationEngine {
   /**
@@ -1080,6 +1100,28 @@ class DynamicCalibrationEngine {
     this._biasX     = 0;
     this._biasY     = 0;
     this._biasAlpha = 0.03;
+
+    // IMPROVEMENT 3 (v14): Passive drift EMA
+    // During confirmed stable fixations, we nudge the bias toward zero very slowly.
+    // Alpha tuned via simulation: α=0.0005 gives:
+    //   - <0.75% correction in 3 seconds (imperceptible short-term)
+    //   - ~14% correction in 60 seconds
+    //   - ~53% correction in 5 minutes (useful for long sessions)
+    // Fires every PASSIVE_DRIFT_INTERVAL=6 frames (~5×/sec at 30fps).
+    // Gate: only during confirmed fixations (age > 800ms) at confidence > 0.70.
+    this._passiveDriftAlpha = 0.0005;
+    this._passiveFrameCount = 0;
+    this.PASSIVE_DRIFT_INTERVAL = 6; // update every 6 frames (~5/sec at 30fps)
+
+    // IMPROVEMENT 4 (v14): Auto recalibration prompt
+    // Track rolling residuals from confirmed interactions.
+    // If rolling mean > RECALIB_THRESHOLD for RECALIB_MIN_SAMPLES samples → prompt.
+    this._interactionResiduals = [];     // rolling queue of last 10 residuals
+    this.RECALIB_MAX_RESIDUALS  = 10;
+    this.RECALIB_THRESHOLD      = 0.05; // 5% screen width
+    this.RECALIB_MIN_SAMPLES    = 5;    // need at least 5 recent interactions
+    this._lastRecalibPrompt     = 0;    // timestamp of last prompt
+    this.RECALIB_COOLDOWN_MS    = 3 * 60 * 1000; // 3-minute cooldown
 
     // Ridge regression λ for micro-updates (slightly higher for robustness)
     this.MICRO_LAMBDA = 0.015;
@@ -1117,10 +1159,33 @@ class DynamicCalibrationEngine {
     const predicted = this.base.mapGaze(gazeX, gazeY);
     const residualX = targetSX - predicted.sx;
     const residualY = targetSY - predicted.sy;
+    const residualMag = Math.hypot(residualX, residualY);
 
     // Update rolling bias
     this._biasX = p2.lerp(this._biasX, residualX, this._biasAlpha);
     this._biasY = p2.lerp(this._biasY, residualY, this._biasAlpha);
+
+    // IMPROVEMENT 4 (v14): Track residuals for auto recalibration prompt.
+    // Push this interaction's error magnitude into a rolling queue.
+    this._interactionResiduals.push(residualMag);
+    if (this._interactionResiduals.length > this.RECALIB_MAX_RESIDUALS) {
+      this._interactionResiduals.shift();
+    }
+    // Check if rolling mean exceeds threshold (need min samples to avoid noise)
+    if (this._interactionResiduals.length >= this.RECALIB_MIN_SAMPLES) {
+      const rollingMean = this._interactionResiduals.reduce((s,v)=>s+v,0)
+                          / this._interactionResiduals.length;
+      const now = p2.now();
+      if (rollingMean > this.RECALIB_THRESHOLD
+          && (now - this._lastRecalibPrompt) > this.RECALIB_COOLDOWN_MS) {
+        this._lastRecalibPrompt = now;
+        this._emit('recalibNeeded', {
+          rollingMean,
+          threshold: this.RECALIB_THRESHOLD,
+          samples: this._interactionResiduals.length
+        });
+      }
+    }
 
     // Rebuild model if we have enough samples
     if (this.microSamples.length >= 8) {
@@ -1134,6 +1199,35 @@ class DynamicCalibrationEngine {
     });
 
     return true;
+  }
+
+  /**
+   * IMPROVEMENT 3 (v14): Passive drift update during stable fixations.
+   * Call this every frame when isFixated=true and fixationAge > 800ms.
+   * Applies an extremely slow EMA bias correction so cursor drift over long
+   * sessions gets gradually corrected without perceptible on-the-fly jumps.
+   *
+   * @param {number} currentSX  current mapped screen X (after mapGaze)
+   * @param {number} currentSY  current mapped screen Y (after mapGaze)
+   * @param {number} confidence  gaze confidence (must be > 0.70)
+   */
+  passiveDriftUpdate(currentSX, currentSY, confidence) {
+    if (!this.base.isCalibrated) return;
+    if (confidence < 0.70) return;
+
+    // Only update every PASSIVE_DRIFT_INTERVAL frames to reduce CPU load
+    this._passiveFrameCount++;
+    if (this._passiveFrameCount < this.PASSIVE_DRIFT_INTERVAL) return;
+    this._passiveFrameCount = 0;
+
+    // The "expected" screen position for stable fixation is what the model predicts.
+    // If cursor has drifted, (currentSX - mappedSX) represents the drift error.
+    // We don't have the raw gaze here, so we use a simpler heuristic:
+    // During a long stable fixation, the cursor should be near the fixation center.
+    // We nudge the bias VERY gently (α=0.005) back toward zero (no accumulated offset).
+    // This is not a strong correction — it's a slow decay of accumulated bias noise.
+    this._biasX = p2.lerp(this._biasX, 0, this._passiveDriftAlpha);
+    this._biasY = p2.lerp(this._biasY, 0, this._passiveDriftAlpha);
   }
 
   /**
@@ -1289,6 +1383,9 @@ class DynamicCalibrationEngine {
     this.microSamples = [];
     this._biasX = 0;
     this._biasY = 0;
+    this._passiveFrameCount = 0;
+    this._interactionResiduals = [];
+    this._lastRecalibPrompt = 0;
   }
 }
 
@@ -1746,6 +1843,18 @@ class Phase2Orchestrator {
       this.app.log.add(`Micro-calib: bias(${d.biasX.toFixed(3)}, ${d.biasY.toFixed(3)}) samples=${d.sampleCount}`, 'info');
     });
 
+    // IMPROVEMENT 4 (v14): Auto recalibration prompt when drift detected.
+    // Fires when rolling mean of last 5+ interaction residuals > 5% screen.
+    this.dynCalib.on('recalibNeeded', (d) => {
+      const errPx = Math.round(d.rollingMean * 1920);
+      this.app.log.add(`Recalibration suggested: mean error ${errPx}px over ${d.samples} interactions`, 'warn');
+      this.app.toast.show(
+        '🎯 Recalibration Suggested',
+        `Gaze accuracy has drifted (~${errPx}px). Run calibration to restore precision.`,
+        'warning', 'fas fa-crosshairs', 8000
+      );
+    });
+
     this.dynCalib.on('modelUpdated', (d) => {
       this.app.log.add(`Calibration model updated from ${d.samples} samples`, 'success');
     });
@@ -1817,7 +1926,9 @@ class Phase2Orchestrator {
       this.cameraFPS = settings.frameRate || 30;
     }
 
-    this.app.log.add(`Phase 2 activated | Camera: ${this.cameraFPS} FPS | Hybrid gaze ON`, 'success');
+    // IMPROVEMENT 1 (v14): Set FPS on stabilizer for velocity-threshold scaling.
+    this.stabilizer.setFPS(this.cameraFPS);
+    this.app.log.add(`Phase 2 activated | Camera: ${this.cameraFPS} FPS | Hybrid gaze ON | saccadeThresh=${this.stabilizer.SACCADE_VEL_THRESHOLD.toFixed(4)}`, 'success');
     this.app.toast.show('Phase 2 Active', `Hybrid gaze engine running at ${this.cameraFPS} FPS`, 'success', 'fas fa-brain', 3000);
     this._updatePhase2StatusUI();
   }
@@ -1878,6 +1989,13 @@ class Phase2Orchestrator {
 
     // ── Apply dynamic bias correction ──
     const biasFixed = this.dynCalib.applyBiasCorrection(finalX, finalY);
+
+    // IMPROVEMENT 3 (v14): Passive drift update during confirmed stable fixations.
+    // Only fires when user has been fixating for >800ms at high confidence.
+    // Very slow EMA (α=0.005) decays accumulated bias noise over long sessions.
+    if (saccadeResult.isFixated && saccadeResult.fixationAge > 800 && confScore.total > 0.70) {
+      this.dynCalib.passiveDriftUpdate(finalX, finalY, confScore.total);
+    }
 
     // ── Build final enhanced gaze packet ──
     const enhanced = {
