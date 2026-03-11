@@ -187,17 +187,12 @@ class CalibrationEngine {
   }
 
   /* Record raw gaze samples for a calibration point.
-   * FIX Y-3/Y-4: Also accept current head pitch so buildModel() can
-   * compute a per-session pitch baseline and mapGaze() can apply a
-   * pitch-delta Y correction when the user's head angle drifts. */
-  addCalibSample(pointIdx, rawGazeX, rawGazeY, headPitchDeg = null) {
+  /* Record raw gaze samples for a calibration point */
+  addCalibSample(pointIdx, rawGazeX, rawGazeY) {
     if (!this.calibData[pointIdx]) {
-      this.calibData[pointIdx] = { samples: [], pitchSamples: [], ...this.CALIB_POINTS[pointIdx] };
+      this.calibData[pointIdx] = { samples: [], ...this.CALIB_POINTS[pointIdx] };
     }
     this.calibData[pointIdx].samples.push({ gx: rawGazeX, gy: rawGazeY });
-    if (headPitchDeg !== null) {
-      this.calibData[pointIdx].pitchSamples.push(headPitchDeg);
-    }
   }
 
   /**
@@ -364,16 +359,6 @@ class CalibrationEngine {
     // during calibration.  This value represents the user's "resting" head angle.
     // mapGaze() will subtract the current pitch from this baseline and apply a
     // small Y correction so the cursor stays correct when the head tilts.
-    const allPitch = this.calibData
-      .flatMap(d => d?.pitchSamples || [])
-      .filter(p => typeof p === 'number');
-    let pitchBaseline = 0;
-    if (allPitch.length > 0) {
-      const sorted = [...allPitch].sort((a, b) => a - b);
-      pitchBaseline = sorted[Math.floor(sorted.length / 2)]; // median
-    }
-    this.pitchBaseline = pitchBaseline;
-
     this.model = {
       x:      modelX,
       y:      modelY,
@@ -381,8 +366,7 @@ class CalibrationEngine {
       lambda: 0.015,
       points: pts.length,
       gazeRangeX: this.gazeRangeX,
-      gazeRangeY: this.gazeRangeY,
-      pitchBaseline                  // FIX Y-4: stored in model for persistence
+      gazeRangeY: this.gazeRangeY
     };
     this.isCalibrated = true;
     this._saveToStorage();
@@ -482,45 +466,14 @@ class CalibrationEngine {
          + c6*gx*gx2 + c7*gy*gy2 + c8*gx2*gy + c9*gx*gy2;
   }
 
-  /* Map raw gaze to calibrated screen (0..1) coordinates.
-   * FIX Y-3/Y-4: Optional currentPitchDeg — if provided, a pitch-delta
-   * correction shifts normGY so head tilt no longer drifts the cursor.
-   *
-   * Correction formula:
-   *   pitchDelta = currentPitch - model.pitchBaseline   (degrees)
-   *   gyCorrection = pitchDelta * PITCH_Y_GAIN
-   *   normGY_corrected = normGY - gyCorrection
-   *
-   * PITCH_Y_GAIN is empirically tuned:
-   *   - HeadPoseEstimator.pitch uses  atan(pitchRaw * 1.5) → deg
-   *   - A 10° pitch tilt shifts the nose by ~0.03 face heights.
-   *   - With the new Y_SCALE=0.35 normalisation each 0.03 unit ≈ 0.24 normGY.
-   *   - So PITCH_Y_GAIN ≈ 0.024 normGY / degree compensates precisely.
-   *   - Capped at ±12° delta to avoid over-correction for extreme tilts.
-   */
-  mapGaze(gx, gy, currentPitchDeg = null) {
+  /* Map raw gaze (iris-only signal) to calibrated screen (0..1) coordinates. */
+  mapGaze(gx, gy) {
     if (!this.model) return { sx: 0.5, sy: 0.5 };
     // FIX SCOPE-6: Pre-normalize gaze using observed range from calibration.
     const normGX = this.model.gazeRangeX
       ? this._normalizeGaze(gx, this.model.gazeRangeX) : gx;
-    let normGY = this.model.gazeRangeY
+    const normGY = this.model.gazeRangeY
       ? this._normalizeGaze(gy, this.model.gazeRangeY) : gy;
-
-    // REGRESSION FIX Y-3: PITCH_Y_GAIN 0.024 → 0.003.
-    // The original gain of 0.024 normGY/degree was calculated assuming lH as
-    // denominator AND that canthusMidY provided no protection (alpha=0.05).
-    // Both assumptions are now wrong:
-    //   1. lH denominator restored → the iris Y signal scale is unchanged.
-    //   2. canthusMidY alpha=0.10 already absorbs ~90% of gradual head tilt.
-    // At 0.024/deg, a 10° tilt applied a 0.24 normGY shift (24% of screen)
-    // in ADDITION to what the EMA already corrected — severe overcorrection.
-    // At 0.003/deg a 10° tilt applies 0.03 normGY (3% screen) — a small nudge
-    // that only matters for sustained held tilts beyond the EMA's recovery.
-    if (currentPitchDeg !== null && this.model.pitchBaseline !== undefined) {
-      const PITCH_Y_GAIN = 0.003;   // normGY units per degree — conservative residual correction
-      const pitchDelta   = clamp(currentPitchDeg - this.model.pitchBaseline, -12, 12);
-      normGY -= pitchDelta * PITCH_Y_GAIN;
-    }
 
     // PRECISION-8: Relax clamping to allow slight extrapolation at edges.
     return {
@@ -1459,9 +1412,6 @@ class CalibrationUI {
         if (intervalDone) return;
 
         const raw     = this._getRawGaze();
-        // FIX Y-3/Y-4: Read current head pitch for pitch-baseline calibration.
-        const p2orch  = window.app?.phase2;
-        const curPitch = p2orch?._lastHeadPose?.pitch ?? null;
 
         // Always push to local rolling buffer (never touches calibData)
         recentFrames.push({ x: raw.x, y: raw.y });
@@ -1546,7 +1496,7 @@ class CalibrationUI {
             }
           }
           if (stability >= this.MIN_RECORD_QUALITY) {
-            this.calibEngine.addCalibSample(stepIdx, raw.x, raw.y, curPitch);
+            this.calibEngine.addCalibSample(stepIdx, raw.x, raw.y);
             if (stability >= this.QUALITY_THRESHOLD) {
               goodSamplesRecorded++;
             }
@@ -2556,16 +2506,10 @@ class AccessEyeApp {
     const calib = this.calibration?.isCalibrated ? 'YES' : 'NO';
 
     // Head pose
-    let hpYaw = '—', hpPitch = '—', hpPitchDelta = '—';
+    let hpYaw = '—', hpPitch = '—';
     if (p2orch?._lastHeadPose) {
       hpYaw   = (p2orch._lastHeadPose.yaw   ?? 0).toFixed(1) + '°';
       hpPitch = (p2orch._lastHeadPose.pitch ?? 0).toFixed(1) + '°';
-      // FIX Y-3/Y-4: Show live pitch delta from calibration baseline
-      const baseline = this.calibration?.model?.pitchBaseline;
-      if (baseline !== undefined) {
-        const delta = (p2orch._lastHeadPose.pitch ?? 0) - baseline;
-        hpPitchDelta = (delta >= 0 ? '+' : '') + delta.toFixed(1) + '°';
-      }
     }
 
     // Auto-range from HybridGazeEngine
@@ -2599,9 +2543,7 @@ class AccessEyeApp {
     set('dbg-py',         (screenY * window.innerHeight).toFixed(0) + 'px');
     set('dbg-hp-yaw',     hpYaw);
     set('dbg-hp-pitch',   hpPitch);
-    set('dbg-hp-pitch-delta', hpPitchDelta);
-    const pitchB = this.calibration?.model?.pitchBaseline;
-    set('dbg-calib', calib + (pitchB !== undefined ? ` (${pitchB.toFixed(1)}°)` : ''));
+    set('dbg-calib', calib);
     set('dbg-conf',       (conf * 100).toFixed(0) + '%');
     set('dbg-range-x',    rangeXStr);
     set('dbg-range-y',    rangeYStr);

@@ -292,23 +292,11 @@ class HybridGazeEngine {
     this.smoothGaze = { x: 0.5, y: 0.5 };
     this.confidence = 0;
 
-    // Internal weights
-    // v10: IRIS-ONLY. Both head-pose and pupil signals were adding noise:
-    //   - Head pitch directly couples to Y (lean back → cursor down)
-    //   - Pupil centroid signal is too noisy relative to iris offset
-    // The calibration model is trained on iris-only samples anyway,
-    // so mixing in head/pupil at inference creates a systematic offset.
-    // Pure iris tracking is more stable and predictable.
-    this.W_IRIS  = 1.0;   // 100% iris offset
-    this.W_HEAD  = 0.0;   // disabled — head pitch contaminates Y axis
-    this.W_PUPIL = 0.0;   // disabled — too noisy vs iris offset
-
-    // ── v10: per-session gaze-range auto-learner ──
-    // Seeded to null so first real iris frame sets the midpoint correctly.
-    // Old seed of 0.5 was wrong: iris X is typically near 0, not 0.5.
-    this._rangeMinX = null; this._rangeMaxX = null;
-    this._rangeMinY = null; this._rangeMaxY = null;
-    this._rangeFrames = 0;
+    // Internal weights — iris-only (most stable, matches calibration training)
+    // Head and pupil signals are stored but not mixed into the screen mapping.
+    this.W_IRIS  = 1.0;
+    this.W_HEAD  = 0.0;
+    this.W_PUPIL = 0.0;
 
     // Phase-1 fallback re-used
     this._callbacks = {};
@@ -319,9 +307,13 @@ class HybridGazeEngine {
     this._lHema    = null;
     this._rHema    = null;
     this._ipdEMA   = null;
-    this._canthusMidYEMA = null;  // v10: EMA-smoothed Y reference
     this.SPAN_ALPHA = 0.08;
     this.SPAN_MAX_DELTA = 0.15;
+
+    // ── Auto-range learner (uncalibrated fallback) ──
+    this._rangeMinX = null; this._rangeMaxX = null;
+    this._rangeMinY = null; this._rangeMaxY = null;
+    this._rangeFrames = 0;
   }
 
   on(event, cb) {
@@ -389,13 +381,7 @@ class HybridGazeEngine {
       // The model was trained on iris-only samples (CalibrationUI now uses _irisOnlyGaze).
       // If we map the FUSED signal (iris+head+pupil) through a model trained on iris-only,
       // the head/pupil components create a systematic offset (~2-4% of screen width).
-      // FIX Y-3: Pass current head pitch to mapGaze() so pitch-delta
-      // correction is applied at inference time.  headPoseResult.pitch
-      // is already EMA-smoothed by HeadPoseEstimator.
-      const mapped = this.calibration.mapGaze(
-        irisSignal.x, irisSignal.y,
-        headPoseResult?.pitch ?? null
-      );
+      const mapped = this.calibration.mapGaze(irisSignal.x, irisSignal.y);
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
       // ── v10: Auto-learning uncalibrated mapping ──
@@ -502,54 +488,28 @@ class HybridGazeEngine {
     const lMidX = (lOuter.x + lInner.x) / 2;
     const rMidX = (rOuter.x + rInner.x) / 2;
 
-    // ── v10 FIX: Eye-canthus midpoint Y anchor ──
-    // PROBLEM with nose bridge (lm[6]): it sits on the nose, which pitches
-    // with the head. Lean back 10° → nose bridge Y drops ~3% → iris Y offset
-    // becomes more negative → cursor jumps UP. This is the "lean = cursor moves"
-    // bug reported by the user.
-    //
-    // SOLUTION: Use the mean Y of all four eye corners (inner+outer canthi of
-    // both eyes). These are attached to the orbital bone and don't translate
-    // vertically with head pitch — only rotation changes their relative position,
-    // which we already normalise out via the eye height denominator.
-    // This is the true head-pitch-invariant Y zero-reference for iris position.
-    const canthusMidYRaw = (lOuter.y + lInner.y + rOuter.y + rInner.y) / 4;
-    // REVERT Y-1 regression fix: alpha 0.30 → 0.10.
-    // alpha=0.30 (93 ms lag) was too fast: eye-corner landmarks co-move slightly
-    // with iris direction (lid pull / soft tissue), so the fast EMA chased the
-    // gaze signal itself, partially cancelling it.  Effect: cursor undershot
-    // every target — user had to look off to the side to push cursor there.
-    // alpha=0.10 (316 ms lag) is the safe middle ground:
-    //   - Fast enough to track genuine head translation (typically >500 ms)
-    //   - Slow enough that it does NOT chase within-saccade iris motion (~50 ms)
-    // This is the lowest alpha that still substantially reduces the head-tilt
-    // coupling without degrading gaze-to-cursor alignment.
-    this._canthusMidYEMA = this._canthusMidYEMA === null
-      ? canthusMidYRaw
-      : 0.10 * canthusMidYRaw + 0.90 * this._canthusMidYEMA;
-    const canthusMidY = this._canthusMidYEMA;
+    // ── PHASE-D: Nose-bridge Y anchor ──
+    // Eye-corner midpoint Y drifts 2-4% when brows raise / face tilts.
+    // lm[6] (nose bridge) is far more stable: it sits between the eyes on
+    // a bony structure. We use it as the Y reference for BOTH eyes.
+    // The nose bridge y maps to roughly the inter-canthus height;
+    // its variation with head pitch is <0.3% per degree, vs 1-2% for lids.
+    const noseBridgeY = lm[6]?.y ?? ((lOuter.y + lInner.y + rOuter.y + rInner.y) / 4);
 
-    // REVERT Y-2: Restore actual lH (EMA-smoothed vertical eye gap) as denominator.
-    // lSpan * 0.35 introduced a denominator ~17% larger than the real lH value,
-    // which shrank the Y gaze signal and caused the polynomial trained on the
-    // old signal scale to mismap — cursor undershot vertically.
-    //
-    // PITCH-SAFE floor: raise the floor from lSpan*0.18 → lSpan*0.22.
-    // At 15° pitch the eye height forshortens by cos(15°) ≈ 3.4% — negligible.
-    // The higher floor prevents division blow-up on squinting or partial blinks
-    // without meaningfully changing the denominator for a normally open eye.
+    // Eye heights (upper-lower lid gap, multi-landmark average)
     const lUpperY = [159,160,161].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const lLowerY = [145,144,163].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const rUpperY = [386,387,388].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const rLowerY = [374,373,390].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const lHeightRaw = Math.abs(lUpperY - lLowerY) || lSpan * 0.4;
     const rHeightRaw = Math.abs(rUpperY - rLowerY) || rSpan * 0.4;
+
+    // EMA-smooth heights (same approach as span)
     this._lHema = this._lHema === null ? lHeightRaw : this.SPAN_ALPHA * lHeightRaw + (1 - this.SPAN_ALPHA) * this._lHema;
     this._rHema = this._rHema === null ? rHeightRaw : this.SPAN_ALPHA * rHeightRaw + (1 - this.SPAN_ALPHA) * this._rHema;
-    // Floor at 22% of span (raised from 18%) — pitch-safe: at 15° pitch, real
-    // eye height only shrinks ~3%, so this floor only activates on squints/blinks.
-    const lH = Math.max(this._lHema, lSpan * 0.22);
-    const rH = Math.max(this._rHema, rSpan * 0.22);
+    // Floor: 18% of span (prevents division inflating Y gaze)
+    const lH = Math.max(this._lHema, lSpan * 0.18);
+    const rH = Math.max(this._rHema, rSpan * 0.18);
 
     // ── PHASE-C: IPD for X normalisation ──
     // Inter-pupil distance (EMA-smoothed) is more stable than individual
@@ -564,10 +524,9 @@ class HybridGazeEngine {
     //    BUT also bounded by IPD: if eye width collapses (blink), IPD keeps scale reasonable.
     const lOX = lSpan > 0 ? (lIris.x - lMidX) / Math.max(lSpan, ipd * 0.35) : 0;
     const rOX = rSpan > 0 ? (rIris.x - rMidX) / Math.max(rSpan, ipd * 0.35) : 0;
-    // Y: iris offset from canthus midpoint Y, scaled by actual EMA eye-height lH.
-    // lH = _lHema floored at lSpan*0.22 (pitch-safe floor, reverted from span-only).
-    const lOY = (lIris.y - canthusMidY) / lH;
-    const rOY = (rIris.y - canthusMidY) / rH;
+    // Y: iris offset from nose-bridge Y anchor, scaled by eye height
+    const lOY = lH > 0 ? (lIris.y - noseBridgeY) / lH : 0;
+    const rOY = rH > 0 ? (rIris.y - noseBridgeY) / rH : 0;
 
     // Per-eye quality: downweight blink/occluded eye
     const lQuality = p2.clamp(lSpan / Math.max(rSpan, 0.01), 0, 1);
@@ -671,14 +630,13 @@ class HybridGazeEngine {
     this.rawGaze    = { x: 0.5, y: 0.5 };
     this.smoothGaze = { x: 0.5, y: 0.5 };
     this.confidence = 0;
-    // PHASE-C / v10: clear EMA span state so recalibration starts fresh
+    // Clear EMA span state so recalibration starts fresh
     this._lSpanEMA = null;
     this._rSpanEMA = null;
     this._lHema    = null;
     this._rHema    = null;
     this._ipdEMA   = null;
-    this._canthusMidYEMA = null;
-    // v10: reset auto-range learner
+    // Reset auto-range learner
     this._rangeMinX = null; this._rangeMaxX = null;
     this._rangeMinY = null; this._rangeMaxY = null;
     this._rangeFrames = 0;
