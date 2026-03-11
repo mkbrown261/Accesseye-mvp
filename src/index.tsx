@@ -710,38 +710,6 @@ app.get('/', (c) => {
 
         <!-- RIGHT: Interactive Demo Area -->
         <div class="demo-main">
-          <!-- Calibration Overlay -->
-          <!-- Calibration: dark background (z 9000) -->
-          <div class="calibration-overlay" id="calibration-overlay" style="display:none"></div>
-
-          <!-- Calibration: dots layer (z 9001) — full viewport, no header blocking corners -->
-          <div class="calib-points-container" id="calib-points-container" style="display:none">
-            <!-- Points injected by JS -->
-          </div>
-
-          <!-- Calibration: HUD — header + footer + tip bar (z 9002) -->
-          <div class="calib-hud" id="calib-hud" style="display:none">
-            <div class="calib-header">
-              <h2><i class="fas fa-sliders-h"></i> Eye Tracking Calibration</h2>
-              <p id="calib-instruction-text">Look at each dot and <strong>hold perfectly still</strong> — the dot turns green and advances automatically when your gaze is stable.</p>
-              <div class="calib-progress-bar"><div class="calib-progress-fill" id="calib-progress-fill"></div></div>
-              <span id="calib-step-label">Step 0 / 9</span>
-            </div>
-            <div class="calib-footer">
-              <button class="btn-secondary" id="cancel-calib-btn"><i class="fas fa-times"></i> Cancel</button>
-              <button class="btn-primary" id="start-calib-btn"><i class="fas fa-play"></i> Start Calibration</button>
-            </div>
-            <!-- Live tip bar -->
-            <div id="calib-tip-bar"></div>
-          </div>
-
-          <!-- Gaze cursor (full page) -->
-          <div class="gaze-cursor" id="gaze-cursor">
-            <div class="gaze-cursor-ring"></div>
-            <div class="gaze-cursor-dot"></div>
-            <div class="dwell-ring" id="dwell-ring"></div>
-          </div>
-
           <!-- Demo App: Messaging Interface -->
           <div class="demo-app" id="demo-app">
             <div class="demo-app-header">
@@ -1346,6 +1314,41 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
       cursor:pointer;
       font-family:monospace;
     ">⚙ Debug</button>
+
+  <!-- ═══ CALIBRATION & GAZE — direct children of body root ═══════════════
+       position:fixed elements MUST be at root level. If they are nested inside
+       any element with overflow, transform, filter, or backdrop-filter they will
+       be clipped or re-anchored to that ancestor instead of the viewport.      -->
+
+  <!-- Layer 1: Dark background (z-index 9000) -->
+  <div class="calibration-overlay" id="calibration-overlay" style="display:none"></div>
+
+  <!-- Layer 2: Dots — full true-viewport, no ancestor clips them (z-index 9001) -->
+  <div class="calib-points-container" id="calib-points-container" style="display:none">
+    <!-- Points injected by JS at sx*innerWidth, sy*innerHeight -->
+  </div>
+
+  <!-- Layer 3: HUD — header top, footer bottom, tip bar above footer (z-index 9002) -->
+  <div class="calib-hud" id="calib-hud" style="display:none">
+    <div class="calib-header">
+      <h2><i class="fas fa-sliders-h"></i> Eye Tracking Calibration</h2>
+      <p id="calib-instruction-text">Look at each dot and <strong>hold perfectly still</strong> — the dot turns green and advances automatically when your gaze is stable.</p>
+      <div class="calib-progress-bar"><div class="calib-progress-fill" id="calib-progress-fill"></div></div>
+      <span id="calib-step-label">Step 0 / 9</span>
+    </div>
+    <div id="calib-tip-bar"></div>
+    <div class="calib-footer">
+      <button class="btn-secondary" id="cancel-calib-btn"><i class="fas fa-times"></i> Cancel</button>
+      <button class="btn-primary" id="start-calib-btn"><i class="fas fa-play"></i> Start Calibration</button>
+    </div>
+  </div>
+
+  <!-- Gaze cursor — also at root so it is never clipped by demo-main overflow -->
+  <div class="gaze-cursor" id="gaze-cursor">
+    <div class="gaze-cursor-ring"></div>
+    <div class="gaze-cursor-dot"></div>
+    <div class="dwell-ring" id="dwell-ring"></div>
+  </div>
 
   </div><!-- end #app-root -->
 
