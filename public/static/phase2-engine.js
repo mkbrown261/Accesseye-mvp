@@ -304,8 +304,10 @@ class HybridGazeEngine {
     this.W_PUPIL = 0.0;   // disabled — too noisy vs iris offset
 
     // ── v10: per-session gaze-range auto-learner ──
-    this._rangeMinX =  0.5;  this._rangeMaxX = 0.5;
-    this._rangeMinY =  0.5;  this._rangeMaxY = 0.5;
+    // Seeded to null so first real iris frame sets the midpoint correctly.
+    // Old seed of 0.5 was wrong: iris X is typically near 0, not 0.5.
+    this._rangeMinX = null; this._rangeMaxX = null;
+    this._rangeMinY = null; this._rangeMaxY = null;
     this._rangeFrames = 0;
 
     // Phase-1 fallback re-used
@@ -412,23 +414,30 @@ class HybridGazeEngine {
       this._rangeFrames++;
       const ix = irisSignal.x, iy = irisSignal.y;
 
+      // Seed from first real iris value (null means uninitialised).
+      // Old seed of 0.5 was wrong — iris X is typically near 0, not 0.5,
+      // causing the mapping to start off-center and take ~5s to self-correct.
+      if (this._rangeMinX === null) {
+        this._rangeMinX = ix; this._rangeMaxX = ix;
+        this._rangeMinY = iy; this._rangeMaxY = iy;
+      }
+
       // Expand range eagerly on new extremes
-      if (ix < this._rangeMinX) this._rangeMinX = ix * 0.98 + this._rangeMinX * 0.02; // soft expand
+      if (ix < this._rangeMinX) this._rangeMinX = ix * 0.98 + this._rangeMinX * 0.02;
       if (ix > this._rangeMaxX) this._rangeMaxX = ix * 0.98 + this._rangeMaxX * 0.02;
       if (iy < this._rangeMinY) this._rangeMinY = iy * 0.98 + this._rangeMinY * 0.02;
       if (iy > this._rangeMaxY) this._rangeMaxY = iy * 0.98 + this._rangeMaxY * 0.02;
 
-      // X and Y use the same minimum half-range.
-      // MIN_HALF = 0.05 is correct for the lH-normalised Y signal.
+      // Minimum half-range guard (lH-normalised signal)
       const MIN_HALF_X = 0.05;
-      const MIN_HALF_Y = 0.05;   // restored to 0.05 (was 0.08 for span-based Y which is reverted)
+      const MIN_HALF_Y = 0.05;
       const midX = (this._rangeMinX + this._rangeMaxX) / 2;
       const midY = (this._rangeMinY + this._rangeMaxY) / 2;
       const halfX = Math.max((this._rangeMaxX - this._rangeMinX) / 2, MIN_HALF_X);
       const halfY = Math.max((this._rangeMaxY - this._rangeMinY) / 2, MIN_HALF_Y);
 
-      // Map iris position to [0.05, 0.95] screen space
-      // During first 20 frames, blend toward center (0.5) to avoid wild jumps
+      // Map iris position to [0.02, 0.98] screen space.
+      // Warmup: first 20 frames blend toward center so cursor doesn't jump on start.
       const warmup = Math.min(this._rangeFrames / 20, 1.0);
       const rawSX = 0.5 + (ix - midX) / (halfX * 2) * 0.90;
       const rawSY = 0.5 + (iy - midY) / (halfY * 2) * 0.90;
@@ -670,8 +679,8 @@ class HybridGazeEngine {
     this._ipdEMA   = null;
     this._canthusMidYEMA = null;
     // v10: reset auto-range learner
-    this._rangeMinX = 0.5; this._rangeMaxX = 0.5;
-    this._rangeMinY = 0.5; this._rangeMaxY = 0.5;
+    this._rangeMinX = null; this._rangeMaxX = null;
+    this._rangeMinY = null; this._rangeMaxY = null;
     this._rangeFrames = 0;
   }
 }

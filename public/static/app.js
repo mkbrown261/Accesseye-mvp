@@ -552,7 +552,7 @@ class CalibrationEngine {
       localStorage.setItem('accesseye_calib', JSON.stringify({
         model:     this.model,
         calibData: this.calibData.map(d => ({ sx: d.sx, sy: d.sy, gx: d.gx, gy: d.gy, label: d.label })),
-        version:   7,  // PRECISION: v7 = iris-only calib + 18% gaze padding + relaxed clamp
+        version:   8,  // v8: signal scale changed (canthusMidY alpha, lH floor) — old v7 models rejected
         timestamp: Date.now()
       }));
     } catch(_) {}
@@ -563,9 +563,11 @@ class CalibrationEngine {
       const raw = localStorage.getItem('accesseye_calib');
       if (!raw) return false;
       const data = JSON.parse(raw);
-      // Accept v3/v4/v5/v6/v7 models. v3/v4 lack gazeRange — mapGaze handles this gracefully.
-      // v7 adds iris-only calibration samples + 18% gaze padding + relaxed mapGaze clamp.
-      if (![3, 4, 5, 6, 7].includes(data.version)) {
+      // Only accept v8+ models. v8 matches the current signal scale
+      // (canthusMidY alpha=0.10, lH floor=lSpan*0.22).
+      // Any older version has coefficients trained on a different iris XY
+      // scale and will produce wildly wrong mappings — discard them.
+      if (data.version !== 8) {
         localStorage.removeItem('accesseye_calib'); return false;
       }
       this.model      = data.model;
@@ -2418,9 +2420,22 @@ class AccessEyeApp {
   }
 
   _tryLoadCalibration() {
+    const hadSaved = !!localStorage.getItem('accesseye_calib');
     const loaded = this.calibration.loadFromStorage();
     if (loaded) {
       this.log.add('Saved calibration loaded', 'success');
+    } else if (hadSaved) {
+      // Stale calibration was wiped (version mismatch after signal-scale change).
+      // Show a clear notice so the user knows to recalibrate.
+      this.log.add('Previous calibration cleared — signal scale changed. Please recalibrate.', 'warn');
+      setTimeout(() => {
+        this.toast?.show(
+          '⚠ Recalibration Required',
+          'Your saved calibration was from an older version and has been cleared. Please run Eye Tracking Calibration before use.',
+          'warn',
+          8000
+        );
+      }, 1500);
     }
   }
 
