@@ -319,17 +319,13 @@ class CalibrationEngine {
     const rawMinX = Math.min(...allGX), rawMaxX = Math.max(...allGX);
     const rawMinY = Math.min(...allGY), rawMaxY = Math.max(...allGY);
 
-    // FIX EDGE-4 / PRECISION-8: Pad the gaze range by 18% beyond the observed min/max.
-    // Problem: The normalization maps min→-0.5 and max→+0.5 exactly.
-    // During actual use, gaze can go slightly beyond these bounds (the user
-    // may look even more to the edge than during calibration). Without padding,
-    // these values clip at ±0.5 in normalized space and the polynomial
-    // extrapolates badly — causing the cursor to "stick" near but not quite
-    // at the screen edge.
-    // With 18% padding: the corner gaze values map to ±0.42 (not ±0.5),
-    // leaving room for the polynomial to extrapolate to the true edge.
-    // (Increased from 12% — user reports cursor just short of corners)
-    const PAD = 0.18;
+    // FIX EDGE-7: Asymmetric gaze range padding.
+    // Bottom/side corners are harder to reach (anatomy: downward gaze takes more
+    // rotation). Use more padding on the bottom so the polynomial extrapolates
+    // further, letting the cursor reach the screen bottom even if the user's
+    // downward gaze during calibration fell slightly short.
+    const PAD   = 0.22;      // was 0.18 — symmetric sides/top increase
+    const PAD_B = 0.28;      // extra for bottom edge specifically
     const rangeX = rawMaxX - rawMinX;
     const rangeY = rawMaxY - rawMinY;
     this.gazeRangeX = {
@@ -338,12 +334,12 @@ class CalibrationEngine {
     };
     this.gazeRangeY = {
       min: rawMinY - rangeY * PAD,
-      max: rawMaxY + rangeY * PAD
+      max: rawMaxY + rangeY * PAD_B   // more room below for bottom corners
     };
 
     // Sanity: if range is too narrow (user barely moved eyes), use safe fallback
-    if (rangeX < 0.05) { this.gazeRangeX = { min: -0.17, max: 0.17 }; }
-    if (rangeY < 0.03) { this.gazeRangeY = { min: -0.12, max: 0.12 }; }
+    if (rangeX < 0.05) { this.gazeRangeX = { min: -0.20, max: 0.20 }; }
+    if (rangeY < 0.03) { this.gazeRangeY = { min: -0.15, max: 0.15 }; }
 
     // Normalize calibration points to [-0.5, 0.5] before regression so the
     // polynomial coefficients live in a well-conditioned space.
@@ -514,7 +510,7 @@ class CalibrationEngine {
       localStorage.setItem('accesseye_calib', JSON.stringify({
         model:     this.model,
         calibData: this.calibData.map(d => ({ sx: d.sx, sy: d.sy, gx: d.gx, gy: d.gy, label: d.label })),
-        version:   8,  // v14: mid-edge weight fix (2.5×) now applied — old v7 models invalid
+        version:   9,  // v15: asymmetric bottom padding, easier calibration thresholds
         timestamp: Date.now()
       }));
     } catch(_) {}
@@ -525,8 +521,8 @@ class CalibrationEngine {
       const raw = localStorage.getItem('accesseye_calib');
       if (!raw) return false;
       const data = JSON.parse(raw);
-      // Accept v3/v4/v5/v6/v7/v8 models. v8 = mid-edge weight fix applied.
-      if (![3, 4, 5, 6, 7, 8].includes(data.version)) {
+      // Accept v3-v9 models. v9 = asymmetric bottom padding + easier calibration thresholds.
+      if (![3, 4, 5, 6, 7, 8, 9].includes(data.version)) {
         localStorage.removeItem('accesseye_calib'); return false;
       }
       this.model      = data.model;
@@ -1147,15 +1143,19 @@ class CalibrationUI {
     this.collecting = false;
     this.sampleCount = 0;
 
-    // PHASE-A: Tightened collection thresholds.
-    // 80 good samples @ 50ms = ~4s of truly stable fixation per point.
-    // Research minimum for accurate gaze centroid: 500ms stable fixation.
-    // Previous 40 @ 33ms = 1.3s — too short, collected drifting gaze.
-    this.GOOD_SAMPLES_NEEDED = 80;
-    // Only count a frame as "good" if sigma < 0.025 (very tight — ~5px iris movement)
-    this.QUALITY_THRESHOLD = 0.55;
+    // FIX CAL-EASE: Reduced samples per point for faster calibration.
+    // 40 good samples @ 50ms = ~2s of stable fixation per point.
+    // Still enough for a robust centroid (research min = 500ms stable fixation).
+    // This halves the time per point from ~4.6s to ~2.6s (including lock).
+    // Total 9-point calib: ~23s vs ~41s previously.
+    this.GOOD_SAMPLES_NEEDED = 40;
+    // FIX CAL-THRESH: Relax quality gate from 0.55 to 0.45.
+    // The 0.55 threshold required very tight fixation which is hard for users.
+    // 0.45 still rejects obvious head movement and blinks, while accepting
+    // normal small-amplitude fixation jitter from natural tremor.
+    this.QUALITY_THRESHOLD = 0.45;
     // Minimum to record at all (below = skip, don't pollute calibData)
-    this.MIN_RECORD_QUALITY = 0.30;
+    this.MIN_RECORD_QUALITY = 0.20;
 
     this._onComplete = null;
     this._sampleInterval = null;
@@ -1366,7 +1366,10 @@ class CalibrationUI {
       let postLockSettling = false;   // PHASE-A: mandatory settle after lock
       let postLockTimer = 0;
       // PHASE-A: 12 consecutive stable frames @ 50ms = 600ms minimum fixation before lock
-      const LOCK_FRAMES_NEEDED = 12;
+      // FIX CAL-LOCK: Reduced from 12 to 8 frames needed for lock.
+      // 12 frames @ 50ms = 600ms of perfectly stable gaze — very hard to achieve.
+      // 8 frames @ 50ms = 400ms — still reliable, much more achievable.
+      const LOCK_FRAMES_NEEDED = 8;
       // PHASE-A: 300ms settle delay after lock before any samples recorded
       const POST_LOCK_SETTLE_MS = 300;
       let intervalDone = false;
@@ -1650,6 +1653,9 @@ class MediaPipeController {
       this.videoEl.addEventListener('loadedmetadata', () => {
         this.canvasEl.width  = this.videoEl.videoWidth  || 640;
         this.canvasEl.height = this.videoEl.videoHeight || 480;
+        // FIX OVL-1: update container aspect ratio to match actual video
+        // so object-fit: cover aligns with canvas landmark coordinates.
+        this._syncContainerAspect();
       }, { once: true });
 
       await this.videoEl.play();
@@ -1658,6 +1664,7 @@ class MediaPipeController {
       if (this.videoEl.videoWidth > 0) {
         this.canvasEl.width  = this.videoEl.videoWidth;
         this.canvasEl.height = this.videoEl.videoHeight;
+        this._syncContainerAspect();
       }
 
       this.running = true;
@@ -1728,6 +1735,23 @@ class MediaPipeController {
     }
   }
 
+  /**
+   * FIX OVL-1: Sync container aspect-ratio CSS to match actual video dimensions.
+   * When a 16:9 webcam is used with a 4:3 CSS container + object-fit:cover,
+   * the video sides are cropped but the canvas buffer is still 16:9, causing
+   * landmark dots to appear offset from the visible face.
+   * Solution: dynamically set the container aspect-ratio to match the video.
+   */
+  _syncContainerAspect() {
+    const vw = this.videoEl.videoWidth;
+    const vh = this.videoEl.videoHeight;
+    if (!vw || !vh) return;
+    const container = this.canvasEl.parentElement;
+    if (container) {
+      container.style.aspectRatio = `${vw} / ${vh}`;
+    }
+  }
+
   _drawFaceMesh(results) {
     const canvas = this.canvasEl;
     const ctx = this.ctx;
@@ -1742,14 +1766,33 @@ class MediaPipeController {
       }
 
       // Draw iris (landmarks 468-477 if available)
+      // FIX OVL-2: Draw larger, more visible iris center markers.
+      // lm[468] = left iris CENTER, lm[473] = right iris CENTER.
+      // Draw a filled ring so they're visible even on dark backgrounds.
       if (lm.length >= 478) {
         const irisIndices = [468, 469, 470, 471, 472, 473, 474, 475, 476, 477];
         for (const idx of irisIndices) {
           const p = lm[idx];
-          ctx.fillStyle = 'rgba(0,255,136,0.9)';
-          ctx.beginPath();
-          ctx.arc(p.x * canvas.width, p.y * canvas.height, 2, 0, Math.PI * 2);
-          ctx.fill();
+          // Center landmarks (468, 473) get a larger bright dot
+          const isCenter = (idx === 468 || idx === 473);
+          if (isCenter) {
+            // Outer ring
+            ctx.strokeStyle = 'rgba(0,255,136,0.9)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(p.x * canvas.width, p.y * canvas.height, 5, 0, Math.PI * 2);
+            ctx.stroke();
+            // Inner dot
+            ctx.fillStyle = 'rgba(0,255,136,1.0)';
+            ctx.beginPath();
+            ctx.arc(p.x * canvas.width, p.y * canvas.height, 2, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillStyle = 'rgba(0,255,136,0.7)';
+            ctx.beginPath();
+            ctx.arc(p.x * canvas.width, p.y * canvas.height, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
       }
     }

@@ -578,9 +578,21 @@ class HybridGazeEngine {
     // Pupil cx is in camera space: positive = camera-right = user-left.
     // Without negation the pupil signal fights the corrected iris signal.
     const rawX = faceSpan > 0 ? (cx - faceMidX) / faceSpan : 0;
+
+    // FIX DRIFT-Y: Use eye-corner midpoint Y as reference instead of frame center 0.5.
+    // `cy - 0.5` creates a systematic Y offset when the user's face is not centered
+    // at exactly 50% of the frame height, causing the cursor to drift vertically
+    // when moving eyes horizontally. Using the eye-corner midpoint Y as the reference
+    // anchors the pupil Y signal to the eye position, not the frame position.
+    const lEyeMidY = (lm[33]?.y + lm[133]?.y) / 2 || cy;
+    const rEyeMidY = (lm[362]?.y + lm[263]?.y) / 2 || cy;
+    const eyeRefY  = (lEyeMidY + rEyeMidY) / 2;
+    // Scale pupil Y displacement by face span for consistent range
+    const rawY = faceSpan > 0 ? (cy - eyeRefY) / faceSpan : 0;
+
     return {
       x: -rawX,   // negated to match D-1 iris mirroring fix
-      y: cy - 0.5
+      y: rawY     // FIX DRIFT-Y: relative to eye center, not frame center
     };
   }
 
@@ -2210,10 +2222,28 @@ class Phase2Orchestrator {
       for (const idx of irisIdx) {
         const pt = lm[idx];
         if (!pt) continue;
-        ctx.fillStyle = 'rgba(0,255,136,0.9)';
-        ctx.beginPath();
-        ctx.arc(pt.x * W, pt.y * H, 2.5, 0, Math.PI*2);
-        ctx.fill();
+        // FIX OVL-3: Iris center landmarks (468=left, 473=right) get large bright ring.
+        // Ring markers are much more visible and easier to confirm alignment.
+        const isCenter = (idx === 468 || idx === 473);
+        if (isCenter) {
+          // Large outer ring in bright green
+          ctx.strokeStyle = 'rgba(0,255,136,1.0)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(pt.x * W, pt.y * H, 7, 0, Math.PI*2);
+          ctx.stroke();
+          // Inner filled dot
+          ctx.fillStyle = 'rgba(0,255,136,1.0)';
+          ctx.beginPath();
+          ctx.arc(pt.x * W, pt.y * H, 2.5, 0, Math.PI*2);
+          ctx.fill();
+        } else {
+          // Ring points: small filled circles
+          ctx.fillStyle = 'rgba(0,255,136,0.7)';
+          ctx.beginPath();
+          ctx.arc(pt.x * W, pt.y * H, 1.5, 0, Math.PI*2);
+          ctx.fill();
+        }
       }
 
       // Draw eyelid contours for left eye
