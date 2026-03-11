@@ -387,9 +387,13 @@ class HybridGazeEngine {
       // The model was trained on iris-only samples (CalibrationUI now uses _irisOnlyGaze).
       // If we map the FUSED signal (iris+head+pupil) through a model trained on iris-only,
       // the head/pupil components create a systematic offset (~2-4% of screen width).
-      // Using the same iris-only signal at inference time → model input matches training input.
-      // Head-pose compensation is still applied via the fused rawGaze for display purposes.
-      const mapped = this.calibration.mapGaze(irisSignal.x, irisSignal.y);
+      // FIX Y-3: Pass current head pitch to mapGaze() so pitch-delta
+      // correction is applied at inference time.  headPoseResult.pitch
+      // is already EMA-smoothed by HeadPoseEstimator.
+      const mapped = this.calibration.mapGaze(
+        irisSignal.x, irisSignal.y,
+        headPoseResult?.pitch ?? null
+      );
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
       // ── v10: Auto-learning uncalibrated mapping ──
@@ -414,12 +418,19 @@ class HybridGazeEngine {
       if (iy < this._rangeMinY) this._rangeMinY = iy * 0.98 + this._rangeMinY * 0.02;
       if (iy > this._rangeMaxY) this._rangeMaxY = iy * 0.98 + this._rangeMaxY * 0.02;
 
-      // Always expand to at least ±0.05 around the observed midpoint
-      const MIN_HALF = 0.05;
+      // FIX Y-5: Raise Y minimum half-range from 0.05 → 0.08.
+      // With the new span-based Y denominator (lSpan * 0.35) the iris Y signal
+      // is smaller in absolute units than before (÷ span*0.35 ≈ ÷ 0.021 gives ~0.08
+      // full up-down range vs the old ÷ lH ≈ 0.016 → ~0.12).
+      // Setting MIN_HALF_Y=0.08 prevents over-amplification when the user has
+      // barely looked up or down yet (e.g. first 30 frames of auto-ranging).
+      // MIN_HALF_X stays at 0.05 because horizontal range is naturally wider.
+      const MIN_HALF_X = 0.05;
+      const MIN_HALF_Y = 0.08;   // was 0.05 — raised for span-normalised Y
       const midX = (this._rangeMinX + this._rangeMaxX) / 2;
       const midY = (this._rangeMinY + this._rangeMaxY) / 2;
-      const halfX = Math.max((this._rangeMaxX - this._rangeMinX) / 2, MIN_HALF);
-      const halfY = Math.max((this._rangeMaxY - this._rangeMinY) / 2, MIN_HALF);
+      const halfX = Math.max((this._rangeMaxX - this._rangeMinX) / 2, MIN_HALF_X);
+      const halfY = Math.max((this._rangeMaxY - this._rangeMinY) / 2, MIN_HALF_Y);
 
       // Map iris position to [0.05, 0.95] screen space
       // During first 20 frames, blend toward center (0.5) to avoid wild jumps
@@ -499,26 +510,42 @@ class HybridGazeEngine {
     // which we already normalise out via the eye height denominator.
     // This is the true head-pitch-invariant Y zero-reference for iris position.
     const canthusMidYRaw = (lOuter.y + lInner.y + rOuter.y + rInner.y) / 4;
-    // EMA-smooth canthus Y so brow raises don't jerk the Y reference (α=0.05, very slow)
+    // FIX Y-1: EMA alpha 0.05 → 0.30.
+    // Old alpha=0.05 had a time-constant of ~20 frames (650 ms at 30 fps).
+    // When the head tilts, iris Y and canthusMidY move together, but the slow
+    // EMA caused canthusMidY to lag by ~0.038 units while the iris had already
+    // shifted — producing a spurious ~3-4 % screen-height cursor jump per frame.
+    // New alpha=0.30 → lag ≈ 2.8 frames (93 ms), fast enough to track head
+    // translation accurately while still averaging out single-frame brow noise.
     this._canthusMidYEMA = this._canthusMidYEMA === null
       ? canthusMidYRaw
-      : 0.05 * canthusMidYRaw + 0.95 * this._canthusMidYEMA;
+      : 0.30 * canthusMidYRaw + 0.70 * this._canthusMidYEMA;
     const canthusMidY = this._canthusMidYEMA;
 
-    // Eye heights (upper-lower lid gap, multi-landmark average)
+    // FIX Y-2: Abandon lH (vertical eye gap) as Y denominator.
+    // Problem: lH is measured in camera-Y pixels.  When the head pitches
+    // back/forward, the vertical projection of the eye aperture forshortens
+    // by cos(pitch) — ~14 % per 15°, while the HORIZONTAL span only changes
+    // by ~3.4 % per 15° (cos is very flat near 0°).  Using the vertical
+    // height therefore amplifies Y gaze signal every time the head tilts.
+    //
+    // Solution: use lSpan * Y_SCALE as the Y denominator.  lSpan is stable
+    // under pitch and already EMA-smoothed.  Y_SCALE = 0.35 is the typical
+    // lH/lSpan aspect ratio at a frontal view, so the numerical output is
+    // the same when the head is centred, but it stays constant when pitching.
+    const Y_SCALE = 0.35;   // lH/lSpan at frontal view
+    const lH = Math.max(lSpan * Y_SCALE, 0.004); // never < 0.4% face width
+    const rH = Math.max(rSpan * Y_SCALE, 0.004);
+
+    // Keep _lHema/_rHema updated for lid-aperture computation (not used for gaze Y any more)
     const lUpperY = [159,160,161].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const lLowerY = [145,144,163].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const rUpperY = [386,387,388].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const rLowerY = [374,373,390].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
     const lHeightRaw = Math.abs(lUpperY - lLowerY) || lSpan * 0.4;
     const rHeightRaw = Math.abs(rUpperY - rLowerY) || rSpan * 0.4;
-
-    // EMA-smooth heights (same approach as span)
     this._lHema = this._lHema === null ? lHeightRaw : this.SPAN_ALPHA * lHeightRaw + (1 - this.SPAN_ALPHA) * this._lHema;
     this._rHema = this._rHema === null ? rHeightRaw : this.SPAN_ALPHA * rHeightRaw + (1 - this.SPAN_ALPHA) * this._rHema;
-    // Floor: 18% of span (prevents division inflating Y gaze)
-    const lH = Math.max(this._lHema, lSpan * 0.18);
-    const rH = Math.max(this._rHema, rSpan * 0.18);
 
     // ── PHASE-C: IPD for X normalisation ──
     // Inter-pupil distance (EMA-smoothed) is more stable than individual
@@ -533,10 +560,10 @@ class HybridGazeEngine {
     //    BUT also bounded by IPD: if eye width collapses (blink), IPD keeps scale reasonable.
     const lOX = lSpan > 0 ? (lIris.x - lMidX) / Math.max(lSpan, ipd * 0.35) : 0;
     const rOX = rSpan > 0 ? (rIris.x - rMidX) / Math.max(rSpan, ipd * 0.35) : 0;
-    // Y: iris offset from canthus midpoint Y, scaled by eye height
-    // Using canthusMidY eliminates head-pitch coupling on the Y axis.
-    const lOY = lH > 0 ? (lIris.y - canthusMidY) / lH : 0;
-    const rOY = rH > 0 ? (rIris.y - canthusMidY) / rH : 0;
+    // Y: iris offset from canthus midpoint Y, scaled by span-derived height.
+    // lH/rH now = lSpan*0.35 (FIX Y-2) — pitch-invariant denominator.
+    const lOY = (lIris.y - canthusMidY) / lH;
+    const rOY = (rIris.y - canthusMidY) / rH;
 
     // Per-eye quality: downweight blink/occluded eye
     const lQuality = p2.clamp(lSpan / Math.max(rSpan, 0.01), 0, 1);

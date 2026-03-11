@@ -1263,8 +1263,8 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px 6px;line-height:1.7;margin-bottom:6px;">
         <span style="color:#888;">yaw</span><span id="dbg-hp-yaw" style="color:#c084fc;">—</span>
         <span style="color:#888;">pitch</span><span id="dbg-hp-pitch" style="color:#c084fc;">—</span>
-        <span style="color:#888;">conf</span><span id="dbg-conf" style="color:#fb923c;">—</span>
-        <span style="color:#888;">calib</span><span id="dbg-calib" style="color:#fb923c;">—</span>
+        <span style="color:#888;">Δpitch</span><span id="dbg-hp-pitch-delta" style="color:#f472b6;" title="Live pitch minus calibration baseline. Should stay near 0° during normal use.">—</span>
+        <span style="color:#888;">baseline</span><span id="dbg-calib" style="color:#fb923c;">—</span>
       </div>
 
       <div style="color:#444;font-size:10px;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.5px;">Auto-Range (look around to expand)</div>
@@ -1272,7 +1272,7 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
         <span style="color:#888;">X rng</span><span id="dbg-range-x" style="color:#fb923c;">—</span>
         <span style="color:#888;">Y rng</span><span id="dbg-range-y" style="color:#fb923c;">—</span>
         <span style="color:#888;">frames</span><span id="dbg-range-frames" style="color:#fb923c;">—</span>
-        <span style="color:#888;">phase</span><span id="dbg-phase" style="color:#f0abfc;">—</span>
+        <span style="color:#888;">conf</span><span id="dbg-conf" style="color:#fb923c;">—</span>
       </div>
 
       <div style="display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid #ffffff11;">
