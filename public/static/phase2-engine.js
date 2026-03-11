@@ -292,29 +292,34 @@ class HybridGazeEngine {
     this.smoothGaze = { x: 0.5, y: 0.5 };
     this.confidence = 0;
 
-    // Internal weights (adaptive)
-    // FIX H-3: W_HEAD reduced from 0.30 → 0.15.  The original 0.30 added
-    //          12% screen-width displacement for a mere 20° head turn,
-    //          introducing visible gaze drift on slight head movements.
-    //          Weight is now gated via headMag in the fusion step below.
-    this.W_IRIS = 0.55;      // binocular iris offset weight
-    this.W_HEAD = 0.15;      // head pose vector weight (was 0.30 — FIX H-3)
-    this.W_PUPIL= 0.15;      // pupil boundary centroid weight
+    // Internal weights
+    // v10: IRIS-ONLY. Both head-pose and pupil signals were adding noise:
+    //   - Head pitch directly couples to Y (lean back → cursor down)
+    //   - Pupil centroid signal is too noisy relative to iris offset
+    // The calibration model is trained on iris-only samples anyway,
+    // so mixing in head/pupil at inference creates a systematic offset.
+    // Pure iris tracking is more stable and predictable.
+    this.W_IRIS  = 1.0;   // 100% iris offset
+    this.W_HEAD  = 0.0;   // disabled — head pitch contaminates Y axis
+    this.W_PUPIL = 0.0;   // disabled — too noisy vs iris offset
+
+    // ── v10: per-session gaze-range auto-learner ──
+    this._rangeMinX =  0.5;  this._rangeMaxX = 0.5;
+    this._rangeMinY =  0.5;  this._rangeMaxY = 0.5;
+    this._rangeFrames = 0;
 
     // Phase-1 fallback re-used
     this._callbacks = {};
 
     // ── PHASE-C: EMA-smoothed eye-span and IPD state ──
-    // Eye span (corner distance) varies ±5-8% per frame due to brow
-    // movement and perspective; EMA (α=0.08) removes this jitter without
-    // adding latency at typical gaze velocities.
-    this._lSpanEMA = null;   // left eye corner span (EMA)
-    this._rSpanEMA = null;   // right eye corner span (EMA)
-    this._lHema    = null;   // left eye height EMA
-    this._rHema    = null;   // right eye height EMA
-    this._ipdEMA   = null;   // inter-pupil distance EMA (used for X norm)
-    this.SPAN_ALPHA = 0.08;  // slow EMA — mostly stable at rest
-    this.SPAN_MAX_DELTA = 0.15; // max ±15% change per frame (reject blinks/artefacts)
+    this._lSpanEMA = null;
+    this._rSpanEMA = null;
+    this._lHema    = null;
+    this._rHema    = null;
+    this._ipdEMA   = null;
+    this._canthusMidYEMA = null;  // v10: EMA-smoothed Y reference
+    this.SPAN_ALPHA = 0.08;
+    this.SPAN_MAX_DELTA = 0.15;
   }
 
   on(event, cb) {
@@ -370,12 +375,8 @@ class HybridGazeEngine {
     const fusedY = wIris  * irisSignal.y  + wHead * headSignal.y  + wPupil * pupilSignal.y;
 
     // PRECISION-5: Store IRIS-ONLY signal separately for calibration.
-    // The fused signal (iris + head + pupil) adds noise during calibration:
-    // head-pose jitter and pupil-signal noise both shift the gaze estimate away
-    // from the true fixation point. During calibration the user's head is still,
-    // so the iris-only signal is CLEANER and maps more directly to screen position.
-    // CalibrationUI reads _irisOnlyGaze instead of rawGaze for maximum precision.
-    this._irisOnlyGaze = { x: irisSignal.x, y: irisSignal.y };
+    this._irisOnlyGaze  = { x: irisSignal.x, y: irisSignal.y };
+    this._lastIrisSignal = irisSignal;  // exposes lSpan/rSpan to debug panel
 
     this.rawGaze = { x: fusedX, y: fusedY };
 
@@ -391,20 +392,43 @@ class HybridGazeEngine {
       const mapped = this.calibration.mapGaze(irisSignal.x, irisSignal.y);
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
-      // FIX D-2 + SCOPE-4: Phase 2 uncalibrated fallback.
-      // fusedX is already negated (D-1 fix in _computeIrisSignal).
-      // nose tip headX is in camera space (0=camera-left=user-right).
-      // Use -(headX - 0.5) so face displaced camera-right → cursor left (correct).
-      // FIX D-9: hYaw sign must be NEGATIVE to match _computeHeadPoseSignal convention.
-      //   HeadPoseEstimator yaw: positive = nose turned camera-right = user turned LEFT.
-      //   Looking left (positive yaw) → cursor should move LEFT → subtract from screen.x.
-      const headX = lm[1].x;  // nose tip X (camera space)
-      const headY = lm[1].y;  // nose tip Y
-      const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
-      const hPit  = (headPoseResult?.pitch || 0) / 35;
+      // ── v10: Auto-learning uncalibrated mapping ──
+      // Instead of the fixed 7.0 scale (which was wrong for anyone not matching
+      // the original test user), we track the running min/max of iris X/Y over
+      // the session and map that observed range → [0.05, 0.95] screen.
+      //
+      // Range expands eagerly (updates on every new extreme) but never shrinks,
+      // so the scale stays consistent once the user has looked around a bit.
+      // After ~5-10 seconds of natural eye movement the mapping is personalised.
+      //
+      // Minimum range guard: if the user only looks at a tiny area the mapping
+      // would be over-amplified. We enforce a minimum range of ±0.05 iris units
+      // (roughly the range for a 10° eye movement) to stay reasonable.
+
+      this._rangeFrames++;
+      const ix = irisSignal.x, iy = irisSignal.y;
+
+      // Expand range eagerly on new extremes
+      if (ix < this._rangeMinX) this._rangeMinX = ix * 0.98 + this._rangeMinX * 0.02; // soft expand
+      if (ix > this._rangeMaxX) this._rangeMaxX = ix * 0.98 + this._rangeMaxX * 0.02;
+      if (iy < this._rangeMinY) this._rangeMinY = iy * 0.98 + this._rangeMinY * 0.02;
+      if (iy > this._rangeMaxY) this._rangeMaxY = iy * 0.98 + this._rangeMaxY * 0.02;
+
+      // Always expand to at least ±0.05 around the observed midpoint
+      const MIN_HALF = 0.05;
+      const midX = (this._rangeMinX + this._rangeMaxX) / 2;
+      const midY = (this._rangeMinY + this._rangeMaxY) / 2;
+      const halfX = Math.max((this._rangeMaxX - this._rangeMinX) / 2, MIN_HALF);
+      const halfY = Math.max((this._rangeMaxY - this._rangeMinY) / 2, MIN_HALF);
+
+      // Map iris position to [0.05, 0.95] screen space
+      // During first 20 frames, blend toward center (0.5) to avoid wild jumps
+      const warmup = Math.min(this._rangeFrames / 20, 1.0);
+      const rawSX = 0.5 + (ix - midX) / (halfX * 2) * 0.90;
+      const rawSY = 0.5 + (iy - midY) / (halfY * 2) * 0.90;
       screen = {
-        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.01, 0.99),
-        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.01, 0.99)
+        x: p2.clamp(warmup * rawSX + (1 - warmup) * 0.5, 0.02, 0.98),
+        y: p2.clamp(warmup * rawSY + (1 - warmup) * 0.5, 0.02, 0.98)
       };
     }
 
@@ -463,13 +487,23 @@ class HybridGazeEngine {
     const lMidX = (lOuter.x + lInner.x) / 2;
     const rMidX = (rOuter.x + rInner.x) / 2;
 
-    // ── PHASE-D: Nose-bridge Y anchor ──
-    // Eye-corner midpoint Y drifts 2-4% when brows raise / face tilts.
-    // lm[6] (nose bridge) is far more stable: it sits between the eyes on
-    // a bony structure. We use it as the Y reference for BOTH eyes.
-    // The nose bridge y maps to roughly the inter-canthus height;
-    // its variation with head pitch is <0.3% per degree, vs 1-2% for lids.
-    const noseBridgeY = lm[6]?.y ?? ((lOuter.y + lInner.y + rOuter.y + rInner.y) / 4);
+    // ── v10 FIX: Eye-canthus midpoint Y anchor ──
+    // PROBLEM with nose bridge (lm[6]): it sits on the nose, which pitches
+    // with the head. Lean back 10° → nose bridge Y drops ~3% → iris Y offset
+    // becomes more negative → cursor jumps UP. This is the "lean = cursor moves"
+    // bug reported by the user.
+    //
+    // SOLUTION: Use the mean Y of all four eye corners (inner+outer canthi of
+    // both eyes). These are attached to the orbital bone and don't translate
+    // vertically with head pitch — only rotation changes their relative position,
+    // which we already normalise out via the eye height denominator.
+    // This is the true head-pitch-invariant Y zero-reference for iris position.
+    const canthusMidYRaw = (lOuter.y + lInner.y + rOuter.y + rInner.y) / 4;
+    // EMA-smooth canthus Y so brow raises don't jerk the Y reference (α=0.05, very slow)
+    this._canthusMidYEMA = this._canthusMidYEMA === null
+      ? canthusMidYRaw
+      : 0.05 * canthusMidYRaw + 0.95 * this._canthusMidYEMA;
+    const canthusMidY = this._canthusMidYEMA;
 
     // Eye heights (upper-lower lid gap, multi-landmark average)
     const lUpperY = [159,160,161].reduce((s,i)=>s+(lm[i]?.y||0),0)/3;
@@ -499,9 +533,10 @@ class HybridGazeEngine {
     //    BUT also bounded by IPD: if eye width collapses (blink), IPD keeps scale reasonable.
     const lOX = lSpan > 0 ? (lIris.x - lMidX) / Math.max(lSpan, ipd * 0.35) : 0;
     const rOX = rSpan > 0 ? (rIris.x - rMidX) / Math.max(rSpan, ipd * 0.35) : 0;
-    // Y: iris offset from nose-bridge Y anchor, scaled by eye height
-    const lOY = lH > 0 ? (lIris.y - noseBridgeY) / lH : 0;
-    const rOY = rH > 0 ? (rIris.y - noseBridgeY) / rH : 0;
+    // Y: iris offset from canthus midpoint Y, scaled by eye height
+    // Using canthusMidY eliminates head-pitch coupling on the Y axis.
+    const lOY = lH > 0 ? (lIris.y - canthusMidY) / lH : 0;
+    const rOY = rH > 0 ? (rIris.y - canthusMidY) / rH : 0;
 
     // Per-eye quality: downweight blink/occluded eye
     const lQuality = p2.clamp(lSpan / Math.max(rSpan, 0.01), 0, 1);
@@ -605,12 +640,17 @@ class HybridGazeEngine {
     this.rawGaze    = { x: 0.5, y: 0.5 };
     this.smoothGaze = { x: 0.5, y: 0.5 };
     this.confidence = 0;
-    // PHASE-C: clear EMA span state so recalibration starts fresh
+    // PHASE-C / v10: clear EMA span state so recalibration starts fresh
     this._lSpanEMA = null;
     this._rSpanEMA = null;
     this._lHema    = null;
     this._rHema    = null;
     this._ipdEMA   = null;
+    this._canthusMidYEMA = null;
+    // v10: reset auto-range learner
+    this._rangeMinX = 0.5; this._rangeMaxX = 0.5;
+    this._rangeMinY = 0.5; this._rangeMaxY = 0.5;
+    this._rangeFrames = 0;
   }
 }
 
@@ -721,7 +761,22 @@ class TemporalStabilizer {
     const sx = this._trimmedMean(this._wx);
     const sy = this._trimmedMean(this._wy);
 
-    this.stable = { x: sx, y: sy };
+    // ── v10 CENTER-GRAVITY ──
+    // A very gentle pull toward center (0.5, 0.5) that only activates when
+    // the cursor is within 15% of center. This stabilises the "looking straight
+    // ahead" state without making the cursor feel snappy or sticky elsewhere.
+    // Strength: max 1.5% pull at center, zero at 15% radius — completely
+    // imperceptible during intentional movement to screen edges.
+    const distFromCenter = Math.hypot(sx - 0.5, sy - 0.5);
+    const gravityRadius  = 0.15;   // active within 15% of screen from center
+    const gravityMax     = 0.015;  // pull up to 1.5% toward center
+    const gravityStrength = distFromCenter < gravityRadius
+      ? gravityMax * (1 - distFromCenter / gravityRadius)
+      : 0;
+    const finalX = sx + (0.5 - sx) * gravityStrength;
+    const finalY = sy + (0.5 - sy) * gravityStrength;
+
+    this.stable = { x: finalX, y: finalY };
     return this.stable;
   }
 

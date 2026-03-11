@@ -1227,75 +1227,60 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
       bottom:12px;
       left:12px;
       z-index:99999;
-      background:rgba(10,14,26,0.93);
-      border:1px solid #00d4ff44;
+      background:rgba(10,14,26,0.95);
+      border:1px solid #00d4ff55;
       border-radius:10px;
-      padding:12px 16px;
-      min-width:260px;
+      padding:12px 14px;
+      min-width:310px;
       font-family:monospace;
       font-size:11px;
       color:#e0e0e0;
-      box-shadow:0 4px 24px #000a;
+      box-shadow:0 4px 24px #000c;
       pointer-events:none;
     ">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;pointer-events:auto;">
-        <span style="color:#00d4ff;font-weight:bold;font-size:12px;">⚙ Gaze Diagnostics</span>
+        <span style="color:#00d4ff;font-weight:bold;font-size:12px;">⚙ Gaze Diagnostics v2</span>
         <span style="cursor:pointer;color:#888;font-size:13px;" id="debug-close-btn" title="Close (Alt+D)">✕</span>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 12px;line-height:1.7;">
-        <!-- Row 1: Raw iris offset -->
-        <span style="color:#888;">rawGX</span>
-        <span id="dbg-raw-gx" style="color:#00d4ff;">—</span>
-        <span style="color:#888;">rawGY</span>
-        <span id="dbg-raw-gy" style="color:#00d4ff;">—</span>
 
-        <!-- Row 2: Mapped screen (0-1) -->
-        <span style="color:#888;">screenX</span>
-        <span id="dbg-screen-x" style="color:#4ade80;">—</span>
-        <span style="color:#888;">screenY</span>
-        <span id="dbg-screen-y" style="color:#4ade80;">—</span>
+      <div style="color:#444;font-size:10px;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.5px;">Iris Signal (raw eye position)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px 6px;line-height:1.7;margin-bottom:6px;">
+        <span style="color:#888;">iris.x</span><span id="dbg-iris-x" style="color:#00d4ff;">—</span>
+        <span style="color:#888;">iris.y</span><span id="dbg-iris-y" style="color:#00d4ff;">—</span>
+        <span style="color:#888;">lSpan</span><span id="dbg-lspan" style="color:#38bdf8;">—</span>
+        <span style="color:#888;">rSpan</span><span id="dbg-rspan" style="color:#38bdf8;">—</span>
+      </div>
 
-        <!-- Row 3: Screen pixels -->
-        <span style="color:#888;">px</span>
-        <span id="dbg-px" style="color:#facc15;">—</span>
-        <span style="color:#888;">py</span>
-        <span id="dbg-py" style="color:#facc15;">—</span>
+      <div style="color:#444;font-size:10px;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.5px;">Screen Output</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px 6px;line-height:1.7;margin-bottom:6px;">
+        <span style="color:#888;">sx</span><span id="dbg-screen-x" style="color:#4ade80;">—</span>
+        <span style="color:#888;">sy</span><span id="dbg-screen-y" style="color:#4ade80;">—</span>
+        <span style="color:#888;">px</span><span id="dbg-px" style="color:#facc15;">—</span>
+        <span style="color:#888;">py</span><span id="dbg-py" style="color:#facc15;">—</span>
+      </div>
 
-        <!-- Row 4: Confidence -->
-        <span style="color:#888;">confidence</span>
-        <span id="dbg-conf" style="color:#fb923c;">—</span>
-        <span style="color:#888;">calib</span>
-        <span id="dbg-calib" style="color:#fb923c;">—</span>
+      <div style="color:#444;font-size:10px;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.5px;">Head Pose — move head; iris.y should NOT change</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px 6px;line-height:1.7;margin-bottom:6px;">
+        <span style="color:#888;">yaw</span><span id="dbg-hp-yaw" style="color:#c084fc;">—</span>
+        <span style="color:#888;">pitch</span><span id="dbg-hp-pitch" style="color:#c084fc;">—</span>
+        <span style="color:#888;">conf</span><span id="dbg-conf" style="color:#fb923c;">—</span>
+        <span style="color:#888;">calib</span><span id="dbg-calib" style="color:#fb923c;">—</span>
+      </div>
 
-        <!-- Row 5: Head pose -->
-        <span style="color:#888;">hp.yaw</span>
-        <span id="dbg-hp-yaw" style="color:#c084fc;">—</span>
-        <span style="color:#888;">hp.pitch</span>
-        <span id="dbg-hp-pitch" style="color:#c084fc;">—</span>
+      <div style="color:#444;font-size:10px;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.5px;">Auto-Range (look around to expand)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px 6px;line-height:1.7;margin-bottom:6px;">
+        <span style="color:#888;">X rng</span><span id="dbg-range-x" style="color:#fb923c;">—</span>
+        <span style="color:#888;">Y rng</span><span id="dbg-range-y" style="color:#fb923c;">—</span>
+        <span style="color:#888;">frames</span><span id="dbg-range-frames" style="color:#fb923c;">—</span>
+        <span style="color:#888;">phase</span><span id="dbg-phase" style="color:#f0abfc;">—</span>
+      </div>
 
-        <!-- Row 6: Phase -->
-        <span style="color:#888;">phase</span>
-        <span id="dbg-phase" style="color:#f0abfc;">—</span>
-        <span style="color:#888;">fps</span>
+      <div style="display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid #ffffff11;">
+        <span style="color:#888;">dir</span>
+        <span id="dbg-direction" style="color:#fff;font-size:16px;">·</span>
+        <span style="color:#888;margin-left:8px;">fps</span>
         <span id="dbg-fps" style="color:#f0abfc;">—</span>
-      </div>
-
-      <!-- Axis direction test: shows L/R/U/D arrow based on gaze quadrant -->
-      <div style="margin-top:8px;padding-top:8px;border-top:1px solid #ffffff11;">
-        <span style="color:#888;">direction:</span>
-        <span id="dbg-direction" style="color:#fff;font-size:16px;margin-left:6px;">·</span>
-        <span style="color:#555;font-size:10px;margin-left:4px;">(verify axes)</span>
-      </div>
-      <!-- Scope check bar -->
-      <div style="margin-top:6px;">
-        <span style="color:#888;font-size:10px;">X scope: </span>
-        <span id="dbg-scope-x-min" style="color:#666;">—</span>
-        <span style="color:#444;"> .. </span>
-        <span id="dbg-scope-x-max" style="color:#666;">—</span>
-        <span style="color:#888;font-size:10px;margin-left:8px;">Y: </span>
-        <span id="dbg-scope-y-min" style="color:#666;">—</span>
-        <span style="color:#444;"> .. </span>
-        <span id="dbg-scope-y-max" style="color:#666;">—</span>
+        <span style="color:#444;font-size:10px;margin-left:auto;">Alt+D to close</span>
       </div>
     </div>
 
@@ -1334,11 +1319,14 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
       <h2><i class="fas fa-sliders-h"></i> Eye Tracking Calibration</h2>
       <p id="calib-instruction-text">Look at each dot and <strong>hold perfectly still</strong> — the dot turns green and advances automatically when your gaze is stable.</p>
       <div class="calib-progress-bar"><div class="calib-progress-fill" id="calib-progress-fill"></div></div>
-      <span id="calib-step-label">Step 0 / 9</span>
+      <span id="calib-step-label">Step 0 / 5</span>
     </div>
     <div id="calib-tip-bar"></div>
     <div class="calib-footer">
       <button class="btn-secondary" id="cancel-calib-btn"><i class="fas fa-times"></i> Cancel</button>
+      <button class="btn-secondary" id="calib-mode-btn" title="Switch between 5-point quick and 9-point full calibration">
+        <i class="fas fa-th"></i> <span id="calib-mode-label">5-pt Quick</span>
+      </button>
       <button class="btn-primary" id="start-calib-btn"><i class="fas fa-play"></i> Start Calibration</button>
     </div>
   </div>

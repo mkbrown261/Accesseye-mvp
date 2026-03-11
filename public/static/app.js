@@ -125,31 +125,29 @@ class CalibrationEngine {
      * Mid-edge points (TLM/TRM/BLM/BRM) catch peripheral distortion
      * that the 5-pt model misses (~12% accuracy gain at edges).
      */
-    // EASE-1: 9-point grid — corners at 0.08/0.92 (reachable with eyes-only),
-    // 4 inner-ring points at 0.25/0.75, and center.
-    // WHY 9 not 13: The previous 13-point grid with corners at 0.05/0.95 forced
-    // extreme eye strain to the very screen edge — many users need small head
-    // movements to reach those points.  Head movement during calibration adds
-    // noise and instability.  Moving corners to 0.08/0.92 means ~90% of the
-    // screen is covered while remaining comfortably reachable with eyes alone.
-    // 9 points × 30 samples = ~25 seconds vs 13 × 50 = ~75 seconds.
-    // The degree-3 polynomial only needs 10 coefficients — 9 points is sufficient
-    // for a well-conditioned fit, and the padding + extrapolation handles the
-    // last 8% of screen edge without explicit corner samples there.
-    this.CALIB_POINTS = [
-      // ── 4 corners — close enough to reach with eyes alone ──
+    // v10: Two calibration modes.
+    // QUICK (5-pt, default): 4 corners + center. ~1-2 min. Recommended first run.
+    // FULL  (9-pt): adds 4 inner-ring points for better edge accuracy. ~2-3 min.
+    this.CALIB_POINTS_QUICK = [
       { sx: 0.08, sy: 0.08, label: 'Top-Left'     },
       { sx: 0.92, sy: 0.08, label: 'Top-Right'    },
       { sx: 0.08, sy: 0.92, label: 'Bottom-Left'  },
       { sx: 0.92, sy: 0.92, label: 'Bottom-Right' },
-      // ── 4 inner-ring points ──
+      { sx: 0.50, sy: 0.50, label: 'Center'       }
+    ];
+    this.CALIB_POINTS_FULL = [
+      { sx: 0.08, sy: 0.08, label: 'Top-Left'     },
+      { sx: 0.92, sy: 0.08, label: 'Top-Right'    },
+      { sx: 0.08, sy: 0.92, label: 'Bottom-Left'  },
+      { sx: 0.92, sy: 0.92, label: 'Bottom-Right' },
       { sx: 0.25, sy: 0.25, label: 'Inner-TL'     },
       { sx: 0.75, sy: 0.25, label: 'Inner-TR'     },
       { sx: 0.25, sy: 0.75, label: 'Inner-BL'     },
       { sx: 0.75, sy: 0.75, label: 'Inner-BR'     },
-      // ── Center ──
       { sx: 0.50, sy: 0.50, label: 'Center'       }
     ];
+    this.calibMode   = 'quick';   // 'quick' | 'full'
+    this.CALIB_POINTS = this.CALIB_POINTS_QUICK;
 
     this.calibData = [];          // [{sx, sy, gx, gy, samples[]}]
     this.model     = null;        // { x: coeff[], y: coeff[], degree, lambda }
@@ -2340,6 +2338,20 @@ class AccessEyeApp {
       this.log.add('Calibration cancelled', 'warn');
     });
 
+    // v10: mode toggle button
+    $('#calib-mode-btn')?.addEventListener('click', () => {
+      const eng = this.calibration;
+      eng.calibMode = eng.calibMode === 'quick' ? 'full' : 'quick';
+      eng.CALIB_POINTS = eng.calibMode === 'quick'
+        ? eng.CALIB_POINTS_QUICK
+        : eng.CALIB_POINTS_FULL;
+      const lbl = $('#calib-mode-label');
+      if (lbl) lbl.textContent = eng.calibMode === 'quick' ? '5-pt Quick' : '9-pt Full';
+      const sl = $('#calib-step-label');
+      if (sl) sl.textContent = `Step 0 / ${eng.CALIB_POINTS.length}`;
+      calibUI._renderPoints();
+    });
+
     this._calibUI = calibUI;
   }
 
@@ -2465,60 +2477,64 @@ class AccessEyeApp {
       this._debugFrameT = now;
     }
 
-    // Get raw gaze from active engine
-    const raw  = this.gazeEngine?.rawGaze || { x: 0, y: 0 };
-    const conf = this.gazeEngine?.confidence ?? 0;
+    const p2orch = window.app?.phase2;
+    const hg     = p2orch?.hybridGaze;
+
+    // Iris signal direct from HybridGazeEngine
+    const irisOnly = hg?._irisOnlyGaze || { x: 0, y: 0 };
+    const irisSignalFull = hg?._lastIrisSignal;  // set below
+    const lSpan = irisSignalFull?.lSpan?.toFixed(4) ?? '—';
+    const rSpan = irisSignalFull?.rSpan?.toFixed(4) ?? '—';
+
+    const conf  = hg?.confidence ?? this.gazeEngine?.confidence ?? 0;
     const calib = this.calibration?.isCalibrated ? 'YES' : 'NO';
 
-    // Scope tracking (running min/max of raw gaze)
-    if (raw.x < this._debugScopeX.min) this._debugScopeX.min = raw.x;
-    if (raw.x > this._debugScopeX.max) this._debugScopeX.max = raw.x;
-    if (raw.y < this._debugScopeY.min) this._debugScopeY.min = raw.y;
-    if (raw.y > this._debugScopeY.max) this._debugScopeY.max = raw.y;
-
-    // Direction arrow (4 quadrants)
-    const cx = screenX - 0.5, cy = screenY - 0.5;
-    let dir = '·';
-    const th = 0.12;  // threshold to show direction
-    if      (Math.abs(cx) > th && Math.abs(cx) > Math.abs(cy)) dir = cx > 0 ? '→' : '←';
-    else if (Math.abs(cy) > th) dir = cy > 0 ? '↓' : '↑';
-    else if (Math.abs(cx) > th*0.5 || Math.abs(cy) > th*0.5)
-      dir = (cx > 0 ? 'R' : 'L') + '/' + (cy > 0 ? 'D' : 'U');
-
-    // Head pose from Phase 2 if available
+    // Head pose
     let hpYaw = '—', hpPitch = '—';
-    const p2orch = window.app?.phase2;
-    if (p2orch?.active) {
-      const hp = p2orch.hybridGaze?.calibration?.isCalibrated !== undefined
-        ? null : null;
-      // Read from last p2 enhanced packet stored on orchestrator
-      if (p2orch._lastHeadPose) {
-        hpYaw   = p2orch._lastHeadPose.yaw?.toFixed(1)   + '°';
-        hpPitch = p2orch._lastHeadPose.pitch?.toFixed(1) + '°';
-      }
+    if (p2orch?._lastHeadPose) {
+      hpYaw   = (p2orch._lastHeadPose.yaw   ?? 0).toFixed(1) + '°';
+      hpPitch = (p2orch._lastHeadPose.pitch ?? 0).toFixed(1) + '°';
     }
+
+    // Auto-range from HybridGazeEngine
+    const rangeXStr = hg
+      ? `${(hg._rangeMinX||0).toFixed(3)}..${(hg._rangeMaxX||0).toFixed(3)}`
+      : '—';
+    const rangeYStr = hg
+      ? `${(hg._rangeMinY||0).toFixed(3)}..${(hg._rangeMaxY||0).toFixed(3)}`
+      : '—';
+    const rangeFrames = hg?._rangeFrames ?? '—';
 
     const phase = p2orch?.active ? 'P2' + (window.app?.phase3?.active ? '+P3' : '') : 'P1';
 
-    // Update DOM
+    // Direction arrow
+    const cx = screenX - 0.5, cy = screenY - 0.5;
+    let dir = '·';
+    const th = 0.12;
+    if      (Math.abs(cx) > th && Math.abs(cx) > Math.abs(cy)) dir = cx > 0 ? '→' : '←';
+    else if (Math.abs(cy) > th) dir = cy > 0 ? '↓' : '↑';
+    else if (Math.abs(cx) > th * 0.5 || Math.abs(cy) > th * 0.5)
+      dir = (cx > 0 ? 'R' : 'L') + '/' + (cy > 0 ? 'D' : 'U');
+
     const set = (id, val) => { const el = $(`#${id}`); if (el) el.textContent = val; };
-    set('dbg-raw-gx',  raw.x.toFixed(4));
-    set('dbg-raw-gy',  raw.y.toFixed(4));
-    set('dbg-screen-x', screenX.toFixed(3));
-    set('dbg-screen-y', screenY.toFixed(3));
-    set('dbg-px', (screenX * window.innerWidth).toFixed(0)  + 'px');
-    set('dbg-py', (screenY * window.innerHeight).toFixed(0) + 'px');
-    set('dbg-conf',  (conf * 100).toFixed(0) + '%');
-    set('dbg-calib', calib);
-    set('dbg-hp-yaw',   hpYaw);
-    set('dbg-hp-pitch', hpPitch);
-    set('dbg-phase', phase);
-    set('dbg-fps',   this._debugFPS);
-    set('dbg-direction', dir);
-    set('dbg-scope-x-min', this._debugScopeX.min < 1 ? this._debugScopeX.min.toFixed(3) : '—');
-    set('dbg-scope-x-max', this._debugScopeX.max > 0 ? this._debugScopeX.max.toFixed(3) : '—');
-    set('dbg-scope-y-min', this._debugScopeY.min < 1 ? this._debugScopeY.min.toFixed(3) : '—');
-    set('dbg-scope-y-max', this._debugScopeY.max > 0 ? this._debugScopeY.max.toFixed(3) : '—');
+    set('dbg-iris-x',     irisOnly.x.toFixed(4));
+    set('dbg-iris-y',     irisOnly.y.toFixed(4));
+    set('dbg-lspan',      lSpan);
+    set('dbg-rspan',      rSpan);
+    set('dbg-screen-x',   screenX.toFixed(3));
+    set('dbg-screen-y',   screenY.toFixed(3));
+    set('dbg-px',         (screenX * window.innerWidth).toFixed(0)  + 'px');
+    set('dbg-py',         (screenY * window.innerHeight).toFixed(0) + 'px');
+    set('dbg-hp-yaw',     hpYaw);
+    set('dbg-hp-pitch',   hpPitch);
+    set('dbg-conf',       (conf * 100).toFixed(0) + '%');
+    set('dbg-calib',      calib);
+    set('dbg-range-x',    rangeXStr);
+    set('dbg-range-y',    rangeYStr);
+    set('dbg-range-frames', rangeFrames);
+    set('dbg-phase',      phase);
+    set('dbg-fps',        this._debugFPS);
+    set('dbg-direction',  dir);
   }
 
   _updateCoordTarget(label) {
