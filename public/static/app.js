@@ -506,9 +506,18 @@ class CalibrationEngine {
     let normGY = this.model.gazeRangeY
       ? this._normalizeGaze(gy, this.model.gazeRangeY) : gy;
 
-    // FIX Y-3: Apply pitch-delta correction when current pitch is known.
+    // REGRESSION FIX Y-3: PITCH_Y_GAIN 0.024 → 0.003.
+    // The original gain of 0.024 normGY/degree was calculated assuming lH as
+    // denominator AND that canthusMidY provided no protection (alpha=0.05).
+    // Both assumptions are now wrong:
+    //   1. lH denominator restored → the iris Y signal scale is unchanged.
+    //   2. canthusMidY alpha=0.10 already absorbs ~90% of gradual head tilt.
+    // At 0.024/deg, a 10° tilt applied a 0.24 normGY shift (24% of screen)
+    // in ADDITION to what the EMA already corrected — severe overcorrection.
+    // At 0.003/deg a 10° tilt applies 0.03 normGY (3% screen) — a small nudge
+    // that only matters for sustained held tilts beyond the EMA's recovery.
     if (currentPitchDeg !== null && this.model.pitchBaseline !== undefined) {
-      const PITCH_Y_GAIN = 0.024;   // normGY units per degree (see above)
+      const PITCH_Y_GAIN = 0.003;   // normGY units per degree — conservative residual correction
       const pitchDelta   = clamp(currentPitchDeg - this.model.pitchBaseline, -12, 12);
       normGY -= pitchDelta * PITCH_Y_GAIN;
     }
