@@ -355,31 +355,19 @@ class HybridGazeEngine {
     this.confidence = p2.clamp(baseConf, 0, 1);
 
     // ── Adaptive weight blending ──
-    // FIX PITCH-GATE: Separate pitch-axis gate from yaw gate.
-    // Problem: old headGate required 15°+ combined movement before activating.
-    // When the user tilts their head up/down, the iris appears to shift DOWN in the
-    // eye socket (eye socket rotates with the face), so the iris signal fires
-    // "looking down" → cursor moves DOWN. The head pitch signal (headSignal.y = pitch/40,
-    // which is NEGATIVE when tilting up) is supposed to counter this, but headGate=0
-    // at small tilts means pitch has zero weight and the iris artifact wins.
-    // Fix: pitch uses its own gate activating at 3° (not 15°), with a dedicated
-    // weight of 0.40 — strong enough to beat the iris artifact at 8°+ tilts.
-    // Yaw gate is unchanged so horizontal eye+head tracking is unaffected.
-    // Result: tilt up → cursor up ✓, tilt down → cursor down ✓ (at ≥8° tilt).
-    const headMag   = Math.hypot(headPoseResult?.yaw || 0, headPoseResult?.pitch || 0) / 30;
-    const headGate  = p2.clamp((headMag - 0.5) / 0.5, 0, 1);   // X: unchanged (15°+)
-    const pitchAbs  = Math.abs(headPoseResult?.pitch || 0);
-    const pitchGate = p2.clamp((pitchAbs - 3) / 12, 0, 1);      // Y: activates at 3°, full at 15°
-    const wHead_x   = p2.clamp(this.W_HEAD * headGate,  0, 0.30);
-    const wHead_y   = p2.clamp(0.40 * pitchGate,        0, 0.40); // dedicated pitch weight
-    const wHead     = Math.max(wHead_x, wHead_y);  // scalar for legacy logging
-    const wIris     = p2.clamp(1 - Math.max(wHead_x, wHead_y) - this.W_PUPIL, 0, 0.80);
-    const wPupil    = this.W_PUPIL;
+    // FIX H-3: Gate head-pose contribution on headMag > 0.5 (≈15° combined).
+    // Below threshold the head is near-frontal — iris signal dominates fully.
+    // Above threshold, scale W_HEAD smoothly from 0 → W_HEAD.
+    const headMag  = Math.hypot(headPoseResult?.yaw || 0, headPoseResult?.pitch || 0) / 30;
+    // headGate: 0 when frontal, rises to 1 at headMag ≥ 1 (≈30° combined)
+    const headGate = p2.clamp((headMag - 0.5) / 0.5, 0, 1);
+    const wHead    = p2.clamp(this.W_HEAD * headGate, 0, 0.30);
+    const wIris    = p2.clamp(1 - wHead - this.W_PUPIL, 0, 0.80);
+    const wPupil   = this.W_PUPIL;
 
     // ── Fused raw gaze vector ──
-    // Axis-specific head weights: strong pitch correction on Y, iris-led on X.
-    const fusedX = wIris * irisSignal.x + wHead_x * headSignal.x + wPupil * pupilSignal.x;
-    const fusedY = wIris * irisSignal.y + wHead_y * headSignal.y + wPupil * pupilSignal.y;
+    const fusedX = wIris  * irisSignal.x  + wHead * headSignal.x  + wPupil * pupilSignal.x;
+    const fusedY = wIris  * irisSignal.y  + wHead * headSignal.y  + wPupil * pupilSignal.y;
 
     // PRECISION-5: Store IRIS-ONLY signal separately for calibration.
     // The fused signal (iris + head + pupil) adds noise during calibration:
@@ -562,12 +550,9 @@ class HybridGazeEngine {
     // For gaze: turning left should move cursor left → x displacement = -yaw/50.
     // HOWEVER: since iris X is already negated (D-1), and head pose is computed
     // from camera-space landmarks, we must also negate yaw contribution.
-    // Pitch: positive = nose below eye midpoint = head tilted down.
-    // FIX PITCH-GATE: Sign kept as-is (pitch/40). When tilting UP, pitch is negative,
-    // so headSignal.y is negative, correctly opposing the iris artifact that fires
-    // 'iris moved down' when the face pitches up. This gets weight once headGate > 0.
+    // Pitch: positive = nose below eye midpoint = looking down → screen y increases.
     const x = p2.clamp(-hp.yaw  / 50, -0.5, 0.5);  // same sign convention as iris
-    const y = p2.clamp( hp.pitch / 40, -0.5, 0.5);  // tilt up → negative → opposes iris artifact
+    const y = p2.clamp( hp.pitch / 40, -0.5, 0.5);  // positive pitch = looking down
     return { x, y };
   }
 
