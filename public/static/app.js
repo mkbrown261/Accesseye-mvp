@@ -2040,49 +2040,17 @@ class AccessEyeApp {
 
     this.log.add('Requesting camera access...', 'info');
 
-    // FIX CAM-1: Fully tear down previous session before restarting.
-    // Restarting without cleanup left the old MediaPipe controller running,
-    // Phase 2 patched to the old controller, and duplicate event listeners.
+    // Tear down previous MediaPipe session cleanly.
     if (this.mpController) {
       this.mpController.stop();
       this.mpController = null;
     }
 
-    // FIX CAM-RESTART2: Stop any open video track on #demo-video so the
-    // browser releases the hardware camera before we request it again.
-    // Without this, getUserMedia hangs or fails on restart in Chrome/Firefox.
-    try {
-      const videoEl = $('#demo-video');
-      if (videoEl?.srcObject) {
-        videoEl.srcObject.getTracks().forEach(t => t.stop());
-        videoEl.srcObject = null;
-      }
-    } catch (_) {}
-
-    // FIX CAM-RESTART2: Stop and clear the HighFPS controller so Phase 2
-    // doesn't hold a dead stream reference that blocks re-acquisition.
-    try {
-      const p2orch = window.app?.phase2 || this.phase2;
-      if (p2orch?._highFPSController) {
-        p2orch._highFPSController.stop?.();
-        p2orch._highFPSController = null;
-      }
-    } catch (_) {}
-
-    // Deactivate Phase 2 so it re-activates cleanly on the new camera stream.
-    if (this.phase2?.active) {
-      this.phase2.deactivate();
-    }
-    // FIX CAM-RESTART: Always reset the _activated guard so phase2-init
-    // will re-patch the brand-new MediaPipeController on every restart.
-    if (window._p2InitController) {
-      window._p2InitController._activated = false;
-    }
-    // FIX CAM-RESTART: Clear all gaze-engine callbacks so _wireMediaPipeEvents
-    // doesn't accumulate duplicate 'gaze' listeners on each restart.
+    // Clear accumulated gaze-engine callbacks so _wireMediaPipeEvents
+    // doesn't accumulate duplicate listeners on each restart.
     this.gazeEngine._callbacks = {};
 
-    // Reset Phase 1 gaze engine state
+    // Reset gaze engine state
     this.gazeEngine.reset();
     this.cameraOn = false;
 
@@ -2130,31 +2098,35 @@ class AccessEyeApp {
   }
 
   _stopCamera() {
+    // Stop MediaPipe controller (also stops its internal camera loop)
     if (this.mpController) {
       this.mpController.stop();
       this.mpController = null;
     }
     this.cameraOn = false;
 
-    // FIX CAM-RESTART: Also stop the HighFPS controller held by Phase 2
-    // so it releases the camera stream and getUserMedia works on next start.
+    // Stop and release video tracks so the hardware camera is freed
+    // before the next getUserMedia call.
     try {
-      const p2orch = window.app?.phase2 || this.phase2;
-      if (p2orch?._highFPSController) {
-        p2orch._highFPSController.stop?.();
-        p2orch._highFPSController = null;
+      const videoEl = $('#demo-video');
+      if (videoEl?.srcObject) {
+        videoEl.srcObject.getTracks().forEach(t => t.stop());
+        videoEl.srcObject = null;
       }
-      // Also stop any HighFPS controller held directly on the init controller
-      if (window._p2InitController?.orchestrator?._highFPSController) {
-        window._p2InitController.orchestrator._highFPSController.stop?.();
-        window._p2InitController.orchestrator._highFPSController = null;
+    } catch (_) {}
+
+    // Stop the HighFPS controller held by Phase 2 / init-controller
+    // so it doesn't hold a dead stream on the next start.
+    try {
+      const orchA = window.app?.phase2 || this.phase2;
+      if (orchA?._highFPSController) {
+        orchA._highFPSController.stop?.();
+        orchA._highFPSController = null;
       }
-      // FIX CAM-PATCH: Clear cached original start ref so the next _patchCameraStart
-      // call re-binds to the live (clean) Phase-1 _startCamera instead of the
-      // one from a previous session.  This ensures the camera restart always uses
-      // the freshly-initialised MediaPipeController created in _startCamera.
-      if (window._p2InitController?.orchestrator) {
-        window._p2InitController.orchestrator._origCameraStart = null;
+      const orchB = window._p2InitController?.orchestrator;
+      if (orchB?._highFPSController) {
+        orchB._highFPSController.stop?.();
+        orchB._highFPSController = null;
       }
     } catch (_) {}
 
@@ -2162,11 +2134,7 @@ class AccessEyeApp {
     if (this.phase2?.active) {
       this.phase2.deactivate();
     }
-    // FIX CAM-RESTART: Always reset Phase 2 activation state so restart works cleanly.
-    if (window._p2InitController) {
-      window._p2InitController._activated = false;
-    }
-    // FIX CAM-RESTART: Clear accumulated gaze-engine event listeners so the
+    // Clear accumulated gaze-engine event listeners so the
     // next _wireMediaPipeEvents() call starts fresh (no duplicate handlers).
     this.gazeEngine._callbacks = {};
     // Reset gaze engine state
