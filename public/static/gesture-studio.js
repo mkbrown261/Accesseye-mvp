@@ -32,11 +32,11 @@ const SCROLL_AMOUNT               = 180;   // px per scroll event
 const SCROLL_INTERVAL_MS          = 80;    // ms between repeated scroll ticks (bite-lip hold)
 const LIP_TAP_TIME_WINDOW         = 750;   // ms between two closures
 const LIP_TAP_CONFIDENCE_THRESHOLD = 0.70; // 0-1
-const BITE_LIP_THRESHOLD          = 0.72;  // lower-lip-Y / mouth-height ratio for bite detection (raised for better sensitivity)
+const TONGUE_OUT_THRESHOLD = 0.30;  // lower-lip drop/mouth-width to detect tongue out
 const GESTURE_COOLDOWN            = 1200;  // ms between any built-in fire
 const CUSTOM_GESTURE_CONFIDENCE   = 0.72;  // 0-1
 
-const BLOW_DETECTION_THRESHOLD    = BITE_LIP_THRESHOLD;  // alias for config compat
+const BLOW_DETECTION_THRESHOLD    = 0.55;  // blow threshold
 const STUDIO_STORAGE_KEY = 'accesseye_gesture_studio';
 
 /* MediaPipe FaceMesh landmark indices */
@@ -185,7 +185,7 @@ class FacialGestureEngine {
       lipTapTimeWindow        : config.lipTapTimeWindow        ?? LIP_TAP_TIME_WINDOW,
       lipTapConfidence        : config.lipTapConfidence        ?? LIP_TAP_CONFIDENCE_THRESHOLD,
       blowThreshold           : config.blowThreshold           ?? BLOW_DETECTION_THRESHOLD,
-      biteLipThreshold        : config.biteLipThreshold        ?? BITE_LIP_THRESHOLD,
+      tongueOutThreshold      : config.tongueOutThreshold      ?? TONGUE_OUT_THRESHOLD,
       scrollIntervalMs        : config.scrollIntervalMs        ?? SCROLL_INTERVAL_MS,
       gestureCooldown         : config.gestureCooldown         ?? GESTURE_COOLDOWN,
       customGestureConfidence : config.customGestureConfidence ?? CUSTOM_GESTURE_CONFIDENCE,
@@ -204,11 +204,11 @@ class FacialGestureEngine {
     this._cycleComplete   = false;   // one open→closed→open complete
 
     // ── Bite-lip state ────────────────────────────────────────────────
-    this._biteLipActive   = false;
-    this._biteLipFrames   = 0;
-    this._BITE_MIN_FRAMES = 2;  // reduced for faster detection response
-    this._biteLipInterval = null;
-    this._lastBiteConf    = 0;
+    this._tongueActive    = false;
+    this._tongueFrames    = 0;
+    this._TONGUE_MIN_FRAMES = 3;
+    this._tongueInterval  = null;
+    this._lastTongueConf  = 0;
 
     // ── Cooldown ───────────────────────────────────────────────────
     this._lastFire = {};   // gestureName → timestamp
@@ -259,7 +259,7 @@ class FacialGestureEngine {
     }
 
     this._detectLipTap(f);
-    this._detectBiteLip(f);
+    this._detectTongueOut(lm);
   }
 
   // ── Lip-tap: two full open→close→open cycles within LIP_TAP_TIME_WINDOW ──
@@ -323,55 +323,52 @@ class FacialGestureEngine {
     }
   }
 
-  // ── Bite bottom lip: lower lip bitten inward → scroll down (held) ──
-  // Detection: when the bottom lip is bitten, the inner mouth opening
-  // (f[1] = innerRatio) collapses relative to the outer mouth opening (f[0]).
-  // biteRatio = innerRatio / outerRatio → low when bitten, high when neutral.
-  // Continuous scroll fires every scrollIntervalMs while the gesture is held.
-  _detectBiteLip(f) {
-    const outerRatio = f[0];
-    const innerRatio = f[1];
-    const baseline   = this._mouthBaseline || 0.05;
+  // ── Tongue out (held) → scroll down continuously ──
+  // lm[17]=lower-lip bottom-centre drops below lm[14]=inner-lower-lip when tongue protrudes.
+  // Normalise drop by mouth width so camera distance doesn't matter.
+  _detectTongueOut(lm) {
+    if (!lm || lm.length < 468) return;
 
-    // biteRatio: how compressed inner is relative to outer.
-    // When biting lower lip, inner mouth collapses → low biteRatio.
-    // Use a floor on outerOpen so we don't divide by near-zero.
-    const outerOpen = Math.max(outerRatio, baseline * 0.5, 0.02);
-    const biteRatio = innerRatio / outerOpen;
+    const mL  = lm[61];
+    const mR  = lm[291];
+    const mW  = Math.hypot(mL.x - mR.x, mL.y - mR.y) || 0.001;
 
-    const threshold  = this.config.biteLipThreshold;
-    const confidence = Math.min(1, Math.max(0, (threshold - biteRatio) / threshold));
+    const lowerBot = lm[17];  // lower lip bottom-centre
+    const lowerMid = lm[14];  // inner lower lip
+    const upperMid = lm[13];  // inner upper lip
 
-    // FIX BITE: Removed "outerRatio > baseline * 0.8" guard — that was
-    // preventing detection when resting mouth is nearly closed.
-    // Now: biteRatio just needs to be below threshold AND inner < outer (clear bite).
-    const isBiting = biteRatio < threshold && innerRatio < outerRatio;
+    // Tongue pushing out drops lowerBot below lowerMid
+    const drop      = (lowerBot.y - lowerMid.y) / mW;
+    // Also require mouth open (tongue pushes lips apart)
+    const openRatio = Math.abs(upperMid.y - lowerMid.y) / mW;
 
-    if (isBiting) {
-      this._biteLipFrames = Math.min(this._biteLipFrames + 1, this._BITE_MIN_FRAMES + 5);
+    const threshold   = this.config.tongueOutThreshold;
+    const isTongueOut = drop > threshold && openRatio > 0.08;
+    const confidence  = Math.min(1, Math.max(0, (drop - threshold) / threshold));
 
-      if (this._biteLipFrames >= this._BITE_MIN_FRAMES && !this._biteLipActive) {
-        this._biteLipActive = true;
-        this._lastBiteConf  = confidence;
-        // Fire immediately
-        this._emit('biteLip', { confidence, active: true, action: 'scrollDown' });
-        this._emit('gesture', { name: 'biteLip', confidence, action: 'scrollDown' });
-        // Continuous scroll while held
-        this._biteLipInterval = setInterval(() => {
-          this._emit('biteLip', { confidence: this._lastBiteConf, active: true, action: 'scrollDown' });
-          this._emit('gesture', { name: 'biteLip', confidence: this._lastBiteConf, action: 'scrollDown' });
+    if (isTongueOut) {
+      this._tongueFrames = Math.min(this._tongueFrames + 1, this._TONGUE_MIN_FRAMES + 5);
+
+      if (this._tongueFrames >= this._TONGUE_MIN_FRAMES && !this._tongueActive) {
+        this._tongueActive = true;
+        this._lastTongueConf = confidence;
+        this._emit('tongueOut', { confidence, active: true, action: 'scrollDown' });
+        this._emit('gesture',   { name: 'tongueOut', confidence, action: 'scrollDown' });
+        this._tongueInterval = setInterval(() => {
+          this._emit('tongueOut', { confidence: this._lastTongueConf, active: true, action: 'scrollDown' });
+          this._emit('gesture',   { name: 'tongueOut', confidence: this._lastTongueConf, action: 'scrollDown' });
         }, this.config.scrollIntervalMs);
       }
-      if (this._biteLipActive) this._lastBiteConf = confidence;
+      if (this._tongueActive) this._lastTongueConf = confidence;
     } else {
-      this._biteLipFrames = Math.max(0, this._biteLipFrames - 1);
-      if (this._biteLipActive && this._biteLipFrames === 0) {
-        this._biteLipActive = false;
-        if (this._biteLipInterval) {
-          clearInterval(this._biteLipInterval);
-          this._biteLipInterval = null;
+      this._tongueFrames = Math.max(0, this._tongueFrames - 1);
+      if (this._tongueActive && this._tongueFrames === 0) {
+        this._tongueActive = false;
+        if (this._tongueInterval) {
+          clearInterval(this._tongueInterval);
+          this._tongueInterval = null;
         }
-        this._emit('biteLipRelease', { action: 'scrollDown' });
+        this._emit('tongueOutRelease', { action: 'scrollDown' });
       }
     }
   }
@@ -383,11 +380,11 @@ class FacialGestureEngine {
     this._firstClosureT   = 0;
     this._closedFrames    = 0;
     this._openFrames      = 0;
-    this._biteLipActive   = false;
-    this._biteLipFrames   = 0;
-    if (this._biteLipInterval) {
-      clearInterval(this._biteLipInterval);
-      this._biteLipInterval = null;
+    this._tongueActive    = false;
+    this._tongueFrames    = 0;
+    if (this._tongueInterval) {
+      clearInterval(this._tongueInterval);
+      this._tongueInterval = null;
     }
     this._mouthBaseline   = null;
     this._baselineFrames  = [];
@@ -611,7 +608,7 @@ class GestureStudio {
     this._faceEngine       = new FacialGestureEngine();
     this._callbacks        = {};
     this._recordingId      = null;   // id being recorded/re-recorded
-    this._biteLipActionFired = false; // prevents toast spam on continuous bite-lip
+    this._tongueActionFired = false; // prevents toast spam on continuous tongue-out
 
     this._load();
     this._syncRecognizer();
@@ -807,18 +804,17 @@ class GestureStudio {
       this._emit('builtinGesture', { name: 'lipTap', confidence, action: 'scrollUp' });
     });
 
-    // ── Bite bottom lip (held) → scroll down continuously ───────────
-    this._faceEngine.on('biteLip', ({ confidence }) => {
+    // ── Tongue out (held) → scroll down continuously ─────────────────
+    this._faceEngine.on('tongueOut', ({ confidence }) => {
       _scrollPage(SCROLL_AMOUNT);
-      // Emit action only once per gesture onset to avoid toast spam
-      if (!this._biteLipActionFired) {
-        this._biteLipActionFired = true;
-        this._emit('action', { actionId: 'scrollDown', gestureName: 'Bite Bottom Lip', label: 'Scroll Down', confidence });
-        this._emit('builtinGesture', { name: 'biteLip', confidence, action: 'scrollDown' });
+      if (!this._tongueActionFired) {
+        this._tongueActionFired = true;
+        this._emit('action', { actionId: 'scrollDown', gestureName: 'Stick Out Tongue', label: 'Scroll Down', confidence });
+        this._emit('builtinGesture', { name: 'tongueOut', confidence, action: 'scrollDown' });
       }
     });
-    this._faceEngine.on('biteLipRelease', () => {
-      this._biteLipActionFired = false;
+    this._faceEngine.on('tongueOutRelease', () => {
+      this._tongueActionFired = false;
     });
 
     // ── Custom gestures ──────────────────────────────────────────────
@@ -876,7 +872,7 @@ class GestureStudioUI {
 
     // Builtin gesture feedback
     studio.on('builtinGesture', ({ name, confidence, action }) => {
-      let gLabel = name === 'lipTap' ? '👄 Double Lip-Tap' : name === 'biteLip' ? '😬 Bite Lip' : name;
+      let gLabel = name === 'lipTap' ? '👄 Double Lip-Tap' : name === 'tongueOut' ? '👅 Tongue Out' : name;
       this._showFeedback(`${gLabel}: ${action} (conf ${(confidence * 100).toFixed(0)}%)`, 'success');
     });
 
