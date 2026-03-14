@@ -1247,9 +1247,12 @@ class DynamicCalibrationEngine {
    * Returns { x, y } so callers can use .x / .y directly.
    */
   applyBiasCorrection(sx, sy) {
+    // Hard-clamp the live bias too so runaway accumulation can never pin cursor to edge.
+    const bx = p2.clamp(this._biasX, -0.12, 0.12);
+    const by = p2.clamp(this._biasY, -0.12, 0.12);
     return {
-      x: p2.clamp(sx + this._biasX * 0.7, 0, 1),
-      y: p2.clamp(sy + this._biasY * 0.7, 0, 1)
+      x: p2.clamp(sx + bx * 0.7, 0, 1),
+      y: p2.clamp(sy + by * 0.7, 0, 1)
     };
   }
 
@@ -1373,6 +1376,7 @@ class DynamicCalibrationEngine {
   saveMicroData() {
     try {
       localStorage.setItem('accesseye_micro', JSON.stringify({
+        v: 2,  // bump this when bias semantics change to force a reset
         biasX: this._biasX, biasY: this._biasY,
         samples: this.microSamples.slice(-40),
         t: Date.now()
@@ -1385,8 +1389,24 @@ class DynamicCalibrationEngine {
       const raw = localStorage.getItem('accesseye_micro');
       if (!raw) return;
       const d = JSON.parse(raw);
-      this._biasX = d.biasX || 0;
-      this._biasY = d.biasY || 0;
+      // Version check: discard data saved before v2 (old bias semantics)
+      if ((d.v || 1) < 2) {
+        console.warn('[DynCalib] Discarding micro-data: old version', d.v);
+        localStorage.removeItem('accesseye_micro');
+        return;
+      }
+      // Sanity clamp: bias > ±0.12 means something went badly wrong
+      // (a good session never accumulates more than ~5% correction).
+      // Discard the whole record rather than let a corrupt bias pin the cursor to an edge.
+      const bx = d.biasX || 0;
+      const by = d.biasY || 0;
+      if (Math.abs(bx) > 0.12 || Math.abs(by) > 0.12) {
+        console.warn('[DynCalib] Discarding micro-data: bias out of range', bx, by);
+        localStorage.removeItem('accesseye_micro');
+        return;
+      }
+      this._biasX = bx;
+      this._biasY = by;
       this.microSamples = (d.samples || []).map(s => ({ ...s, w: s.w ?? s.confidence ?? 1 }));
     } catch(_) {}
   }
