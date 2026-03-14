@@ -83,49 +83,27 @@ class Phase2InitController {
     const origStart = app._startCamera.bind(app);
 
     app._startCamera = async function() {
-      // ── FIX CAM-RESTART: Run Phase 1 camera start first so its teardown
-      //    (stop old tracks, null srcObject) completes BEFORE we acquire a
-      //    new HighFPS stream.  Acquiring first then calling origStart() was
-      //    causing origStart to stop the freshly acquired HighFPS tracks.
-      const videoEl  = document.querySelector('#demo-video');
-      const canvasEl = document.querySelector('#overlay-canvas');
-
       // Step 1: Run Phase 1 camera start (handles teardown + getUserMedia @30fps)
       await origStart();
 
-      // Step 2: After Phase 1 has a live stream, upgrade to HighFPS if possible.
-      // We stop the 30fps stream and replace it with a higher-fps stream,
-      // then re-attach so MediaPipe keeps processing from the same video element.
-      if (videoEl && window.Phase2?.HighFPSCameraController && app.cameraOn) {
-        try {
-          // Stop the 30fps stream Phase 1 just opened
-          if (videoEl.srcObject) {
-            videoEl.srcObject.getTracks().forEach(t => t.stop());
-            videoEl.srcObject = null;
-          }
-          // Stop old HighFPS controller if it exists
-          if (orch._highFPSController) {
-            try { orch._highFPSController.stop(); } catch(_) {}
-            orch._highFPSController = null;
-          }
+      // Step 2: Auto-activate Phase 2 after camera + MediaPipe are ready.
+      // No HighFPS stream swapping — it was causing MediaPipe process loop crashes
+      // by briefly leaving the video element without a srcObject.
+      // Phase 2 works well at 30fps without any stream manipulation.
+      const videoEl  = document.querySelector('#demo-video');
+      const canvasEl = document.querySelector('#overlay-canvas');
 
-          const hfps = new window.Phase2.HighFPSCameraController();
-          const caps = await hfps.acquire(videoEl);
-
-          // Store reference so Phase 2 orchestrator can read capabilities
-          orch._highFPSController = hfps;
-          orch.cameraFPS = caps.fps || caps.requested || 30;
-
-          console.log(`[Phase2Init] HighFPS camera: ${caps.fps || caps.requested} FPS @ ${caps.width}×${caps.height}`);
-          app.log?.add(`Camera: ${caps.fps || caps.requested} FPS @ ${caps.width}×${caps.height} (HighFPS)`, 'success');
-        } catch (err) {
-          console.warn('[Phase2Init] HighFPS upgrade failed, keeping 30fps stream:', err.message);
-        }
-      }
-
-      // Step 3: Auto-activate Phase 2 after camera + MediaPipe are ready
       if (videoEl && app.cameraOn) {
-        // Small delay to ensure MediaPipe controller is wired
+        // Read actual FPS from Phase 1 stream
+        const track = videoEl.srcObject?.getVideoTracks?.()[0];
+        if (track) {
+          const settings = track.getSettings();
+          orch.cameraFPS = settings.frameRate || 30;
+        } else {
+          orch.cameraFPS = 30;
+        }
+
+        // Small delay to ensure MediaPipe controller is wired before patching
         setTimeout(async () => {
           try {
             await orch.activate(videoEl, canvasEl);
