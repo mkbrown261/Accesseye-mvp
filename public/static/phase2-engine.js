@@ -1247,9 +1247,10 @@ class DynamicCalibrationEngine {
    * Returns { x, y } so callers can use .x / .y directly.
    */
   applyBiasCorrection(sx, sy) {
-    // Hard-clamp the live bias too so runaway accumulation can never pin cursor to edge.
-    const bx = p2.clamp(this._biasX, -0.12, 0.12);
-    const by = p2.clamp(this._biasY, -0.12, 0.12);
+    // Hard-clamp live bias to ±0.12 to prevent extreme cursor drift
+    const MAX_BIAS = 0.12;
+    const bx = p2.clamp(this._biasX, -MAX_BIAS, MAX_BIAS);
+    const by = p2.clamp(this._biasY, -MAX_BIAS, MAX_BIAS);
     return {
       x: p2.clamp(sx + bx * 0.7, 0, 1),
       y: p2.clamp(sy + by * 0.7, 0, 1)
@@ -1376,7 +1377,7 @@ class DynamicCalibrationEngine {
   saveMicroData() {
     try {
       localStorage.setItem('accesseye_micro', JSON.stringify({
-        v: 2,  // bump this when bias semantics change to force a reset
+        v: 2,  // version stamp — bump to discard old corrupt data
         biasX: this._biasX, biasY: this._biasY,
         samples: this.microSamples.slice(-40),
         t: Date.now()
@@ -1389,24 +1390,21 @@ class DynamicCalibrationEngine {
       const raw = localStorage.getItem('accesseye_micro');
       if (!raw) return;
       const d = JSON.parse(raw);
-      // Version check: discard data saved before v2 (old bias semantics)
-      if ((d.v || 1) < 2) {
-        console.warn('[DynCalib] Discarding micro-data: old version', d.v);
+      // Discard data from old versions (pre-v2) — they may have corrupt bias.
+      if (!d.v || d.v < 2) {
         localStorage.removeItem('accesseye_micro');
+        console.info('[DynCalib] Discarded legacy micro-calibration data (version mismatch)');
         return;
       }
-      // Sanity clamp: bias > ±0.12 means something went badly wrong
-      // (a good session never accumulates more than ~5% correction).
-      // Discard the whole record rather than let a corrupt bias pin the cursor to an edge.
-      const bx = d.biasX || 0;
-      const by = d.biasY || 0;
-      if (Math.abs(bx) > 0.12 || Math.abs(by) > 0.12) {
-        console.warn('[DynCalib] Discarding micro-data: bias out of range', bx, by);
+      // Sanity clamp: bias > ±0.12 (12% of screen) is considered corrupt
+      const MAX_BIAS = 0.12;
+      if (Math.abs(d.biasX) > MAX_BIAS || Math.abs(d.biasY) > MAX_BIAS) {
         localStorage.removeItem('accesseye_micro');
+        console.warn('[DynCalib] Discarded corrupt micro-calibration bias', d.biasX, d.biasY);
         return;
       }
-      this._biasX = bx;
-      this._biasY = by;
+      this._biasX = d.biasX || 0;
+      this._biasY = d.biasY || 0;
       this.microSamples = (d.samples || []).map(s => ({ ...s, w: s.w ?? s.confidence ?? 1 }));
     } catch(_) {}
   }

@@ -80,16 +80,22 @@ class Phase2InitController {
   /* ── Patch camera start to trigger Phase 2 activation ── */
   _patchCameraStart(app) {
     const orch = this.orchestrator;
-    // FIX CAM-PATCH: Store the Phase-1 original function ONCE on orch so that
-    // repeated calls to app._startCamera() never re-wrap the patched version.
-    // Without this guard the patch would chain: patched→patched→patched on
-    // every camera restart, causing infinite recursion or duplicate events.
-    if (!orch._origCameraStart) {
-      orch._origCameraStart = app._startCamera.bind(app);
-    }
-    const origStart = orch._origCameraStart;
+    const origStart = app._startCamera.bind(app);
 
     app._startCamera = async function() {
+      // ── FIX H-1: Acquire the highest supported FPS BEFORE Phase 1 opens
+      //    the camera.  Phase 1 _startCamera() calls getUserMedia with a
+      //    hard-coded 640x480@30 constraint, overwriting any previous stream.
+      //    By acquiring the high-FPS stream first and injecting it into the
+      //    video element, Phase 1's getUserMedia call is replaced entirely.
+      //
+      //    Strategy:
+      //      1. Try HighFPSCameraController (120→90→60→30 FPS, 1280×720 ideal)
+      //      2. On success: inject stream into #demo-video so Phase 1's
+      //         MediaPipeController finds it already playing.
+      //      3. Monkey-patch navigator.mediaDevices.getUserMedia temporarily
+      //         so Phase 1's call returns the same stream (avoids double acquire).
+      //      4. On failure: fall through to Phase 1 original path.
       const videoEl = document.querySelector('#demo-video');
       let highFPSAcquired = false;
       let _origGetUserMedia = null;

@@ -866,7 +866,6 @@ class UIElementRegistry {
     this.dwellTime = dwellTime;
     this.dwellStart = null;
     this.dwellProgress = 0;
-    this.dwellEnabled = true;   // can be toggled off to hide the dwell ring
     this._callbacks = {};
 
     // FIX M-2: throttle bbox refresh to 5 Hz (was forcing reflow every gaze frame)
@@ -937,16 +936,11 @@ class UIElementRegistry {
       if (hitId) this._beginFocus(hitId);
     }
 
-    // Update dwell timer — visual feedback only when enabled.
-    // Actual activation always requires an explicit gesture (pinch / air-tap).
-    // The Dwell Timer toggle just controls whether the progress ring is shown.
-    if (this.dwellEnabled && this.focusedId && this.dwellStart !== null) {
+    // Update dwell timer
+    if (this.focusedId && this.dwellStart !== null) {
       const elapsed = now() - this.dwellStart;
       this.dwellProgress = clamp(elapsed / this.dwellTime, 0, 1);
       this._updateDwellUI(this.focusedId, this.dwellProgress);
-    } else if (!this.dwellEnabled) {
-      this.dwellProgress = 0;
-      if (this.focusedId) this._updateDwellUI(this.focusedId, 0);
     }
   }
 
@@ -1141,12 +1135,10 @@ class CalibrationUI {
     this.gazeEngine = gazeEngine;
     this.log = log;
     this.toast = toast;
-    // FIX CAL-LAZY: Query DOM lazily inside show() so we never cache a null
-    // reference if the element isn't rendered yet at construction time.
-    this._overlayEl = null;
-    this.container = null;
-    this.progressFill = null;
-    this.stepLabel = null;
+    this.overlay = $('#calibration-overlay');
+    this.container = $('#calib-points-container');
+    this.progressFill = $('#calib-progress-fill');
+    this.stepLabel = $('#calib-step-label');
     this.currentStep = -1;
     this.collecting = false;
     this.sampleCount = 0;
@@ -1175,18 +1167,6 @@ class CalibrationUI {
   }
 
   show(onComplete) {
-    // FIX CAL-LAZY: Resolve DOM refs on every show() call so we always get live elements
-    this._overlayEl   = $('#calibration-overlay');
-    this.container    = $('#calib-points-container');
-    this.progressFill = $('#calib-progress-fill');
-    this.stepLabel    = $('#calib-step-label');
-
-    if (!this._overlayEl) {
-      console.error('[CalibrationUI] #calibration-overlay not found in DOM');
-      this.toast?.show('Error', 'Calibration overlay not found. Try refreshing the page.', 'warn');
-      return;
-    }
-
     this._onComplete = onComplete;
     this.collecting = false;
     this.currentStep = -1;
@@ -1195,15 +1175,15 @@ class CalibrationUI {
     this.calibEngine.reset();
     this._arenaW = 0;
     this._arenaH = 0;
+    // Reset adaptive threshold for fresh calibration
     this._adaptiveSigmaThresh = 0.025;
     this._adaptiveSeedDone    = false;
-    this._overlayEl.style.display = 'block';
-    const hudEl = $('#calib-hud');
-    if (hudEl) hudEl.style.display = 'flex';
+    this.overlay.style.display = 'flex';
     const startBtn = $('#start-calib-btn');
     if (startBtn) { startBtn.disabled = false; startBtn.innerHTML = '<i class="fas fa-play"></i> Start Calibration'; }
     this._updateProgress(0);
     if (this.stepLabel) this.stepLabel.textContent = `Step 0 / ${this.calibEngine.CALIB_POINTS.length}`;
+    // Update instruction text for quality-gated mode
     const instrEl = $('#calib-instruction-text');
     if (instrEl) instrEl.innerHTML = 'Look directly at each dot and <strong>hold perfectly still</strong> until it turns green and advances automatically.';
     this.log.add('Calibration ready — press Start to begin', 'info');
@@ -1211,10 +1191,7 @@ class CalibrationUI {
   }
 
   hide() {
-    const ov = this._overlayEl || $('#calibration-overlay');
-    if (ov) ov.style.display = 'none';
-    const hud = $('#calib-hud');
-    if (hud) hud.style.display = 'none';
+    this.overlay.style.display = 'none';
     this._arenaW = 0;
     this._arenaH = 0;
   }
@@ -1249,12 +1226,6 @@ class CalibrationUI {
   }
 
   async start() {
-    // Guard: camera must be on to collect gaze samples
-    if (!window.app?.cameraOn) {
-      this.toast.show('Camera Required', 'Start the camera first, then click Start Calibration.', 'warn');
-      return;
-    }
-
     if (this.collecting) {
       clearInterval(this._sampleInterval);
       this._sampleInterval = null;
@@ -1891,12 +1862,11 @@ class AccessEyeApp {
     this.sim          = new SimulationEngine();
 
     // ── Snap-To / Intelligent Target Prediction / Adaptive Learning ──
-    // Initialise lazily after DOM is ready (SnapToEngine reads DOM)
-    this.snapEngine = null;
+    this.snapEngine = null;  // SnapToEngine — lazy-initialised after DOM ready
 
     // ── Gesture Studio (lip-tap, blow, custom gestures) ──────────────
-    this.gestureStudio    = null;  // GestureStudio instance
-    this.gestureStudioUI  = null;  // GestureStudioUI instance
+    this.gestureStudio   = null;  // GestureStudio instance
+    this.gestureStudioUI = null;  // GestureStudioUI instance
 
     // Mode
     this.mode     = 'mouse';  // 'mouse' | 'gaze' | 'calibrate'
@@ -1928,11 +1898,9 @@ class AccessEyeApp {
     this._setupSimulation();
     this._setupHeroButtons();
     this._setupDebugPanel();
-    this._setupSnapEngine();        // Snap-To + Adaptive Learning
-    this._setupGestureStudio();     // Facial gestures + Gesture Studio
+    this._setupSnapEngine();      // Snap-To + Adaptive Learning
+    this._setupGestureStudio();   // Facial gestures + Gesture Studio
     this._startCursorFromMouse(); // Default: mouse sim for demos
-    // Register all interactive elements as gaze targets (nav, controls, etc.)
-    setTimeout(() => this._registerGazeTargets(), 500);
   }
 
   /* ── NAVIGATION ─────────────────────────────────────────── */
@@ -1987,55 +1955,15 @@ class AccessEyeApp {
         this._setMode(tab.dataset.mode);
       });
     });
-
-    // ── Adaptive Dwell Timer toggle ──────────────────────────────────
-    const dwellBtn = $('#dwell-toggle-btn');
-    if (dwellBtn) {
-      // Start ON by default
-      dwellBtn.classList.add('active');
-      dwellBtn.addEventListener('click', () => {
-        this.uiRegistry.dwellEnabled = !this.uiRegistry.dwellEnabled;
-        const on = this.uiRegistry.dwellEnabled;
-        dwellBtn.classList.toggle('active', on);
-        const lbl = dwellBtn.querySelector('.dwell-toggle-label');
-        if (lbl) lbl.textContent = on ? 'ON' : 'OFF';
-
-        // When turning OFF: reset any in-progress dwell immediately
-        if (!on) {
-          this.uiRegistry.dwellProgress = 0;
-          if (this.uiRegistry.focusedId) {
-            this.uiRegistry._updateDwellUI(this.uiRegistry.focusedId, 0);
-          }
-          if (this.dwellCircle) {
-            this.dwellCircle.style.strokeDasharray = `0 ${this.DWELL_CIRCUMFERENCE}`;
-          }
-        } else {
-          // When turning back ON: reset dwell start so ring starts fresh
-          this.uiRegistry.dwellStart = null;
-          this.uiRegistry.dwellProgress = 0;
-        }
-
-        this.toast.show(
-          'Dwell Ring',
-          on ? 'Dwell ring enabled — shows gaze focus progress' : 'Dwell ring hidden — gaze focus still tracked for gestures',
-          on ? 'success' : 'info',
-          on ? 'fas fa-clock' : 'fas fa-hand-pointer',
-          2500
-        );
-        this.log.add(`Dwell Ring: ${on ? 'enabled' : 'disabled'}`, 'info');
-      });
-    }
   }
 
   _setMode(mode) {
     this.mode = mode;
     this.log.add(`Mode: ${mode}`, 'info');
 
-    // SECTION 1: When leaving Lock-On (snap) mode, fully terminate all
-    // snap-to processes — highlights, observers, dwell timers, interpolation.
+    // When leaving any mode, clean up snap-to so it doesn't run in the background
     if (this.snapEngine?.enabled) {
       this.snapEngine.fullCleanup();
-      // Sync toggle buttons to OFF state
       document.querySelectorAll('#snap-toggle-btn').forEach(b => {
         b.classList.remove('active');
         const lbl = b.querySelector('.snap-toggle-label');
@@ -2055,20 +1983,10 @@ class AccessEyeApp {
       }
     } else if (mode === 'calibrate') {
       this.sim.stop();
-      if (!this._calibUI) {
-        // CalibrationUI not yet constructed (very early call) — shouldn't happen normally
-        this.toast.show('Not Ready', 'Please wait for the app to finish loading.', 'warn');
-        return;
-      }
-      if (!this.cameraOn) {
-        // Show overlay but leave start button enabled — CalibrationUI.start() will
-        // re-check and show a friendly toast if the user clicks it without camera.
+      if (this.cameraOn) {
         this._showCalibrationFlow();
-        this.toast.show('Camera Required', 'Start the camera, then press Start Calibration.', 'warn');
       } else {
-        // Camera is on → show overlay and immediately kick off calibration
-        this._showCalibrationFlow();
-        setTimeout(() => this._calibUI.start(), 80);
+        this.toast.show('Camera Required', 'Start the camera to run calibration.', 'warn');
       }
     }
   }
@@ -2086,16 +2004,27 @@ class AccessEyeApp {
 
     this.log.add('Requesting camera access...', 'info');
 
-    // Tear down previous MediaPipe session cleanly.
+    // FIX CAM-1: Fully tear down previous session before restarting.
+    // Restarting without cleanup left the old MediaPipe controller running,
+    // Phase 2 patched to the old controller, and duplicate event listeners.
     if (this.mpController) {
       this.mpController.stop();
       this.mpController = null;
     }
-
-    // Clear accumulated gaze-engine callbacks so _wireMediaPipeEvents
-    // doesn't accumulate duplicate listeners on each restart.
+    // Deactivate Phase 2 so it re-activates cleanly on the new camera stream.
+    if (this.phase2?.active) {
+      this.phase2.deactivate();
+    }
+    // FIX CAM-RESTART: Always reset the _activated guard so phase2-init
+    // will re-patch the brand-new MediaPipeController on every restart.
+    if (window._p2InitController) {
+      window._p2InitController._activated = false;
+    }
+    // FIX CAM-RESTART: Clear all gaze-engine callbacks so _wireMediaPipeEvents
+    // doesn't accumulate duplicate 'gaze' listeners on each restart.
     this.gazeEngine._callbacks = {};
-    // Reset gaze engine state
+
+    // Reset Phase 1 gaze engine state
     this.gazeEngine.reset();
     this.cameraOn = false;
 
@@ -2111,7 +2040,7 @@ class AccessEyeApp {
 
     if (camOk) {
       this.cameraOn = true;
-      this._updateGsCameraNotice();  // hide "start camera" notice in studio
+      this._updateGsCameraNotice(); // hide "start camera" notice in studio
       // Update UI
       $('#camera-placeholder').style.display = 'none';
       btn.disabled = false;
@@ -2143,43 +2072,21 @@ class AccessEyeApp {
   }
 
   _stopCamera() {
-    // Stop MediaPipe controller (also stops its internal camera loop)
     if (this.mpController) {
       this.mpController.stop();
       this.mpController = null;
     }
     this.cameraOn = false;
 
-    // Stop and release video tracks so the hardware camera is freed
-    // before the next getUserMedia call.
-    try {
-      const videoEl = $('#demo-video');
-      if (videoEl?.srcObject) {
-        videoEl.srcObject.getTracks().forEach(t => t.stop());
-        videoEl.srcObject = null;
-      }
-    } catch (_) {}
-
-    // Stop the HighFPS controller held by Phase 2 / init-controller
-    // so it doesn't hold a dead stream on the next start.
-    try {
-      const orchA = window.app?.phase2 || this.phase2;
-      if (orchA?._highFPSController) {
-        orchA._highFPSController.stop?.();
-        orchA._highFPSController = null;
-      }
-      const orchB = window._p2InitController?.orchestrator;
-      if (orchB?._highFPSController) {
-        orchB._highFPSController.stop?.();
-        orchB._highFPSController = null;
-      }
-    } catch (_) {}
-
     // Deactivate Phase 2 if running
     if (this.phase2?.active) {
       this.phase2.deactivate();
     }
-    // Clear accumulated gaze-engine event listeners so the
+    // FIX CAM-RESTART: Always reset Phase 2 activation state so restart works cleanly.
+    if (window._p2InitController) {
+      window._p2InitController._activated = false;
+    }
+    // FIX CAM-RESTART: Clear accumulated gaze-engine event listeners so the
     // next _wireMediaPipeEvents() call starts fresh (no duplicate handlers).
     this.gazeEngine._callbacks = {};
     // Reset gaze engine state
@@ -2187,7 +2094,7 @@ class AccessEyeApp {
 
     // Reset Gesture Studio state (clears lip-tap/blow baseline so it re-calibrates on restart)
     if (this.gestureStudio) this.gestureStudio.reset();
-    this._updateGsCameraNotice();  // show "start camera" notice in studio
+    this._updateGsCameraNotice(); // show "start camera" notice in studio
 
     // Reset mode back to mouse simulation
     this.mode = 'mouse';
@@ -2232,7 +2139,7 @@ class AccessEyeApp {
     this.mpController.on('face', ({ detected, results }) => {
       this._updateStatusItem('status-face', detected, detected ? 'Detected' : 'Not found', detected ? 'active' : '');
       this._updateStatusItem('status-gaze', detected, detected ? 'Tracking' : 'Inactive', detected ? 'tracking' : '');
-      // Feed landmarks to Gesture Studio (lip-tap, blow, custom gestures)
+      // Feed face landmarks to Gesture Studio (lip-tap, blow, custom gestures)
       if (detected && results?.multiFaceLandmarks?.[0] && this.gestureStudio) {
         this.gestureStudio.processFaceLandmarks(results.multiFaceLandmarks[0]);
       }
@@ -2311,7 +2218,7 @@ class AccessEyeApp {
     // ── Snap-To processing ───────────────────────────────────────────
     // Only intercept the cursor when Snap-To is explicitly enabled.
     // When disabled the raw gaze coordinates pass through unchanged so
-    // free-look mode is completely unaffected.
+    // free-look / v15 behaviour is completely unaffected.
     let cpx = px, cpy = py;
     if (this.snapEngine?.enabled) {
       const result = this.snapEngine.update(px, py);
@@ -2369,9 +2276,7 @@ class AccessEyeApp {
   }
 
   _registerGazeTargets() {
-    // Register only .gaze-target elements — these are the demo messaging buttons.
-    // UI chrome (nav, camera controls, tabs) must NOT be registered here because
-    // any gaze gesture would fire their click() and break cursor control.
+    // Unregister old ones
     const targets = $$('.gaze-target');
     targets.forEach(el => {
       const id = el.dataset.id;
@@ -2401,7 +2306,7 @@ class AccessEyeApp {
     // Toast
     this.toast.show(label, `Activated via ${gesture}`, 'success', 'fas fa-check-circle', 2500);
 
-    // Special demo messaging actions (these handle their own visual output)
+    // Special actions
     this._handleElementAction(id, label);
 
     // Update status
@@ -2507,33 +2412,30 @@ class AccessEyeApp {
 
   /* ── CALIBRATION ────────────────────────────────────────── */
   _setupCalibrationUI() {
-    // FIX CAL-DOM: Don't bail if overlay is null at init time — it may not exist
-    // on non-demo pages.  Create the CalibrationUI unconditionally; it guards
-    // internally when show() is called.
+    const overlay = $('#calibration-overlay');
+    if (!overlay) return;
     const calibUI = new CalibrationUI(this.calibration, this.gazeEngine, this.log, this.toast);
 
-    // Start button: show overlay then immediately begin calibration if camera is on
-    const setupStartBtn = (btnId) => {
-      const btn = $('#' + btnId);
+    // Helper: wire a start-calib button by ID — guards camera, shows overlay, auto-starts
+    const wireCalibBtn = (btnId) => {
+      const btn = $(`#${btnId}`);
       if (!btn) return;
       btn.addEventListener('click', () => {
         if (!this.cameraOn) {
           this.toast.show('Camera Required', 'Start the camera first, then click Start Calibration.', 'warn');
           return;
         }
-        // If overlay not shown yet, show it first then auto-start
-        const overlay = $('#calibration-overlay');
-        if (overlay && overlay.style.display === 'none') {
+        const ov = $('#calibration-overlay');
+        if (ov && ov.style.display === 'none') {
           this._showCalibrationFlow();
-          // Give show() one tick to render points, then start
           setTimeout(() => calibUI.start(), 50);
         } else {
           calibUI.start();
         }
       });
     };
-    setupStartBtn('start-calib-btn');
-    setupStartBtn('gs-start-calib-btn');
+    wireCalibBtn('start-calib-btn');
+    wireCalibBtn('gs-start-calib-btn'); // Gesture Studio page calibration button
 
     $('#cancel-calib-btn')?.addEventListener('click', () => {
       calibUI.hide();
@@ -2618,17 +2520,17 @@ class AccessEyeApp {
    * Shortcut: Alt+D to toggle.
    * All values are live — update every gaze frame when camera is running.
    ─────────────────────────────────────────────────────────────────────── */
+
   /* ── SNAP-TO ENGINE ─────────────────────────────────────── */
   _setupSnapEngine() {
-    // Guard: SnapToEngine is loaded via snap-engine.js (separate file)
     if (typeof SnapToEngine === 'undefined') {
       console.warn('[AccessEye] snap-engine.js not loaded — Snap-To disabled');
       return;
     }
 
     this.snapEngine = new SnapToEngine({
-      enabled         : false,   // off by default; toggled via UI
-      autoDwellClick  : false,   // dwell-to-click requires explicit opt-in
+      enabled        : false,  // off by default; toggled via UI
+      autoDwellClick : false,  // dwell-to-click requires explicit opt-in
     });
 
     // ── Snap events ──────────────────────────────────────────────────
@@ -2640,7 +2542,7 @@ class AccessEyeApp {
     });
 
     this.snapEngine.on('release', () => {
-      // Nothing needed — highlight cleared automatically
+      // highlight cleared automatically by snap-engine
     });
 
     this.snapEngine.on('activate', ({ el, method, duration }) => {
@@ -2648,7 +2550,6 @@ class AccessEyeApp {
       this.log.add(`Snap Activated: <strong>${label}</strong> via ${method} (${Math.round(duration)}ms dwell)`, 'success');
       this.toast.show(label, `Activated via ${method}`, 'success', 'fas fa-check-circle', 2000);
       this.audio.speak(`${label} activated`);
-      // Trigger native click for full interactivity
       try { el.click(); } catch (_) {}
       this._onElementActivated(el.dataset?.id || '', label, method);
     });
@@ -2657,12 +2558,10 @@ class AccessEyeApp {
       this.toast.show('Adaptive Profile', 'Gaze learning profile reset', 'info', 'fas fa-undo', 2500);
     });
 
-    // ── Wire toggle button(s) — both compact bar and p2 panel ───────
-    const toggleBtns = document.querySelectorAll('#snap-toggle-btn');
-    toggleBtns.forEach(toggleBtn => {
+    // ── Toggle button(s) — compact bar and settings panel ──────────
+    document.querySelectorAll('#snap-toggle-btn').forEach(toggleBtn => {
       toggleBtn.addEventListener('click', () => {
         const enabled = this.snapEngine.toggle();
-        // Sync all toggle buttons
         document.querySelectorAll('#snap-toggle-btn').forEach(b => {
           b.classList.toggle('active', enabled);
           const lbl = b.querySelector('.snap-toggle-label');
@@ -2688,11 +2587,9 @@ class AccessEyeApp {
         autoDwellBtn.classList.toggle('active', this.snapEngine.autoDwellClick);
         autoDwellBtn.querySelector('.autodwell-label').textContent =
           this.snapEngine.autoDwellClick ? 'ON' : 'OFF';
-        this.toast.show(
-          'Auto Dwell-Click',
+        this.toast.show('Auto Dwell-Click',
           this.snapEngine.autoDwellClick ? 'Will auto-click after dwell completes' : 'Dwell-click disabled',
-          'info', 'fas fa-clock', 2000,
-        );
+          'info', 'fas fa-clock', 2000);
       });
     }
 
@@ -2702,20 +2599,17 @@ class AccessEyeApp {
     this._bindSnapSlider('snap-dwell-slider', 'snap-dwell-val',
       v => { this.snapEngine.setConfig({ dwellClickTime: v }); return `${v}ms`; });
     this._bindSnapSlider('snap-smooth-slider', 'snap-smooth-val',
-      v => { const alpha = v / 100; this.snapEngine.setConfig({ cursorSmoothing: alpha }); return `${v}%`; });
+      v => { this.snapEngine.setConfig({ cursorSmoothing: v / 100 }); return `${v}%`; });
     this._bindSnapSlider('snap-predict-slider', 'snap-predict-val',
-      v => { const w = v / 100; this.snapEngine.setConfig({ predictionWeight: w }); return `${v}%`; });
+      v => { this.snapEngine.setConfig({ predictionWeight: v / 100 }); return `${v}%`; });
 
     // ── Reset profile button ─────────────────────────────────────────
     const resetBtn = $('#snap-profile-reset');
-    if (resetBtn) {
-      resetBtn.addEventListener('click', () => this.snapEngine.resetProfile());
-    }
+    if (resetBtn) resetBtn.addEventListener('click', () => this.snapEngine.resetProfile());
 
-    // Wire gesture system: pinch/airTap on snap target triggers activation
+    // ── Wire gesture system: gesture on snap target activates it ────
     const origHandleGesture = this._handleGesture.bind(this);
     this._handleGesture = (type) => {
-      // If Snap-To is enabled and a target is snapped, activate it
       if (this.snapEngine?.enabled && type !== 'openPalm') {
         if (this.snapEngine.activateSnapped(type)) return;
       }
@@ -2739,9 +2633,8 @@ class AccessEyeApp {
   _updateSnapSettingsPanel() {
     if (!this.snapEngine) return;
     const cfg = this.snapEngine.getConfig();
-    // Sync sliders to current (potentially adaptive) values
     const setSlider = (id, valId, val, display) => {
-      const s = $(`#${id}`); const v = $(`#${valId}`);
+      const s = $(`#${id}`), v = $(`#${valId}`);
       if (s) s.value = val;
       if (v) v.textContent = display;
     };
@@ -2749,7 +2642,6 @@ class AccessEyeApp {
     setSlider('snap-dwell-slider',     'snap-dwell-val',     cfg.dwellClickTime,         `${cfg.dwellClickTime}ms`);
     setSlider('snap-smooth-slider',    'snap-smooth-val',    Math.round(cfg.cursorSmoothing * 100), `${Math.round(cfg.cursorSmoothing * 100)}%`);
     setSlider('snap-predict-slider',   'snap-predict-val',   Math.round(cfg.predictionWeight * 100), `${Math.round(cfg.predictionWeight * 100)}%`);
-    // Update activation count display
     const actEl = $('#snap-activations-val');
     if (actEl && this.snapEngine.learner) {
       actEl.textContent = this.snapEngine.learner.profile.totalActivations;
@@ -2758,16 +2650,13 @@ class AccessEyeApp {
 
   /* ── GESTURE STUDIO ─────────────────────────────────────── */
   _setupGestureStudio() {
-    // Guard: gesture-studio.js must be loaded
     if (typeof GestureStudio === 'undefined') {
       console.warn('[AccessEye] gesture-studio.js not loaded — Gesture Studio disabled');
       return;
     }
 
-    // ── Create engine ────────────────────────────────────────────────
     this.gestureStudio = new GestureStudio();
 
-    // ── Wire action feedback ─────────────────────────────────────────
     this.gestureStudio.onAction(({ actionId, gestureName, label, confidence }) => {
       const conf = confidence !== undefined ? ` (${Math.round(confidence * 100)}%)` : '';
       this.toast.show(gestureName, `${label}${conf}`, 'success', 'fas fa-hand-paper', 2000);
@@ -2775,17 +2664,10 @@ class AccessEyeApp {
       if (this.audio.enabled) this.audio.speak(`${gestureName}: ${label}`);
     });
 
-    // ── Create UI controller ─────────────────────────────────────────
     this.gestureStudioUI = new GestureStudioUI(this.gestureStudio, 'gesture-studio-panel');
     this.gestureStudioUI.init();
 
-    // ── Camera-notice visibility ─────────────────────────────────────
     this._updateGsCameraNotice();
-
-    // ── Calibration button in studio page ───────────────────────────
-    // NOTE: gs-start-calib-btn listener is wired in _setupCalibrationUI()
-    // (shows overlay + auto-starts when camera is on).  No duplicate here.
-
     console.log('[AccessEye] Gesture Studio initialised');
   }
 

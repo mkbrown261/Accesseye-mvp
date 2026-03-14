@@ -720,30 +720,14 @@ app.get('/', (c) => {
                 <span class="snap-toggle-label">OFF</span>
               </button>
             </div>
-
-            <!-- Dwell ring toggle -->
-            <div class="snap-compact-bar" style="
-              display:flex; align-items:center; justify-content:space-between;
-              padding:6px 0 2px; border-top:1px solid var(--border-color); margin-top:6px;">
-              <span style="font-size:0.78rem;color:var(--text-secondary);">
-                <i class="fas fa-clock" style="color:#00d4ff;margin-right:4px;"></i>Dwell Ring
-              </span>
-              <button class="p2-toggle-btn" id="dwell-toggle-btn"
-                      title="Toggle Dwell Ring — when ON, a ring fills as you look at an element; use gesture (pinch/air-tap) to activate">
-                <i class="fas fa-power-off"></i>
-                <span class="dwell-toggle-label">ON</span>
-              </button>
-            </div>
           </div>
         </div>
+      </div>
 
         <!-- RIGHT: Interactive Demo Area -->
         <div class="demo-main">
           <!-- Calibration Overlay -->
-          <!-- Calibration: dark backdrop layer (pointer-events:none = passthrough for dots) -->
-          <div class="calibration-overlay" id="calibration-overlay" style="display:none"></div>
-          <!-- Calibration HUD: header + dots + footer — buttons need pointer-events:auto -->
-          <div class="calib-hud" id="calib-hud" style="display:none">
+          <div class="calibration-overlay" id="calibration-overlay" style="display:none">
             <div class="calib-header">
               <h2><i class="fas fa-sliders-h"></i> Eye Tracking Calibration</h2>
               <p id="calib-instruction-text">Look at each dot and <strong>hold perfectly still</strong> — the dot turns green and advances automatically when your gaze is stable.</p>
@@ -753,9 +737,15 @@ app.get('/', (c) => {
             <div class="calib-points-container" id="calib-points-container">
               <!-- Points injected by JS -->
             </div>
-            <div id="calib-tip-bar"></div>
+            <!-- Live tip bar — updated by JS per point zone -->
+            <div id="calib-tip-bar" style="
+              position:absolute; bottom:64px; left:0; right:0;
+              text-align:center; font-size:13px; color:#00d4ff;
+              padding:6px; background:rgba(10,14,26,0.7); pointer-events:none;
+              transition: opacity 0.3s;
+            "></div>
             <div class="calib-footer">
-              <button class="btn-secondary" id="cancel-calib-btn"><i class="fas fa-times"></i> Cancel / Quit</button>
+              <button class="btn-secondary" id="cancel-calib-btn"><i class="fas fa-times"></i> Cancel</button>
               <button class="btn-primary" id="start-calib-btn"><i class="fas fa-play"></i> Start Calibration</button>
             </div>
           </div>
@@ -1163,6 +1153,44 @@ app.get('/', (c) => {
     </div>
 
     <!-- ══════════════════════════════════════════
+         PAGE: GESTURE STUDIO
+    ══════════════════════════════════════════ -->
+    <div id="page-studio" class="page">
+      <div class="gs-page">
+        <div style="margin-bottom:20px;">
+          <h2 style="font-size:22px;font-weight:700;color:#e0e0e0;margin:0 0 6px;">
+            <i class="fas fa-sliders-h" style="color:#7c4dff;margin-right:8px;"></i>Gesture Studio
+          </h2>
+          <p style="font-size:13px;color:#78909c;margin:0;">
+            Create and customise hands-free facial gestures. Built-in lip-tap and blow gestures are always active once the camera is running.
+          </p>
+        </div>
+
+        <!-- Camera-required notice (shown when camera is off) -->
+        <div id="gs-camera-notice" style="
+          background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.25);
+          border-radius:10px;padding:12px 16px;margin-bottom:16px;
+          font-size:12px;color:#ffa726;display:flex;align-items:center;gap:10px;">
+          <i class="fas fa-camera" style="font-size:18px;"></i>
+          <span>Start the camera on the <strong>Live Demo</strong> page to enable gesture detection. Built-in gestures (lip-tap &amp; blow) activate automatically.</span>
+        </div>
+
+        <!-- Gesture Studio panel (rendered by GestureStudioUI) -->
+        <div id="gesture-studio-panel"></div>
+
+        <!-- Quick-start calibration button -->
+        <div style="margin-top:20px;text-align:center;">
+          <button id="gs-start-calib-btn" class="gs-btn gs-btn-primary" style="font-size:13px;padding:9px 20px;">
+            <i class="fas fa-crosshairs"></i> Run Gaze Calibration
+          </button>
+          <div style="font-size:11px;color:#546e7a;margin-top:6px;">
+            Calibrate from any page — improves eye-tracking accuracy.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
          PAGE: DOCS
     ══════════════════════════════════════════ -->
     <div id="page-docs" class="page">
@@ -1448,44 +1476,6 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
       </div>
     </div>
 
-    <!-- ══════════════════════════════════════════
-         PAGE: GESTURE STUDIO
-    ══════════════════════════════════════════ -->
-    <div id="page-studio" class="page">
-      <div class="gs-page">
-        <div style="margin-bottom:20px;">
-          <h2 style="font-size:22px;font-weight:700;color:#e0e0e0;margin:0 0 6px;">
-            <i class="fas fa-sliders-h" style="color:#7c4dff;margin-right:8px;"></i>Gesture Studio
-          </h2>
-          <p style="font-size:13px;color:#78909c;margin:0;">
-            Create and customise hands-free facial gestures.  Built-in lip-tap and blow gestures are always active once the camera is running.
-          </p>
-        </div>
-
-        <!-- Camera-required notice (shown when camera is off) -->
-        <div id="gs-camera-notice" style="
-          background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.25);
-          border-radius:10px;padding:12px 16px;margin-bottom:16px;
-          font-size:12px;color:#ffa726;display:flex;align-items:center;gap:10px;">
-          <i class="fas fa-camera" style="font-size:18px;"></i>
-          <span>Start the camera on the <strong>Live Demo</strong> page to enable gesture detection. Built-in gestures (lip-tap &amp; blow) activate automatically.</span>
-        </div>
-
-        <!-- Gesture Studio panel (rendered by GestureStudioUI) -->
-        <div id="gesture-studio-panel"></div>
-
-        <!-- Quick-start calibration button -->
-        <div style="margin-top:20px;text-align:center;">
-          <button id="gs-start-calib-btn" class="gs-btn gs-btn-primary" style="font-size:13px;padding:9px 20px;">
-            <i class="fas fa-crosshairs"></i> Run Gaze Calibration
-          </button>
-          <div style="font-size:11px;color:#546e7a;margin-top:6px;">
-            Calibrate from any page — improves eye-tracking accuracy.
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- Debug toggle button (always visible, bottom-left corner) -->
     <button id="debug-toggle-btn" title="Toggle Gaze Diagnostics (Alt+D)" style="
       position:fixed;
@@ -1509,9 +1499,9 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="/static/app.js"></script>
   <script src="/static/snap-engine.js"></script>
   <script src="/static/gesture-studio.js"></script>
-  <script src="/static/app.js"></script>
   <script src="/static/phase2-engine.js"></script>
   <script src="/static/phase2-init.js"></script>
   <script src="/static/phase3-engine.js"></script>
