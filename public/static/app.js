@@ -2193,10 +2193,11 @@ class AccessEyeApp {
     if (!this.gazeCursor) return;
 
     // ── Snap-To processing ───────────────────────────────────────────
-    // When snapEngine is enabled it smooth-interpolates the cursor and
-    // optionally snaps it to the nearest high-score interactive element.
+    // Only intercept the cursor when Snap-To is explicitly enabled.
+    // When disabled the raw gaze coordinates pass through unchanged so
+    // free-look mode is completely unaffected.
     let cpx = px, cpy = py;
-    if (this.snapEngine) {
+    if (this.snapEngine?.enabled) {
       const result = this.snapEngine.update(px, py);
       cpx = result.x;
       cpy = result.y;
