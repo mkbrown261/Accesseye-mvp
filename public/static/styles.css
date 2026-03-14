@@ -1253,6 +1253,26 @@ body {
   transition: all var(--transition) !important;
 }
 
+/* Gaze focus works on ANY element registered in the UIElementRegistry,
+   not just .gaze-target — allows nav buttons, controls, etc. to show feedback */
+.gaze-focus {
+  outline: 2px solid rgba(0,212,255,0.6) !important;
+  box-shadow: 0 0 0 3px rgba(0,212,255,0.15), 0 0 12px rgba(0,212,255,0.3) !important;
+  transition: outline 0.15s, box-shadow 0.15s !important;
+}
+
+.gaze-activating {
+  outline: 2px solid rgba(0,255,136,0.8) !important;
+  box-shadow: 0 0 0 4px rgba(0,255,136,0.25), 0 0 16px rgba(0,255,136,0.4) !important;
+  animation: activating-pulse 0.3s ease;
+}
+
+.gaze-activated {
+  outline: 2px solid rgba(0,255,136,0.9) !important;
+  background: rgba(0,255,136,0.08) !important;
+  box-shadow: 0 0 12px rgba(0,255,136,0.5) !important;
+}
+
 .gaze-target.gaze-focus {
   border-color: var(--accent-cyan) !important;
   box-shadow: 0 0 0 3px rgba(0,212,255,0.2), var(--glow-cyan) !important;

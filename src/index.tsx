@@ -720,6 +720,20 @@ app.get('/', (c) => {
                 <span class="snap-toggle-label">OFF</span>
               </button>
             </div>
+
+            <!-- Adaptive Dwell Timer toggle -->
+            <div class="snap-compact-bar" style="
+              display:flex; align-items:center; justify-content:space-between;
+              padding:6px 0 2px; border-top:1px solid var(--border-color); margin-top:6px;">
+              <span style="font-size:0.78rem;color:var(--text-secondary);">
+                <i class="fas fa-clock" style="color:#00d4ff;margin-right:4px;"></i>Dwell Timer
+              </span>
+              <button class="p2-toggle-btn" id="dwell-toggle-btn"
+                      title="Toggle Adaptive Dwell Timer — when ON, dwelling on an element auto-activates it after a short delay">
+                <i class="fas fa-power-off"></i>
+                <span class="dwell-toggle-label">ON</span>
+              </button>
+            </div>
           </div>
         </div>
 

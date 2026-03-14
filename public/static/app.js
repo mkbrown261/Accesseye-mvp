@@ -866,6 +866,8 @@ class UIElementRegistry {
     this.dwellTime = dwellTime;
     this.dwellStart = null;
     this.dwellProgress = 0;
+    this.dwellEnabled = true;   // can be toggled off for gesture-only mode
+    this._dwellFired = false;
     this._callbacks = {};
 
     // FIX M-2: throttle bbox refresh to 5 Hz (was forcing reflow every gaze frame)
@@ -936,11 +938,21 @@ class UIElementRegistry {
       if (hitId) this._beginFocus(hitId);
     }
 
-    // Update dwell timer
-    if (this.focusedId && this.dwellStart !== null) {
+    // Update dwell timer (only when dwell is enabled)
+    if (this.dwellEnabled && this.focusedId && this.dwellStart !== null) {
       const elapsed = now() - this.dwellStart;
       this.dwellProgress = clamp(elapsed / this.dwellTime, 0, 1);
       this._updateDwellUI(this.focusedId, this.dwellProgress);
+      // Auto-activate when dwell completes (ring fills up)
+      if (this.dwellProgress >= 1 && !this._dwellFired) {
+        this._dwellFired = true;
+        this.activateFocused('dwell');
+        // Reset so the next focus can trigger again
+        setTimeout(() => { this._dwellFired = false; }, 600);
+      }
+    } else if (!this.dwellEnabled) {
+      this.dwellProgress = 0;
+      if (this.focusedId) this._updateDwellUI(this.focusedId, 0);
     }
   }
 
@@ -963,6 +975,7 @@ class UIElementRegistry {
     this.focusedId = null;
     this.dwellStart = null;
     this.dwellProgress = 0;
+    this._dwellFired = false;
   }
 
   _updateDwellUI(id, progress) {
@@ -1925,6 +1938,8 @@ class AccessEyeApp {
     this._setupSnapEngine();        // Snap-To + Adaptive Learning
     this._setupGestureStudio();     // Facial gestures + Gesture Studio
     this._startCursorFromMouse(); // Default: mouse sim for demos
+    // Register all interactive elements as gaze targets (nav, controls, etc.)
+    setTimeout(() => this._registerGazeTargets(), 500);
   }
 
   /* ── NAVIGATION ─────────────────────────────────────────── */
@@ -1939,6 +1954,8 @@ class AccessEyeApp {
         if (target) target.classList.add('active');
         if (page === 'demo') this._onEnterDemo();
         if (page === 'architecture') this._animateGauges();
+        // Re-register gaze targets on page switch (studio panel renders dynamically)
+        setTimeout(() => this._registerGazeTargets(), 400);
       });
     });
   }
@@ -1979,6 +1996,45 @@ class AccessEyeApp {
         this._setMode(tab.dataset.mode);
       });
     });
+
+    // ── Adaptive Dwell Timer toggle ──────────────────────────────────
+    const dwellBtn = $('#dwell-toggle-btn');
+    if (dwellBtn) {
+      // Start ON by default
+      dwellBtn.classList.add('active');
+      dwellBtn.addEventListener('click', () => {
+        this.uiRegistry.dwellEnabled = !this.uiRegistry.dwellEnabled;
+        const on = this.uiRegistry.dwellEnabled;
+        dwellBtn.classList.toggle('active', on);
+        const lbl = dwellBtn.querySelector('.dwell-toggle-label');
+        if (lbl) lbl.textContent = on ? 'ON' : 'OFF';
+
+        // When turning OFF: reset any in-progress dwell immediately
+        if (!on) {
+          this.uiRegistry.dwellProgress = 0;
+          if (this.uiRegistry.focusedId) {
+            this.uiRegistry._updateDwellUI(this.uiRegistry.focusedId, 0);
+          }
+          if (this.dwellCircle) {
+            this.dwellCircle.style.strokeDasharray = `0 ${this.DWELL_CIRCUMFERENCE}`;
+          }
+        } else {
+          // When turning back ON: reset dwell start so it doesn't fire immediately
+          this.uiRegistry.dwellStart = null;
+          this.uiRegistry.dwellProgress = 0;
+          this.uiRegistry._dwellFired = false;
+        }
+
+        this.toast.show(
+          'Dwell Timer',
+          on ? 'Dwell auto-activation enabled — hover to activate' : 'Dwell timer off — use gestures to activate',
+          on ? 'success' : 'info',
+          on ? 'fas fa-clock' : 'fas fa-hand-pointer',
+          2500
+        );
+        this.log.add(`Dwell Timer: ${on ? 'enabled' : 'disabled'}`, 'info');
+      });
+    }
   }
 
   _setMode(mode) {
@@ -2049,6 +2105,9 @@ class AccessEyeApp {
     // Clear accumulated gaze-engine callbacks so _wireMediaPipeEvents
     // doesn't accumulate duplicate listeners on each restart.
     this.gazeEngine._callbacks = {};
+    // Reset Phase2 cursor-update timestamp so Phase1 fallback triggers cleanly
+    // if Phase2 activation fails on this restart cycle.
+    this._p2LastCursorUpdate = 0;
 
     // Reset gaze engine state
     this.gazeEngine.reset();
@@ -2139,6 +2198,8 @@ class AccessEyeApp {
     this.gazeEngine._callbacks = {};
     // Reset gaze engine state
     this.gazeEngine.reset();
+    // Reset Phase2 cursor-update timestamp so Phase1 fallback doesn't trigger in sim mode
+    this._p2LastCursorUpdate = 0;
 
     // Reset Gesture Studio state (clears lip-tap/blow baseline so it re-calibrates on restart)
     if (this.gestureStudio) this.gestureStudio.reset();
@@ -2203,9 +2264,15 @@ class AccessEyeApp {
     });
 
     this.gazeEngine.on('gaze', ({ screen, confidence }) => {
-      // Phase 2 orchestrator drives gaze directly when active — skip Phase 1 path
-      if (this.phase2?.active) return;
       if (!this.cameraOn) return;
+      // Phase 2 orchestrator drives gaze directly when active — skip Phase 1 path
+      // UNLESS Phase 2 has been active for >1.5s without updating the cursor
+      // (Phase 2 activation failed silently) — in that case fall through as backup.
+      if (this.phase2?.active) {
+        const now2 = performance.now();
+        if (!this._p2LastCursorUpdate || (now2 - this._p2LastCursorUpdate) < 1500) return;
+        // Phase 2 stalled — fall through to Phase 1 gaze
+      }
       this._updateGazeCursor(screen.x * window.innerWidth, screen.y * window.innerHeight);
       this._updateCoords(screen.x, screen.y);
       this.uiRegistry.updateGaze(screen.x * window.innerWidth, screen.y * window.innerHeight);
@@ -2262,6 +2329,8 @@ class AccessEyeApp {
   /* ── GAZE CURSOR ────────────────────────────────────────── */
   _updateGazeCursor(px, py) {
     if (!this.gazeCursor) return;
+    // Track last cursor update time (used by Phase1 fallback when Phase2 stalls)
+    this._p2LastCursorUpdate = performance.now();
 
     // ── Snap-To processing ───────────────────────────────────────────
     // Only intercept the cursor when Snap-To is explicitly enabled.
@@ -2324,9 +2393,8 @@ class AccessEyeApp {
   }
 
   _registerGazeTargets() {
-    // Unregister old ones
-    const targets = $$('.gaze-target');
-    targets.forEach(el => {
+    // ── 1. Demo content gaze targets (messaging app buttons) ──
+    $$('.gaze-target').forEach(el => {
       const id = el.dataset.id;
       if (id) {
         this.uiRegistry.unregister(id);
@@ -2335,14 +2403,88 @@ class AccessEyeApp {
         });
       }
     });
+
+    // ── 2. Register ALL interactive UI elements so gaze+gesture works everywhere ──
+    // Helper: register any element by selector if not already a .gaze-target
+    const registerInteractive = (sel, label, id) => {
+      const el = typeof sel === 'string' ? document.querySelector(sel) : sel;
+      if (!el || el.classList.contains('gaze-target')) return;
+      this.uiRegistry.unregister(id);
+      this.uiRegistry.register(id, el, label, () => {
+        el.click();
+      });
+    };
+
+    // Nav buttons
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      const page = btn.dataset.page || btn.textContent.trim();
+      const id = `nav-${page}`;
+      this.uiRegistry.unregister(id);
+      this.uiRegistry.register(id, btn, btn.querySelector('span')?.textContent?.trim() || page, () => {
+        btn.click();
+      });
+    });
+
+    // Camera controls
+    registerInteractive('#start-camera-btn', 'Start Camera', 'ctrl-start-cam');
+    registerInteractive('#stop-camera-btn',  'Stop Camera',  'ctrl-stop-cam');
+
+    // Mode tabs
+    document.querySelectorAll('.mode-tab').forEach(tab => {
+      const mode = tab.dataset.mode || tab.textContent.trim();
+      const id = `mode-tab-${mode}`;
+      this.uiRegistry.unregister(id);
+      this.uiRegistry.register(id, tab, tab.textContent.trim() || mode, () => {
+        tab.click();
+      });
+    });
+
+    // Calibration buttons (in sidebar / overlay)
+    registerInteractive('#start-calib-btn',    'Start Calibration', 'ctrl-calib-start');
+    registerInteractive('#cancel-calib-btn',   'Cancel Calibration','ctrl-calib-cancel');
+    registerInteractive('#gs-start-calib-btn', 'Start Calibration', 'ctrl-gs-calib');
+
+    // Snap-To toggle
+    document.querySelectorAll('#snap-toggle-btn').forEach((btn, i) => {
+      const id = `ctrl-snap-toggle-${i}`;
+      this.uiRegistry.unregister(id);
+      this.uiRegistry.register(id, btn, 'Snap-To Toggle', () => btn.click());
+    });
+
+    // Adaptive dwell toggle
+    registerInteractive('#dwell-toggle-btn', 'Adaptive Dwell Toggle', 'ctrl-dwell-toggle');
+
+    // Audio toggle
+    registerInteractive('#audio-toggle-btn', 'Audio Toggle', 'ctrl-audio');
+
+    // Gesture Studio buttons (rendered dynamically — registered after render)
+    setTimeout(() => this._registerGestureStudioTargets(), 300);
+  }
+
+  _registerGestureStudioTargets() {
+    // Register buttons inside the gesture studio panel
+    const panel = document.querySelector('#gesture-studio-panel');
+    if (!panel) return;
+    panel.querySelectorAll('button, .gs-btn').forEach((btn, i) => {
+      const id = `gs-btn-${i}`;
+      this.uiRegistry.unregister(id);
+      this.uiRegistry.register(id, btn, btn.textContent.trim() || `Studio Button ${i}`, () => {
+        btn.click();
+      });
+    });
   }
 
   _onElementActivated(id, label, gesture) {
-    // Visual ripple
+    // Visual ripple + element trigger
     const entry = this.uiRegistry.elements.get(id);
     if (entry) {
       const rect = entry.el.getBoundingClientRect();
       this._spawnRipple(rect.left + rect.width/2, rect.top + rect.height/2);
+      // Trigger the actual element click so its native handler fires
+      // (skip for direct 'click' events since the click already fired natively)
+      if (gesture !== 'click') {
+        setTimeout(() => entry.el.click(), 80);
+      }
     }
 
     // Audio feedback
@@ -2354,7 +2496,7 @@ class AccessEyeApp {
     // Toast
     this.toast.show(label, `Activated via ${gesture}`, 'success', 'fas fa-check-circle', 2500);
 
-    // Special actions
+    // Special demo messaging actions (these handle their own visual output)
     this._handleElementAction(id, label);
 
     // Update status
