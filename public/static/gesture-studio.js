@@ -4,8 +4,8 @@
  *
  *  Four co-operating modules:
  *
- *  1. FacialGestureEngine   — Built-in lip-tap (scroll-up) and blow/air-puff
- *                             (scroll-down) detectors with confidence scoring,
+ *  1. FacialGestureEngine   — Built-in lip-tap (scroll-up) and bite-bottom-lip
+ *                             (scroll-down, held) detectors with confidence scoring,
  *                             minimum-duration gates, and per-gesture cooldowns.
  *
  *  2. CustomGestureRecorder — Captures 2–4 s of facial landmark data and
@@ -29,12 +29,14 @@
 
 /* ─── Configuration constants ─── */
 const SCROLL_AMOUNT               = 180;   // px per scroll event
+const SCROLL_INTERVAL_MS          = 80;    // ms between repeated scroll ticks (bite-lip hold)
 const LIP_TAP_TIME_WINDOW         = 750;   // ms between two closures
 const LIP_TAP_CONFIDENCE_THRESHOLD = 0.70; // 0-1
-const BLOW_DETECTION_THRESHOLD    = 0.82;  // mouth-open ratio for blow
+const BITE_LIP_THRESHOLD          = 0.55;  // lower-lip-Y / mouth-height ratio for bite detection
 const GESTURE_COOLDOWN            = 1200;  // ms between any built-in fire
 const CUSTOM_GESTURE_CONFIDENCE   = 0.72;  // 0-1
 
+const BLOW_DETECTION_THRESHOLD    = BITE_LIP_THRESHOLD;  // alias for config compat
 const STUDIO_STORAGE_KEY = 'accesseye_gesture_studio';
 
 /* MediaPipe FaceMesh landmark indices */
@@ -47,12 +49,17 @@ const LM = {
   // Mouth inner
   MOUTH_INNER_TOP : 82,
   MOUTH_INNER_BOT : 87,
-  // Upper lip region (for blow detection — cheek pressure)
+  // Upper lip
   UPPER_LIP_L : 40,
   UPPER_LIP_R : 270,
-  // Lower lip
+  // Lower lip outer bottom edge (used for bite-lip detection)
   LOWER_LIP_L : 178,
   LOWER_LIP_R : 402,
+  // Lower lip inner (rises when bottom lip is bitten inward)
+  LOWER_LIP_INNER_L : 95,
+  LOWER_LIP_INNER_R : 325,
+  // Upper lip inner top
+  UPPER_LIP_INNER_TOP : 13,
   // Nose tip (for head dir)
   NOSE_TIP    : 1,
   // Brow landmarks
@@ -178,6 +185,8 @@ class FacialGestureEngine {
       lipTapTimeWindow        : config.lipTapTimeWindow        ?? LIP_TAP_TIME_WINDOW,
       lipTapConfidence        : config.lipTapConfidence        ?? LIP_TAP_CONFIDENCE_THRESHOLD,
       blowThreshold           : config.blowThreshold           ?? BLOW_DETECTION_THRESHOLD,
+      biteLipThreshold        : config.biteLipThreshold        ?? BITE_LIP_THRESHOLD,
+      scrollIntervalMs        : config.scrollIntervalMs        ?? SCROLL_INTERVAL_MS,
       gestureCooldown         : config.gestureCooldown         ?? GESTURE_COOLDOWN,
       customGestureConfidence : config.customGestureConfidence ?? CUSTOM_GESTURE_CONFIDENCE,
     };
@@ -194,9 +203,12 @@ class FacialGestureEngine {
     this._openFrames      = 0;
     this._cycleComplete   = false;   // one open→closed→open complete
 
-    // ── Blow state ─────────────────────────────────────────────────
-    this._blowFrames   = 0;
-    this._BLOW_MIN_FRAMES = 3;       // must persist ≥3 frames (≈100 ms @ 30fps)
+    // ── Bite-lip state ────────────────────────────────────────────────
+    this._biteLipActive   = false;
+    this._biteLipFrames   = 0;
+    this._BITE_MIN_FRAMES = 3;
+    this._biteLipInterval = null;
+    this._lastBiteConf    = 0;
 
     // ── Cooldown ───────────────────────────────────────────────────
     this._lastFire = {};   // gestureName → timestamp
@@ -247,7 +259,7 @@ class FacialGestureEngine {
     }
 
     this._detectLipTap(f);
-    this._detectBlow(f);
+    this._detectBiteLip(f);
   }
 
   // ── Lip-tap: two full open→close→open cycles within LIP_TAP_TIME_WINDOW ──
@@ -311,34 +323,50 @@ class FacialGestureEngine {
     }
   }
 
-  // ── Blow / air-puff: wide mouth open + cheek puff ──────────────
-  _detectBlow(f) {
-    const outerRatio = f[0];   // outer open ratio
-    const innerRatio = f[1];   // inner open ratio
-    const mW         = f[2];   // mouth width
-    const ckW        = f[3];   // cheek span
-    const eyeBase    = f[4];   // eye span (baseline)
+  // ── Bite bottom lip: lower lip bitten inward → scroll down (held) ──
+  // Detection: when the bottom lip is bitten, the inner mouth opening
+  // (f[1] = innerRatio) collapses relative to the outer mouth opening (f[0]).
+  // biteRatio = innerRatio / outerRatio → low when bitten, high when neutral.
+  // Continuous scroll fires every scrollIntervalMs while the gesture is held.
+  _detectBiteLip(f) {
+    const outerRatio = f[0];
+    const innerRatio = f[1];
+    const baseline   = this._mouthBaseline || 0.05;
 
-    // Cheek puff: cheek-to-cheek widens relative to eye baseline
-    const cheekRatio  = eyeBase > 0 ? ckW / eyeBase : 1.0;
-    const isMouthOpen = outerRatio >= (this._mouthBaseline + 0.05);
-    const isCheekPuff = cheekRatio >= (1.0 + (this.config.blowThreshold - 0.82) * 0.5 + 0.05);
+    const outerOpen = Math.max(outerRatio, baseline);
+    const biteRatio = outerOpen > 0.01 ? innerRatio / outerOpen : 1.0;
 
-    // Combined confidence
-    const openConf  = Math.min(1, (outerRatio - this._mouthBaseline) / 0.15);
-    const cheekConf = Math.min(1, Math.max(0, (cheekRatio - 1.04) / 0.06));
-    const confidence = (openConf + cheekConf) / 2;
+    const threshold  = this.config.biteLipThreshold;
+    const confidence = Math.min(1, Math.max(0, (threshold - biteRatio) / threshold));
+    // Must have some mouth separation (not just closed) and low inner ratio
+    const isBiting   = biteRatio < threshold && outerRatio > baseline * 0.8;
 
-    if (isMouthOpen && confidence >= this.config.blowThreshold - 0.10) {
-      this._blowFrames++;
-      if (this._blowFrames >= this._BLOW_MIN_FRAMES && this._canFire('blow')) {
-        this._fired('blow');
-        this._blowFrames = 0;
-        this._emit('blow', { confidence, action: 'scrollDown' });
-        this._emit('gesture', { name: 'blow', confidence, action: 'scrollDown' });
+    if (isBiting) {
+      this._biteLipFrames = Math.min(this._biteLipFrames + 1, this._BITE_MIN_FRAMES + 5);
+
+      if (this._biteLipFrames >= this._BITE_MIN_FRAMES && !this._biteLipActive) {
+        this._biteLipActive = true;
+        this._lastBiteConf  = confidence;
+        // Fire immediately
+        this._emit('biteLip', { confidence, active: true, action: 'scrollDown' });
+        this._emit('gesture', { name: 'biteLip', confidence, action: 'scrollDown' });
+        // Continuous scroll while held
+        this._biteLipInterval = setInterval(() => {
+          this._emit('biteLip', { confidence: this._lastBiteConf, active: true, action: 'scrollDown' });
+          this._emit('gesture', { name: 'biteLip', confidence: this._lastBiteConf, action: 'scrollDown' });
+        }, this.config.scrollIntervalMs);
       }
+      if (this._biteLipActive) this._lastBiteConf = confidence;
     } else {
-      this._blowFrames = Math.max(0, this._blowFrames - 1);
+      this._biteLipFrames = Math.max(0, this._biteLipFrames - 1);
+      if (this._biteLipActive && this._biteLipFrames === 0) {
+        this._biteLipActive = false;
+        if (this._biteLipInterval) {
+          clearInterval(this._biteLipInterval);
+          this._biteLipInterval = null;
+        }
+        this._emit('biteLipRelease', { action: 'scrollDown' });
+      }
     }
   }
 
@@ -349,7 +377,12 @@ class FacialGestureEngine {
     this._firstClosureT   = 0;
     this._closedFrames    = 0;
     this._openFrames      = 0;
-    this._blowFrames      = 0;
+    this._biteLipActive   = false;
+    this._biteLipFrames   = 0;
+    if (this._biteLipInterval) {
+      clearInterval(this._biteLipInterval);
+      this._biteLipInterval = null;
+    }
     this._mouthBaseline   = null;
     this._baselineFrames  = [];
     this._lastFire        = {};
@@ -525,10 +558,36 @@ class CustomGestureRecognizer {
    4.  GestureStudio — full lifecycle management
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
+/**
+ * Scroll the best available scrollable container.
+ * Priority: focused element's scrollable ancestor → .demo-main → window
+ * @param {number} delta  positive = down, negative = up
+ */
+function _scrollPage(delta) {
+  // Walk up from active element to find a scrollable ancestor
+  let el = document.activeElement;
+  while (el && el !== document.body) {
+    const st = getComputedStyle(el);
+    if ((st.overflowY === 'auto' || st.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
+      el.scrollBy({ top: delta, behavior: 'smooth' });
+      return;
+    }
+    el = el.parentElement;
+  }
+  // Fall back to the demo-main container (the primary scrollable pane in the demo)
+  const demoMain = document.querySelector('.demo-main');
+  if (demoMain && demoMain.scrollHeight > demoMain.clientHeight) {
+    demoMain.scrollBy({ top: delta, behavior: 'smooth' });
+    return;
+  }
+  // Last resort: window
+  window.scrollBy({ top: delta, behavior: 'smooth' });
+}
+
 /** Available assignable actions */
 const GESTURE_ACTIONS = {
-  scrollUp       : { label: 'Scroll Up',           fn: () => window.scrollBy({ top: -SCROLL_AMOUNT, behavior: 'smooth' }) },
-  scrollDown     : { label: 'Scroll Down',          fn: () => window.scrollBy({ top:  SCROLL_AMOUNT, behavior: 'smooth' }) },
+  scrollUp       : { label: 'Scroll Up',           fn: () => _scrollPage(-SCROLL_AMOUNT) },
+  scrollDown     : { label: 'Scroll Down',          fn: () => _scrollPage(SCROLL_AMOUNT) },
   click          : { label: 'Click / Activate',     fn: () => document.activeElement?.click() },
   doubleClick    : { label: 'Double Click',          fn: (el) => { el = el || document.activeElement; el?.click(); setTimeout(() => el?.click(), 80); } },
   navBack        : { label: 'Navigate Back',         fn: () => history.back() },
@@ -540,12 +599,13 @@ const GESTURE_ACTIONS = {
 
 class GestureStudio {
   constructor() {
-    this._gestures    = [];     // array of gesture records
-    this._recorder    = null;   // active CustomGestureRecorder
-    this._recognizer  = new CustomGestureRecognizer();
-    this._faceEngine  = new FacialGestureEngine();
-    this._callbacks   = {};
-    this._recordingId = null;   // id being recorded/re-recorded
+    this._gestures         = [];     // array of gesture records
+    this._recorder         = null;   // active CustomGestureRecorder
+    this._recognizer       = new CustomGestureRecognizer();
+    this._faceEngine       = new FacialGestureEngine();
+    this._callbacks        = {};
+    this._recordingId      = null;   // id being recorded/re-recorded
+    this._biteLipActionFired = false; // prevents toast spam on continuous bite-lip
 
     this._load();
     this._syncRecognizer();
@@ -734,24 +794,34 @@ class GestureStudio {
   }
 
   _wireBuiltins() {
-    // Lip-tap → scrollUp
+    // ── Lip-tap (double) → scroll up ────────────────────────────────
     this._faceEngine.on('lipTap', ({ confidence }) => {
-      window.scrollBy({ top: -SCROLL_AMOUNT, behavior: 'smooth' });
+      _scrollPage(-SCROLL_AMOUNT);
       this._emit('action', { actionId: 'scrollUp', gestureName: 'Double Lip-Tap', label: 'Scroll Up', confidence });
       this._emit('builtinGesture', { name: 'lipTap', confidence, action: 'scrollUp' });
     });
 
-    // Blow → scrollDown
-    this._faceEngine.on('blow', ({ confidence }) => {
-      window.scrollBy({ top: SCROLL_AMOUNT, behavior: 'smooth' });
-      this._emit('action', { actionId: 'scrollDown', gestureName: 'Blow/Air-Puff', label: 'Scroll Down', confidence });
-      this._emit('builtinGesture', { name: 'blow', confidence, action: 'scrollDown' });
+    // ── Bite bottom lip (held) → scroll down continuously ───────────
+    this._faceEngine.on('biteLip', ({ confidence }) => {
+      _scrollPage(SCROLL_AMOUNT);
+      // Emit action only once per gesture onset to avoid toast spam
+      if (!this._biteLipActionFired) {
+        this._biteLipActionFired = true;
+        this._emit('action', { actionId: 'scrollDown', gestureName: 'Bite Bottom Lip', label: 'Scroll Down', confidence });
+        this._emit('builtinGesture', { name: 'biteLip', confidence, action: 'scrollDown' });
+      }
+    });
+    this._faceEngine.on('biteLipRelease', () => {
+      this._biteLipActionFired = false;
     });
 
-    // Custom gestures
+    // ── Custom gestures ──────────────────────────────────────────────
+    // Recognizer emits { id, name, action, confidence }
+    // where action = the assignedAction string key into GESTURE_ACTIONS
     this._recognizer.on('gesture', ({ id, name, action, confidence }) => {
-      this._executeAction(action, name);
-      this._emit('customGesture', { id, name, action, confidence });
+      const actionId = action || 'scrollDown';  // fallback
+      this._executeAction(actionId, name);
+      this._emit('builtinGesture', { name, confidence, action: actionId });
     });
   }
 
@@ -800,7 +870,8 @@ class GestureStudioUI {
 
     // Builtin gesture feedback
     studio.on('builtinGesture', ({ name, confidence, action }) => {
-      this._showFeedback(`${name === 'lipTap' ? '👄 Lip-Tap' : '💨 Blow'}: ${action} (conf ${(confidence * 100).toFixed(0)}%)`, 'success');
+      let gLabel = name === 'lipTap' ? '👄 Double Lip-Tap' : name === 'biteLip' ? '😬 Bite Lip' : name;
+      this._showFeedback(`${gLabel}: ${action} (conf ${(confidence * 100).toFixed(0)}%)`, 'success');
     });
 
     // Custom gesture feedback
@@ -836,11 +907,11 @@ class GestureStudioUI {
         </div>
       </div>
       <div class="gs-builtin-card">
-        <div class="gs-builtin-icon">💨</div>
+        <div class="gs-builtin-icon">😬</div>
         <div class="gs-builtin-info">
-          <div class="gs-builtin-name">Blow / Air-Puff</div>
-          <div class="gs-builtin-desc">Open mouth wide + cheek puff</div>
-          <div class="gs-builtin-action"><i class="fas fa-arrow-down"></i> Scroll Down</div>
+          <div class="gs-builtin-name">Bite Bottom Lip</div>
+          <div class="gs-builtin-desc">Bite lower lip — hold to scroll, release to stop</div>
+          <div class="gs-builtin-action"><i class="fas fa-arrow-down"></i> Scroll Down (held)</div>
         </div>
       </div>
     </div>

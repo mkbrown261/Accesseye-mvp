@@ -1135,10 +1135,12 @@ class CalibrationUI {
     this.gazeEngine = gazeEngine;
     this.log = log;
     this.toast = toast;
-    this.overlay = $('#calibration-overlay');
-    this.container = $('#calib-points-container');
-    this.progressFill = $('#calib-progress-fill');
-    this.stepLabel = $('#calib-step-label');
+    // FIX CAL-LAZY: Query DOM lazily inside show() so we never cache a null
+    // reference if the element isn't rendered yet at construction time.
+    this._overlayEl = null;
+    this.container = null;
+    this.progressFill = null;
+    this.stepLabel = null;
     this.currentStep = -1;
     this.collecting = false;
     this.sampleCount = 0;
@@ -1167,6 +1169,18 @@ class CalibrationUI {
   }
 
   show(onComplete) {
+    // FIX CAL-LAZY: Resolve DOM refs on every show() call so we always get live elements
+    this._overlayEl   = $('#calibration-overlay');
+    this.container    = $('#calib-points-container');
+    this.progressFill = $('#calib-progress-fill');
+    this.stepLabel    = $('#calib-step-label');
+
+    if (!this._overlayEl) {
+      console.error('[CalibrationUI] #calibration-overlay not found in DOM');
+      this.toast?.show('Error', 'Calibration overlay not found. Try refreshing the page.', 'warn');
+      return;
+    }
+
     this._onComplete = onComplete;
     this.collecting = false;
     this.currentStep = -1;
@@ -1175,15 +1189,15 @@ class CalibrationUI {
     this.calibEngine.reset();
     this._arenaW = 0;
     this._arenaH = 0;
-    // Reset adaptive threshold for fresh calibration
     this._adaptiveSigmaThresh = 0.025;
     this._adaptiveSeedDone    = false;
-    this.overlay.style.display = 'flex';
+    this._overlayEl.style.display = 'block';
+    const hudEl = $('#calib-hud');
+    if (hudEl) hudEl.style.display = 'flex';
     const startBtn = $('#start-calib-btn');
     if (startBtn) { startBtn.disabled = false; startBtn.innerHTML = '<i class="fas fa-play"></i> Start Calibration'; }
     this._updateProgress(0);
     if (this.stepLabel) this.stepLabel.textContent = `Step 0 / ${this.calibEngine.CALIB_POINTS.length}`;
-    // Update instruction text for quality-gated mode
     const instrEl = $('#calib-instruction-text');
     if (instrEl) instrEl.innerHTML = 'Look directly at each dot and <strong>hold perfectly still</strong> until it turns green and advances automatically.';
     this.log.add('Calibration ready — press Start to begin', 'info');
@@ -1191,7 +1205,10 @@ class CalibrationUI {
   }
 
   hide() {
-    this.overlay.style.display = 'none';
+    const ov = this._overlayEl || $('#calibration-overlay');
+    if (ov) ov.style.display = 'none';
+    const hud = $('#calib-hud');
+    if (hud) hud.style.display = 'none';
     this._arenaW = 0;
     this._arenaH = 0;
   }
@@ -1226,6 +1243,12 @@ class CalibrationUI {
   }
 
   async start() {
+    // Guard: camera must be on to collect gaze samples
+    if (!window.app?.cameraOn) {
+      this.toast.show('Camera Required', 'Start the camera first, then click Start Calibration.', 'warn');
+      return;
+    }
+
     if (this.collecting) {
       clearInterval(this._sampleInterval);
       this._sampleInterval = null;
@@ -1986,10 +2009,20 @@ class AccessEyeApp {
       }
     } else if (mode === 'calibrate') {
       this.sim.stop();
-      if (this.cameraOn) {
+      if (!this._calibUI) {
+        // CalibrationUI not yet constructed (very early call) — shouldn't happen normally
+        this.toast.show('Not Ready', 'Please wait for the app to finish loading.', 'warn');
+        return;
+      }
+      if (!this.cameraOn) {
+        // Show overlay but leave start button enabled — CalibrationUI.start() will
+        // re-check and show a friendly toast if the user clicks it without camera.
         this._showCalibrationFlow();
+        this.toast.show('Camera Required', 'Start the camera, then press Start Calibration.', 'warn');
       } else {
-        this.toast.show('Camera Required', 'Start the camera to run calibration.', 'warn');
+        // Camera is on → show overlay and immediately kick off calibration
+        this._showCalibrationFlow();
+        setTimeout(() => this._calibUI.start(), 80);
       }
     }
   }
@@ -2014,6 +2047,28 @@ class AccessEyeApp {
       this.mpController.stop();
       this.mpController = null;
     }
+
+    // FIX CAM-RESTART2: Stop any open video track on #demo-video so the
+    // browser releases the hardware camera before we request it again.
+    // Without this, getUserMedia hangs or fails on restart in Chrome/Firefox.
+    try {
+      const videoEl = $('#demo-video');
+      if (videoEl?.srcObject) {
+        videoEl.srcObject.getTracks().forEach(t => t.stop());
+        videoEl.srcObject = null;
+      }
+    } catch (_) {}
+
+    // FIX CAM-RESTART2: Stop and clear the HighFPS controller so Phase 2
+    // doesn't hold a dead stream reference that blocks re-acquisition.
+    try {
+      const p2orch = window.app?.phase2 || this.phase2;
+      if (p2orch?._highFPSController) {
+        p2orch._highFPSController.stop?.();
+        p2orch._highFPSController = null;
+      }
+    } catch (_) {}
+
     // Deactivate Phase 2 so it re-activates cleanly on the new camera stream.
     if (this.phase2?.active) {
       this.phase2.deactivate();
@@ -2080,6 +2135,28 @@ class AccessEyeApp {
       this.mpController = null;
     }
     this.cameraOn = false;
+
+    // FIX CAM-RESTART: Also stop the HighFPS controller held by Phase 2
+    // so it releases the camera stream and getUserMedia works on next start.
+    try {
+      const p2orch = window.app?.phase2 || this.phase2;
+      if (p2orch?._highFPSController) {
+        p2orch._highFPSController.stop?.();
+        p2orch._highFPSController = null;
+      }
+      // Also stop any HighFPS controller held directly on the init controller
+      if (window._p2InitController?.orchestrator?._highFPSController) {
+        window._p2InitController.orchestrator._highFPSController.stop?.();
+        window._p2InitController.orchestrator._highFPSController = null;
+      }
+      // FIX CAM-PATCH: Clear cached original start ref so the next _patchCameraStart
+      // call re-binds to the live (clean) Phase-1 _startCamera instead of the
+      // one from a previous session.  This ensures the camera restart always uses
+      // the freshly-initialised MediaPipeController created in _startCamera.
+      if (window._p2InitController?.orchestrator) {
+        window._p2InitController.orchestrator._origCameraStart = null;
+      }
+    } catch (_) {}
 
     // Deactivate Phase 2 if running
     if (this.phase2?.active) {
@@ -2415,11 +2492,34 @@ class AccessEyeApp {
 
   /* ── CALIBRATION ────────────────────────────────────────── */
   _setupCalibrationUI() {
-    const overlay = $('#calibration-overlay');
-    if (!overlay) return;
+    // FIX CAL-DOM: Don't bail if overlay is null at init time — it may not exist
+    // on non-demo pages.  Create the CalibrationUI unconditionally; it guards
+    // internally when show() is called.
     const calibUI = new CalibrationUI(this.calibration, this.gazeEngine, this.log, this.toast);
 
-    $('#start-calib-btn')?.addEventListener('click', () => calibUI.start());
+    // Start button: show overlay then immediately begin calibration if camera is on
+    const setupStartBtn = (btnId) => {
+      const btn = $('#' + btnId);
+      if (!btn) return;
+      btn.addEventListener('click', () => {
+        if (!this.cameraOn) {
+          this.toast.show('Camera Required', 'Start the camera first, then click Start Calibration.', 'warn');
+          return;
+        }
+        // If overlay not shown yet, show it first then auto-start
+        const overlay = $('#calibration-overlay');
+        if (overlay && overlay.style.display === 'none') {
+          this._showCalibrationFlow();
+          // Give show() one tick to render points, then start
+          setTimeout(() => calibUI.start(), 50);
+        } else {
+          calibUI.start();
+        }
+      });
+    };
+    setupStartBtn('start-calib-btn');
+    setupStartBtn('gs-start-calib-btn');
+
     $('#cancel-calib-btn')?.addEventListener('click', () => {
       calibUI.hide();
       this.log.add('Calibration cancelled', 'warn');
@@ -2668,14 +2768,8 @@ class AccessEyeApp {
     this._updateGsCameraNotice();
 
     // ── Calibration button in studio page ───────────────────────────
-    document.getElementById('gs-start-calib-btn')?.addEventListener('click', () => {
-      if (!this.cameraOn) {
-        this.toast.show('Camera Required', 'Start the camera on the Live Demo page first.', 'warn');
-        this._navigateTo('demo');
-        return;
-      }
-      this._showCalibrationFlow();
-    });
+    // NOTE: gs-start-calib-btn listener is wired in _setupCalibrationUI()
+    // (shows overlay + auto-starts when camera is on).  No duplicate here.
 
     console.log('[AccessEye] Gesture Studio initialised');
   }
