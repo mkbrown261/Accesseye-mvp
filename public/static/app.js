@@ -866,8 +866,7 @@ class UIElementRegistry {
     this.dwellTime = dwellTime;
     this.dwellStart = null;
     this.dwellProgress = 0;
-    this.dwellEnabled = true;   // can be toggled off for gesture-only mode
-    this._dwellFired = false;
+    this.dwellEnabled = true;   // can be toggled off to hide the dwell ring
     this._callbacks = {};
 
     // FIX M-2: throttle bbox refresh to 5 Hz (was forcing reflow every gaze frame)
@@ -938,18 +937,13 @@ class UIElementRegistry {
       if (hitId) this._beginFocus(hitId);
     }
 
-    // Update dwell timer (only when dwell is enabled)
+    // Update dwell timer — visual feedback only when enabled.
+    // Actual activation always requires an explicit gesture (pinch / air-tap).
+    // The Dwell Timer toggle just controls whether the progress ring is shown.
     if (this.dwellEnabled && this.focusedId && this.dwellStart !== null) {
       const elapsed = now() - this.dwellStart;
       this.dwellProgress = clamp(elapsed / this.dwellTime, 0, 1);
       this._updateDwellUI(this.focusedId, this.dwellProgress);
-      // Auto-activate when dwell completes (ring fills up)
-      if (this.dwellProgress >= 1 && !this._dwellFired) {
-        this._dwellFired = true;
-        this.activateFocused('dwell');
-        // Reset so the next focus can trigger again
-        setTimeout(() => { this._dwellFired = false; }, 600);
-      }
     } else if (!this.dwellEnabled) {
       this.dwellProgress = 0;
       if (this.focusedId) this._updateDwellUI(this.focusedId, 0);
@@ -975,7 +969,6 @@ class UIElementRegistry {
     this.focusedId = null;
     this.dwellStart = null;
     this.dwellProgress = 0;
-    this._dwellFired = false;
   }
 
   _updateDwellUI(id, progress) {
@@ -2019,20 +2012,19 @@ class AccessEyeApp {
             this.dwellCircle.style.strokeDasharray = `0 ${this.DWELL_CIRCUMFERENCE}`;
           }
         } else {
-          // When turning back ON: reset dwell start so it doesn't fire immediately
+          // When turning back ON: reset dwell start so ring starts fresh
           this.uiRegistry.dwellStart = null;
           this.uiRegistry.dwellProgress = 0;
-          this.uiRegistry._dwellFired = false;
         }
 
         this.toast.show(
-          'Dwell Timer',
-          on ? 'Dwell auto-activation enabled — hover to activate' : 'Dwell timer off — use gestures to activate',
+          'Dwell Ring',
+          on ? 'Dwell ring enabled — shows gaze focus progress' : 'Dwell ring hidden — gaze focus still tracked for gestures',
           on ? 'success' : 'info',
           on ? 'fas fa-clock' : 'fas fa-hand-pointer',
           2500
         );
-        this.log.add(`Dwell Timer: ${on ? 'enabled' : 'disabled'}`, 'info');
+        this.log.add(`Dwell Ring: ${on ? 'enabled' : 'disabled'}`, 'info');
       });
     }
   }

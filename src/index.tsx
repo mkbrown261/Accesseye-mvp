@@ -721,15 +721,15 @@ app.get('/', (c) => {
               </button>
             </div>
 
-            <!-- Adaptive Dwell Timer toggle -->
+            <!-- Dwell ring toggle -->
             <div class="snap-compact-bar" style="
               display:flex; align-items:center; justify-content:space-between;
               padding:6px 0 2px; border-top:1px solid var(--border-color); margin-top:6px;">
               <span style="font-size:0.78rem;color:var(--text-secondary);">
-                <i class="fas fa-clock" style="color:#00d4ff;margin-right:4px;"></i>Dwell Timer
+                <i class="fas fa-clock" style="color:#00d4ff;margin-right:4px;"></i>Dwell Ring
               </span>
               <button class="p2-toggle-btn" id="dwell-toggle-btn"
-                      title="Toggle Adaptive Dwell Timer — when ON, dwelling on an element auto-activates it after a short delay">
+                      title="Toggle Dwell Ring — when ON, a ring fills as you look at an element; use gesture (pinch/air-tap) to activate">
                 <i class="fas fa-power-off"></i>
                 <span class="dwell-toggle-label">ON</span>
               </button>
