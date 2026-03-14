@@ -32,7 +32,7 @@ const SCROLL_AMOUNT               = 120;   // px per scroll event
 const SCROLL_INTERVAL_MS          = 200;   // ms between repeated scroll ticks (tongue-out hold)
 const LIP_TAP_TIME_WINDOW         = 750;   // ms between two closures
 const LIP_TAP_CONFIDENCE_THRESHOLD = 0.70; // 0-1
-const TONGUE_OUT_THRESHOLD = 0.55;  // lower-lip drop/mouth-width to detect tongue out (needs to be clearly deliberate)
+const TONGUE_OUT_THRESHOLD = 0.20;  // lower-lip drop/mouth-width. Tongue fully out ≈ 0.25-0.40; resting ≈ 0-0.10
 const GESTURE_COOLDOWN            = 1200;  // ms between any built-in fire
 const CUSTOM_GESTURE_CONFIDENCE   = 0.72;  // 0-1
 
@@ -206,7 +206,7 @@ class FacialGestureEngine {
     // ── Bite-lip state ────────────────────────────────────────────────
     this._tongueActive    = false;
     this._tongueFrames    = 0;
-    this._TONGUE_MIN_FRAMES = 8;  // ~0.25s at 30fps — prevents accidental triggers
+    this._TONGUE_MIN_FRAMES = 5;  // ~0.17s at 30fps — requires brief hold to confirm
     this._tongueInterval  = null;
     this._lastTongueConf  = 0;
 
@@ -343,9 +343,11 @@ class FacialGestureEngine {
     const openRatio = Math.abs(upperMid.y - lowerMid.y) / mW;
 
     const threshold   = this.config.tongueOutThreshold;
-    // Require both a large drop AND significant mouth opening AND a deliberate protrusion
-    // The drop must also exceed the openRatio (tongue pushes lower lip DOWN more than it opens)
-    const isTongueOut = drop > threshold && openRatio > 0.25 && drop > openRatio * 0.8;
+    // Require a meaningful drop AND mouth must be noticeably open.
+    // openRatio > 0.15: mouth must be at least 15% of mouth-width open.
+    // drop > threshold: lower-lip-bot must drop below inner-lower-lip by threshold.
+    // drop > openRatio * 0.5: tongue push dominates (not just a wide-open mouth).
+    const isTongueOut = drop > threshold && openRatio > 0.15 && drop > openRatio * 0.5;
     const confidence  = Math.min(1, Math.max(0, (drop - threshold) / threshold));
 
     if (isTongueOut) {

@@ -723,6 +723,28 @@ app.get('/', (c) => {
           </div>
         </div>
 
+        <!-- Voice Control Panel -->
+        <div class="demo-panel" id="voice-control-panel">
+          <h3><i class="fas fa-microphone"></i> Voice Navigation</h3>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <button class="p2-toggle-btn" id="voice-toggle-btn" title="Toggle voice control on/off">
+              <i class="fas fa-microphone-slash"></i>
+              <span id="voice-toggle-label" style="margin-left:4px;">OFF</span>
+            </button>
+            <span id="voice-status-badge" style="font-size:0.72rem;color:#546e7a;padding:2px 8px;background:rgba(0,0,0,0.2);border-radius:10px;">Inactive</span>
+          </div>
+          <div id="voice-transcript-bar" style="
+            min-height:28px;padding:4px 8px;background:rgba(0,0,0,0.3);border-radius:6px;
+            font-size:0.78rem;color:#a0aec0;border:1px solid rgba(255,255,255,0.06);
+            margin-bottom:8px;font-style:italic;">
+            Say a button name or "click", "scroll"…
+          </div>
+          <div style="font-size:0.70rem;color:#546e7a;line-height:1.5;">
+            <i class="fas fa-info-circle" style="color:#7c4dff;margin-right:3px;"></i>
+            Say any visible button name&nbsp;<strong>or</strong>&nbsp;look at a button and say <strong>"click"</strong>.
+          </div>
+        </div>
+
         <!-- RIGHT: Interactive Demo Area -->
         <div class="demo-main">
           <!-- Calibration Overlay -->
@@ -1505,6 +1527,7 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="/static/phase2-init.js"></script>
   <script src="/static/phase3-engine.js"></script>
   <script src="/static/phase3-init.js"></script>
+  <script src="/static/voice-nav.js"></script>
 </body>
 </html>`)
 })

@@ -2034,10 +2034,9 @@ class AccessEyeApp {
       const v = $('#demo-video');
       if (v?.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
     } catch(_) {}
-    // Deactivate Phase 2 so it re-activates cleanly on the new stream.
-    if (this.phase2?.active) {
-      this.phase2.deactivate();
-    }
+    // Deactivate Phase 2 and Phase 3 so they re-activate cleanly on the new stream.
+    if (this.phase3?.active) { this.phase3.deactivate(); }
+    if (this.phase2?.active) { this.phase2.deactivate(); }
     // Clear gaze-engine callbacks so _wireMediaPipeEvents doesn't accumulate duplicates.
     this.gazeEngine._callbacks = {};
     // Reset Phase 1 gaze engine state
@@ -2099,10 +2098,9 @@ class AccessEyeApp {
     } catch(_) {}
     this.cameraOn = false;
 
-    // Deactivate Phase 2 if running
-    if (this.phase2?.active) {
-      this.phase2.deactivate();
-    }
+    // Deactivate Phase 3 and Phase 2 (order matters: P3 first, then P2)
+    if (this.phase3?.active) { this.phase3.deactivate(); }
+    if (this.phase2?.active) { this.phase2.deactivate(); }
     // FIX CAM-RESTART: Clear accumulated gaze-engine event listeners so the
     // next _wireMediaPipeEvents() call starts fresh (no duplicate handlers).
     this.gazeEngine._callbacks = {};
@@ -2636,12 +2634,14 @@ class AccessEyeApp {
     const autoDwellBtn = $('#snap-autodwell-btn');
     if (autoDwellBtn) {
       autoDwellBtn.addEventListener('click', () => {
-        this.snapEngine.autoDwellClick = !this.snapEngine.autoDwellClick;
-        autoDwellBtn.classList.toggle('active', this.snapEngine.autoDwellClick);
-        autoDwellBtn.querySelector('.autodwell-label').textContent =
-          this.snapEngine.autoDwellClick ? 'ON' : 'OFF';
+        const newState = !this.snapEngine.autoDwellClick;
+        this.snapEngine.autoDwellClick = newState;
+        // Also control Phase 3 adaptive dwell
+        if (this.phase3) this.phase3.autoDwellEnabled = newState;
+        autoDwellBtn.classList.toggle('active', newState);
+        autoDwellBtn.querySelector('.autodwell-label').textContent = newState ? 'ON' : 'OFF';
         this.toast.show('Auto Dwell-Click',
-          this.snapEngine.autoDwellClick ? 'Will auto-click after dwell completes' : 'Dwell-click disabled',
+          newState ? 'Will auto-click after dwell completes' : 'Dwell-click disabled',
           'info', 'fas fa-clock', 2000);
       });
     }

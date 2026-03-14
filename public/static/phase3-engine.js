@@ -1348,6 +1348,7 @@ class Phase3Orchestrator {
     this.headFree = new HeadFreeStabilizer(0.25, 0.60, 60);             // P3.7  EASE-2
 
     this.active   = false;
+    this.autoDwellEnabled = false;  // OFF by default; toggled via snap-autodwell-btn
     this._frameCounter = 0;
 
     // Load saved PACE data
@@ -1449,7 +1450,14 @@ class Phase3Orchestrator {
   _patchPhase2Pipeline() {
     const self    = this;
     const orch    = this.p2;
-    const origFn  = orch._processPhase2Face.bind(orch);
+
+    // Restore the original Phase 2 method before re-patching (handles camera restart).
+    // On first activation orch._p2OrigProcessFace is undefined so we capture it.
+    // On subsequent activations we restore from the saved original to avoid double-wrapping.
+    if (!orch._p2OrigProcessFace) {
+      orch._p2OrigProcessFace = orch._processPhase2Face.bind(orch);
+    }
+    const origFn = orch._p2OrigProcessFace;
 
     // ── P3.1: Patch HybridGazeEngine ONCE during activation ──
     // Apply One Euro filter to raw gaze before it enters the Kalman stabilizer.
@@ -1561,11 +1569,13 @@ class Phase3Orchestrator {
     registry.updateGaze = function(screenX, screenY) {
       origUpdateGaze(screenX, screenY);
 
-      // Apply adaptive dwell on top of existing dwell
+      // Apply adaptive dwell on top of existing dwell — only if auto-dwell is enabled
       const isFixating = self.ivt.isFixating;
-      const result = self.dwell.update(registry.focusedId, isFixating);
+      const result = self.autoDwellEnabled
+        ? self.dwell.update(registry.focusedId, isFixating)
+        : { completed: false };
 
-      if (result.completed && registry.focusedId) {
+      if (result.completed && registry.focusedId && self.autoDwellEnabled) {
         // Dwell-activate element
         const entry = registry.elements.get(registry.focusedId);
         if (entry) {
