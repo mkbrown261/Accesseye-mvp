@@ -399,12 +399,16 @@ class HybridGazeEngine {
       //   HeadPoseEstimator yaw: positive = nose turned camera-right = user turned LEFT.
       //   Looking left (positive yaw) → cursor should move LEFT → subtract from screen.x.
       const headX = lm[1].x;  // nose tip X (camera space)
-      const headY = lm[1].y;  // nose tip Y
+      // FIX CURVE-1: Remove head-pitch and headY contributions from vertical axis.
+      // The curved vertical path is caused by (headY-0.5)*1.3 + hPit*0.2 coupling
+      // head tilt into the Y cursor position.  When uncalibrated, iris-only Y is
+      // the cleanest signal — use it directly with a fixed scale.
+      // X axis: keep yaw correction (works correctly for left/right), remove headX
+      // term since yaw already captures head-turn contribution to X gaze.
       const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
-      const hPit  = (headPoseResult?.pitch || 0) / 35;
       screen = {
-        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.01, 0.99),
-        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.01, 0.99)
+        x: p2.clamp(0.5 + fusedX * 7.0 - hYaw * 0.15, 0.01, 0.99),
+        y: p2.clamp(0.5 + irisSignal.y * 6.5, 0.01, 0.99)
       };
     }
 

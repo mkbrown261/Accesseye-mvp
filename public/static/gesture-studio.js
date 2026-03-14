@@ -32,7 +32,7 @@ const SCROLL_AMOUNT               = 180;   // px per scroll event
 const SCROLL_INTERVAL_MS          = 80;    // ms between repeated scroll ticks (bite-lip hold)
 const LIP_TAP_TIME_WINDOW         = 750;   // ms between two closures
 const LIP_TAP_CONFIDENCE_THRESHOLD = 0.70; // 0-1
-const BITE_LIP_THRESHOLD          = 0.55;  // lower-lip-Y / mouth-height ratio for bite detection
+const BITE_LIP_THRESHOLD          = 0.72;  // lower-lip-Y / mouth-height ratio for bite detection (raised for better sensitivity)
 const GESTURE_COOLDOWN            = 1200;  // ms between any built-in fire
 const CUSTOM_GESTURE_CONFIDENCE   = 0.72;  // 0-1
 
@@ -206,7 +206,7 @@ class FacialGestureEngine {
     // ── Bite-lip state ────────────────────────────────────────────────
     this._biteLipActive   = false;
     this._biteLipFrames   = 0;
-    this._BITE_MIN_FRAMES = 3;
+    this._BITE_MIN_FRAMES = 2;  // reduced for faster detection response
     this._biteLipInterval = null;
     this._lastBiteConf    = 0;
 
@@ -215,7 +215,7 @@ class FacialGestureEngine {
 
     // ── Baseline window for auto-calibration ──────────────────────
     this._baselineFrames = [];
-    this._baselineSize   = 30;       // 1 s @ 30fps
+    this._baselineSize   = 15;       // ~0.5 s @ 30fps — faster baseline acquisition
     this._mouthBaseline  = null;     // average resting mouth-open ratio
   }
 
@@ -333,13 +333,19 @@ class FacialGestureEngine {
     const innerRatio = f[1];
     const baseline   = this._mouthBaseline || 0.05;
 
-    const outerOpen = Math.max(outerRatio, baseline);
-    const biteRatio = outerOpen > 0.01 ? innerRatio / outerOpen : 1.0;
+    // biteRatio: how compressed inner is relative to outer.
+    // When biting lower lip, inner mouth collapses → low biteRatio.
+    // Use a floor on outerOpen so we don't divide by near-zero.
+    const outerOpen = Math.max(outerRatio, baseline * 0.5, 0.02);
+    const biteRatio = innerRatio / outerOpen;
 
     const threshold  = this.config.biteLipThreshold;
     const confidence = Math.min(1, Math.max(0, (threshold - biteRatio) / threshold));
-    // Must have some mouth separation (not just closed) and low inner ratio
-    const isBiting   = biteRatio < threshold && outerRatio > baseline * 0.8;
+
+    // FIX BITE: Removed "outerRatio > baseline * 0.8" guard — that was
+    // preventing detection when resting mouth is nearly closed.
+    // Now: biteRatio just needs to be below threshold AND inner < outer (clear bite).
+    const isBiting = biteRatio < threshold && innerRatio < outerRatio;
 
     if (isBiting) {
       this._biteLipFrames = Math.min(this._biteLipFrames + 1, this._BITE_MIN_FRAMES + 5);

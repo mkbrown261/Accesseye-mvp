@@ -178,11 +178,11 @@ app.get('/', (c) => {
         <span class="nav-badge">v2</span>
       </div>
       <div class="nav-links">
-        <button class="nav-btn active" data-page="home"><i class="fas fa-home"></i><span>Home</span></button>
-        <button class="nav-btn" data-page="architecture"><i class="fas fa-project-diagram"></i><span>Architecture</span></button>
-        <button class="nav-btn" data-page="demo"><i class="fas fa-play-circle"></i><span>Live Demo</span></button>
-        <button class="nav-btn" data-page="docs"><i class="fas fa-book"></i><span>Docs</span></button>
-        <button class="nav-btn" data-page="studio"><i class="fas fa-sliders-h" style="color:#7c4dff"></i><span>Gesture Studio</span></button>
+        <button class="nav-btn gaze-target active" data-page="home" data-id="nav-home" data-label="Home"><i class="fas fa-home"></i><span>Home</span></button>
+        <button class="nav-btn gaze-target" data-page="architecture" data-id="nav-architecture" data-label="Architecture"><i class="fas fa-project-diagram"></i><span>Architecture</span></button>
+        <button class="nav-btn gaze-target" data-page="demo" data-id="nav-demo" data-label="Live Demo"><i class="fas fa-play-circle"></i><span>Live Demo</span></button>
+        <button class="nav-btn gaze-target" data-page="docs" data-id="nav-docs" data-label="Docs"><i class="fas fa-book"></i><span>Docs</span></button>
+        <button class="nav-btn gaze-target" data-page="studio" data-id="nav-studio" data-label="Gesture Studio"><i class="fas fa-sliders-h" style="color:#7c4dff"></i><span>Gesture Studio</span></button>
       </div>
       <div class="nav-status" id="system-status">
         <span class="status-dot offline"></span>
@@ -616,10 +616,10 @@ app.get('/', (c) => {
             </div>
 
             <div class="demo-controls">
-              <button class="btn-primary" id="start-camera-btn">
+              <button class="btn-primary gaze-target" id="start-camera-btn" data-id="start-camera-btn" data-label="Start Camera">
                 <i class="fas fa-play"></i> Start Camera
               </button>
-              <button class="btn-danger" id="stop-camera-btn" disabled>
+              <button class="btn-danger gaze-target" id="stop-camera-btn" data-id="stop-camera-btn" data-label="Stop Camera" disabled>
                 <i class="fas fa-stop"></i> Stop
               </button>
             </div>
@@ -628,13 +628,13 @@ app.get('/', (c) => {
             <div class="mode-selector">
               <h4>Active Mode</h4>
               <div class="mode-tabs">
-                <button class="mode-tab active" data-mode="mouse">
+                <button class="mode-tab gaze-target active" data-mode="mouse" data-id="mode-mouse" data-label="Mouse Sim">
                   <i class="fas fa-mouse-pointer"></i> Mouse Sim
                 </button>
-                <button class="mode-tab" data-mode="gaze">
+                <button class="mode-tab gaze-target" data-mode="gaze" data-id="mode-gaze" data-label="Gaze Mode">
                   <i class="fas fa-eye"></i> Gaze
                 </button>
-                <button class="mode-tab" data-mode="calibrate">
+                <button class="mode-tab gaze-target" data-mode="calibrate" data-id="mode-calibrate" data-label="Calibrate">
                   <i class="fas fa-sliders-h"></i> Calibrate
                 </button>
               </div>
@@ -722,7 +722,6 @@ app.get('/', (c) => {
             </div>
           </div>
         </div>
-      </div>
 
         <!-- RIGHT: Interactive Demo Area -->
         <div class="demo-main">

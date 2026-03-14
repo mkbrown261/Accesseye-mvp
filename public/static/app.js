@@ -1914,6 +1914,8 @@ class AccessEyeApp {
     this._setupSnapEngine();      // Snap-To + Adaptive Learning
     this._setupGestureStudio();   // Facial gestures + Gesture Studio
     this._startCursorFromMouse(); // Default: mouse sim for demos
+    // Register nav buttons and any gaze-targets visible on load
+    this._registerGazeTargets();
   }
 
   /* ── NAVIGATION ─────────────────────────────────────────── */
@@ -1937,6 +1939,8 @@ class AccessEyeApp {
     $$('.page').forEach(p => p.classList.toggle('active', p.id === `page-${page}`));
     if (page === 'demo') this._onEnterDemo();
     if (page === 'architecture') this._animateGauges();
+    // Re-register gaze targets after page switch (new page may have .gaze-target elements)
+    setTimeout(() => this._registerGazeTargets(), 100);
   }
 
   _setupHeroButtons() {
@@ -1998,8 +2002,14 @@ class AccessEyeApp {
       this.sim.stop();
       if (this.cameraOn) {
         this._showCalibrationFlow();
+        // Auto-start calibration after overlay renders
+        setTimeout(() => {
+          if (this._calibUI) this._calibUI.start();
+        }, 300);
       } else {
-        this.toast.show('Camera Required', 'Start the camera to run calibration.', 'warn');
+        this.toast.show('Camera Required', 'Start the camera first, then select Calibrate.', 'warn');
+        // Still show the overlay so user can see Cancel button and instructions
+        this._showCalibrationFlow();
       }
     }
   }
@@ -2017,26 +2027,34 @@ class AccessEyeApp {
 
     this.log.add('Requesting camera access...', 'info');
 
-    // FIX CAM-1: Fully tear down previous session before restarting.
-    // Restarting without cleanup left the old MediaPipe controller running,
-    // Phase 2 patched to the old controller, and duplicate event listeners.
+    // Fully tear down previous session before restarting.
     if (this.mpController) {
       this.mpController.stop();
       this.mpController = null;
     }
-    // Deactivate Phase 2 so it re-activates cleanly on the new camera stream.
+    // Release HighFPS controller stream held by Phase 2 (prevents "camera in use" on restart)
+    try {
+      const hfps = this.phase2?._highFPSController;
+      if (hfps?.stream) {
+        hfps.stream.getTracks().forEach(t => t.stop());
+        hfps.stream = null;
+      }
+    } catch(_) {}
+    // Release any held camera tracks so browser frees the hardware.
+    try {
+      const v = $('#demo-video');
+      if (v?.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
+    } catch(_) {}
+    // Deactivate Phase 2 and reset its activation guard so it re-activates cleanly.
     if (this.phase2?.active) {
       this.phase2.deactivate();
     }
-    // FIX CAM-RESTART: Always reset the _activated guard so phase2-init
-    // will re-patch the brand-new MediaPipeController on every restart.
+    // FIX CAM-RESTART: reset _activated so phase2-init re-patches correctly on restart
     if (window._p2InitController) {
       window._p2InitController._activated = false;
     }
-    // FIX CAM-RESTART: Clear all gaze-engine callbacks so _wireMediaPipeEvents
-    // doesn't accumulate duplicate 'gaze' listeners on each restart.
+    // Clear gaze-engine callbacks so _wireMediaPipeEvents doesn't accumulate duplicates.
     this.gazeEngine._callbacks = {};
-
     // Reset Phase 1 gaze engine state
     this.gazeEngine.reset();
     this.cameraOn = false;
@@ -2089,6 +2107,16 @@ class AccessEyeApp {
       this.mpController.stop();
       this.mpController = null;
     }
+    // Ensure video element is fully released (belt-and-suspenders)
+    try {
+      const v = $('#demo-video');
+      if (v?.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
+    } catch(_) {}
+    // Stop HighFPS stream held by Phase 2
+    try {
+      const hfps = this.phase2?._highFPSController;
+      if (hfps) { hfps.stop(); }
+    } catch(_) {}
     this.cameraOn = false;
 
     // Deactivate Phase 2 if running
@@ -2289,16 +2317,28 @@ class AccessEyeApp {
   }
 
   _registerGazeTargets() {
-    // Unregister old ones
     const targets = $$('.gaze-target');
     targets.forEach(el => {
       const id = el.dataset.id;
-      if (id) {
-        this.uiRegistry.unregister(id);
-        this.uiRegistry.register(id, el, el.dataset.label || id, (gesture) => {
+      if (!id) return;
+      this.uiRegistry.unregister(id);
+
+      // Nav buttons, mode tabs, and camera controls trigger native click
+      // (they already have click listeners from _setupNavigation / _setupDemoControls).
+      // Interactive demo elements go through the activation/toast flow.
+      const isSystem = el.classList.contains('nav-btn') ||
+                       el.classList.contains('mode-tab') ||
+                       id === 'start-camera-btn' ||
+                       id === 'stop-camera-btn';
+
+      this.uiRegistry.register(id, el, el.dataset.label || id, (gesture) => {
+        if (isSystem) {
+          // Just click the element — let its own handler fire
+          el.click();
+        } else {
           this._onElementActivated(id, el.dataset.label || id, gesture);
-        });
-      }
+        }
+      });
     });
   }
 
@@ -2363,6 +2403,16 @@ class AccessEyeApp {
     if (id === 'btn-back') {
       this.toast.show('Going Back', 'Navigation: Back', 'info', 'fas fa-arrow-left', 2000);
     }
+
+    // Navigation buttons (nav-home, nav-demo, nav-architecture, nav-docs, nav-studio)
+    if (id.startsWith('nav-')) {
+      const page = id.replace('nav-', '');
+      this._navigateTo(page);
+    }
+
+    // Camera / demo control buttons
+    if (id === 'cam-start')  this._startCamera();
+    if (id === 'cam-stop')   this._stopCamera();
   }
 
   /* ── GESTURE SYSTEM ─────────────────────────────────────── */
@@ -2429,7 +2479,7 @@ class AccessEyeApp {
     if (!overlay) return;
     const calibUI = new CalibrationUI(this.calibration, this.gazeEngine, this.log, this.toast);
 
-    // Helper: wire a start-calib button by ID — guards camera, shows overlay, auto-starts
+    // Helper: wire a start-calib button by ID
     const wireCalibBtn = (btnId) => {
       const btn = $(`#${btnId}`);
       if (!btn) return;
@@ -2438,10 +2488,11 @@ class AccessEyeApp {
           this.toast.show('Camera Required', 'Start the camera first, then click Start Calibration.', 'warn');
           return;
         }
+        // Show overlay if hidden, then start
         const ov = $('#calibration-overlay');
         if (ov && ov.style.display === 'none') {
           this._showCalibrationFlow();
-          setTimeout(() => calibUI.start(), 50);
+          setTimeout(() => calibUI.start(), 80);
         } else {
           calibUI.start();
         }
@@ -2453,6 +2504,14 @@ class AccessEyeApp {
     $('#cancel-calib-btn')?.addEventListener('click', () => {
       calibUI.hide();
       this.log.add('Calibration cancelled', 'warn');
+      // Return to gaze mode if camera is on, otherwise mouse mode
+      if (this.cameraOn) {
+        this._setMode('gaze');
+        $$('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === 'gaze'));
+      } else {
+        this._setMode('mouse');
+        $$('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === 'mouse'));
+      }
     });
 
     this._calibUI = calibUI;
