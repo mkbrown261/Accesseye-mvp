@@ -510,7 +510,7 @@ class CalibrationEngine {
       localStorage.setItem('accesseye_calib', JSON.stringify({
         model:     this.model,
         calibData: this.calibData.map(d => ({ sx: d.sx, sy: d.sy, gx: d.gx, gy: d.gy, label: d.label })),
-        version:   9,  // v15: asymmetric bottom padding, easier calibration thresholds
+        version:   10,  // v15-clean: bump to discard any broken models from v16-v18
         timestamp: Date.now()
       }));
     } catch(_) {}
@@ -521,9 +521,22 @@ class CalibrationEngine {
       const raw = localStorage.getItem('accesseye_calib');
       if (!raw) return false;
       const data = JSON.parse(raw);
-      // Accept v3-v9 models. v9 = asymmetric bottom padding + easier calibration thresholds.
-      if (![3, 4, 5, 6, 7, 8, 9].includes(data.version)) {
-        localStorage.removeItem('accesseye_calib'); return false;
+      // Only accept v10+ models. Versions 3-9 may be broken from v16-v18 pipeline changes.
+      if (![10].includes(data.version)) {
+        localStorage.removeItem('accesseye_calib');
+        console.info('[CalibEngine] Discarded old calibration model (version', data.version, '— must re-calibrate)');
+        return false;
+      }
+      // Sanity-check: map center gaze (0,0) — result must be near screen center
+      // A broken polynomial returns extreme values (< 0.1 or > 0.9) for center input
+      if (data.model) {
+        const testX = this._applyModel(data.model.x, 0, 0);
+        const testY = this._applyModel(data.model.y, 0, 0);
+        if (testX < 0.1 || testX > 0.9 || testY < 0.1 || testY > 0.9) {
+          localStorage.removeItem('accesseye_calib');
+          console.warn('[CalibEngine] Discarded corrupt calibration model (center maps to', testX.toFixed(2), testY.toFixed(2), ')');
+          return false;
+        }
       }
       this.model      = data.model;
       this.calibData  = data.calibData || [];
