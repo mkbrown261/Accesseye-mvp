@@ -2032,26 +2032,14 @@ class AccessEyeApp {
       this.mpController.stop();
       this.mpController = null;
     }
-    // Release HighFPS controller stream held by Phase 2 (prevents "camera in use" on restart)
-    try {
-      const hfps = this.phase2?._highFPSController;
-      if (hfps?.stream) {
-        hfps.stream.getTracks().forEach(t => t.stop());
-        hfps.stream = null;
-      }
-    } catch(_) {}
     // Release any held camera tracks so browser frees the hardware.
     try {
       const v = $('#demo-video');
       if (v?.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
     } catch(_) {}
-    // Deactivate Phase 2 and reset its activation guard so it re-activates cleanly.
+    // Deactivate Phase 2 so it re-activates cleanly on the new stream.
     if (this.phase2?.active) {
       this.phase2.deactivate();
-    }
-    // FIX CAM-RESTART: reset _activated so phase2-init re-patches correctly on restart
-    if (window._p2InitController) {
-      window._p2InitController._activated = false;
     }
     // Clear gaze-engine callbacks so _wireMediaPipeEvents doesn't accumulate duplicates.
     this.gazeEngine._callbacks = {};
@@ -2112,20 +2100,11 @@ class AccessEyeApp {
       const v = $('#demo-video');
       if (v?.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
     } catch(_) {}
-    // Stop HighFPS stream held by Phase 2
-    try {
-      const hfps = this.phase2?._highFPSController;
-      if (hfps) { hfps.stop(); }
-    } catch(_) {}
     this.cameraOn = false;
 
     // Deactivate Phase 2 if running
     if (this.phase2?.active) {
       this.phase2.deactivate();
-    }
-    // FIX CAM-RESTART: Always reset Phase 2 activation state so restart works cleanly.
-    if (window._p2InitController) {
-      window._p2InitController._activated = false;
     }
     // FIX CAM-RESTART: Clear accumulated gaze-engine event listeners so the
     // next _wireMediaPipeEvents() call starts fresh (no duplicate handlers).
