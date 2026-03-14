@@ -2283,14 +2283,15 @@ class AccessEyeApp {
 
   /* ── GAZE TARGETS ───────────────────────────────────────── */
   _setupGazeTargets() {
-    // Button click handlers (for direct mouse clicks in sim mode)
+    // Log gaze-target clicks for feedback — do NOT preventDefault so
+    // buttons with their own listeners (camera, mode tabs, nav) still fire.
     document.addEventListener('click', (e) => {
       const target = e.target.closest('.gaze-target');
       if (target && this.mode === 'mouse') {
         const id = target.dataset.id;
         const label = target.dataset.label;
-        this._onElementActivated(id, label, 'click');
-        e.preventDefault();
+        if (id) this._onElementActivated(id, label, 'click');
+        // No e.preventDefault() — let the button's own listener fire too
       }
     });
   }
@@ -2390,8 +2391,11 @@ class AccessEyeApp {
     }
 
     // Camera / demo control buttons
-    if (id === 'cam-start')  this._startCamera();
-    if (id === 'cam-stop')   this._stopCamera();
+    if (id === 'start-camera-btn') this._startCamera();
+    if (id === 'stop-camera-btn')  this._stopCamera();
+    if (id === 'mode-mouse')       this._setMode('mouse');
+    if (id === 'mode-gaze')        this._setMode('gaze');
+    if (id === 'mode-calibrate')   this._setMode('calibrate');
   }
 
   /* ── GESTURE SYSTEM ─────────────────────────────────────── */
