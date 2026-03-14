@@ -1865,6 +1865,10 @@ class AccessEyeApp {
     // Initialise lazily after DOM is ready (SnapToEngine reads DOM)
     this.snapEngine = null;
 
+    // ── Gesture Studio (lip-tap, blow, custom gestures) ──────────────
+    this.gestureStudio    = null;  // GestureStudio instance
+    this.gestureStudioUI  = null;  // GestureStudioUI instance
+
     // Mode
     this.mode     = 'mouse';  // 'mouse' | 'gaze' | 'calibrate'
     this.cameraOn = false;
@@ -1896,6 +1900,7 @@ class AccessEyeApp {
     this._setupHeroButtons();
     this._setupDebugPanel();
     this._setupSnapEngine();        // Snap-To + Adaptive Learning
+    this._setupGestureStudio();     // Facial gestures + Gesture Studio
     this._startCursorFromMouse(); // Default: mouse sim for demos
   }
 
@@ -1956,6 +1961,18 @@ class AccessEyeApp {
   _setMode(mode) {
     this.mode = mode;
     this.log.add(`Mode: ${mode}`, 'info');
+
+    // SECTION 1: When leaving Lock-On (snap) mode, fully terminate all
+    // snap-to processes — highlights, observers, dwell timers, interpolation.
+    if (this.snapEngine?.enabled) {
+      this.snapEngine.fullCleanup();
+      // Sync toggle buttons to OFF state
+      document.querySelectorAll('#snap-toggle-btn').forEach(b => {
+        b.classList.remove('active');
+        const lbl = b.querySelector('.snap-toggle-label');
+        if (lbl) lbl.textContent = 'OFF';
+      });
+    }
 
     if (mode === 'mouse') {
       this._startSimulation();
@@ -2026,6 +2043,7 @@ class AccessEyeApp {
 
     if (camOk) {
       this.cameraOn = true;
+      this._updateGsCameraNotice();  // hide "start camera" notice in studio
       // Update UI
       $('#camera-placeholder').style.display = 'none';
       btn.disabled = false;
@@ -2077,6 +2095,10 @@ class AccessEyeApp {
     // Reset gaze engine state
     this.gazeEngine.reset();
 
+    // Reset Gesture Studio state (clears lip-tap/blow baseline so it re-calibrates on restart)
+    if (this.gestureStudio) this.gestureStudio.reset();
+    this._updateGsCameraNotice();  // show "start camera" notice in studio
+
     // Reset mode back to mouse simulation
     this.mode = 'mouse';
     const modeTabs = document.querySelectorAll('.mode-tab');
@@ -2117,9 +2139,13 @@ class AccessEyeApp {
       }
     });
 
-    this.mpController.on('face', ({ detected }) => {
+    this.mpController.on('face', ({ detected, results }) => {
       this._updateStatusItem('status-face', detected, detected ? 'Detected' : 'Not found', detected ? 'active' : '');
       this._updateStatusItem('status-gaze', detected, detected ? 'Tracking' : 'Inactive', detected ? 'tracking' : '');
+      // Feed landmarks to Gesture Studio (lip-tap, blow, custom gestures)
+      if (detected && results?.multiFaceLandmarks?.[0] && this.gestureStudio) {
+        this.gestureStudio.processFaceLandmarks(results.multiFaceLandmarks[0]);
+      }
     });
 
     this.mpController.on('hand', ({ detected }) => {
@@ -2613,6 +2639,51 @@ class AccessEyeApp {
     if (actEl && this.snapEngine.learner) {
       actEl.textContent = this.snapEngine.learner.profile.totalActivations;
     }
+  }
+
+  /* ── GESTURE STUDIO ─────────────────────────────────────── */
+  _setupGestureStudio() {
+    // Guard: gesture-studio.js must be loaded
+    if (typeof GestureStudio === 'undefined') {
+      console.warn('[AccessEye] gesture-studio.js not loaded — Gesture Studio disabled');
+      return;
+    }
+
+    // ── Create engine ────────────────────────────────────────────────
+    this.gestureStudio = new GestureStudio();
+
+    // ── Wire action feedback ─────────────────────────────────────────
+    this.gestureStudio.onAction(({ actionId, gestureName, label, confidence }) => {
+      const conf = confidence !== undefined ? ` (${Math.round(confidence * 100)}%)` : '';
+      this.toast.show(gestureName, `${label}${conf}`, 'success', 'fas fa-hand-paper', 2000);
+      this.log.add(`Gesture: <strong>${gestureName}</strong> → ${label}${conf}`, 'success');
+      if (this.audio.enabled) this.audio.speak(`${gestureName}: ${label}`);
+    });
+
+    // ── Create UI controller ─────────────────────────────────────────
+    this.gestureStudioUI = new GestureStudioUI(this.gestureStudio, 'gesture-studio-panel');
+    this.gestureStudioUI.init();
+
+    // ── Camera-notice visibility ─────────────────────────────────────
+    this._updateGsCameraNotice();
+
+    // ── Calibration button in studio page ───────────────────────────
+    document.getElementById('gs-start-calib-btn')?.addEventListener('click', () => {
+      if (!this.cameraOn) {
+        this.toast.show('Camera Required', 'Start the camera on the Live Demo page first.', 'warn');
+        this._navigateTo('demo');
+        return;
+      }
+      this._showCalibrationFlow();
+    });
+
+    console.log('[AccessEye] Gesture Studio initialised');
+  }
+
+  /** Show/hide the "start camera" notice on the Gesture Studio page */
+  _updateGsCameraNotice() {
+    const notice = document.getElementById('gs-camera-notice');
+    if (notice) notice.style.display = this.cameraOn ? 'none' : 'flex';
   }
 
   _setupDebugPanel() {

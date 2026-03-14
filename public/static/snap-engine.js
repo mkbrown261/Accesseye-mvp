@@ -422,6 +422,45 @@ class SnapToEngine {
   disable() { this.enabled = false; this._clearHighlight(); }
   toggle()  { this.enabled ? this.disable() : this.enable(); return this.enabled; }
 
+  /**
+   * SECTION 1 — Full cleanup when exiting Lock-On mode.
+   * Stops ALL snap-related processes deterministically:
+   *  • clears highlight overlays on every tracked element
+   *  • cancels dwell timer
+   *  • resets interpolated cursor state
+   *  • marks disabled so update() is a no-op
+   * Does NOT disconnect observers (they're cheap and needed on re-enable).
+   */
+  fullCleanup() {
+    // Clear any active snap highlight on the DOM element
+    this._clearHighlight();
+
+    // Force-remove snap classes from ALL elements that may have been touched
+    document.querySelectorAll('.snap-highlight, .snap-dwell-active, .snap-activated').forEach(el => {
+      el.classList.remove('snap-highlight', 'snap-dwell-active', 'snap-activated');
+      const bar = el.querySelector('.dwell-progress');
+      if (bar) bar.style.width = '0%';
+    });
+
+    // Reset internal state
+    this._snapTarget    = null;
+    this._dwelling      = false;
+    this._dwellStart    = 0;
+    this._dwellProgress = 0;
+
+    // Reset smooth-cursor state so next enable() starts from current raw position
+    this._curX  = 0;
+    this._curY  = 0;
+    this._prevX = 0;
+    this._prevY = 0;
+
+    // Disable so update() is skipped entirely in free-look
+    this.enabled = false;
+
+    // Mark predictor cache dirty so next enable() rescans DOM fresh
+    if (this.predictor) this.predictor._dirty = true;
+  }
+
   on(event, cb) {
     if (!this._callbacks[event]) this._callbacks[event] = [];
     this._callbacks[event].push(cb);
@@ -637,7 +676,7 @@ class SnapToEngine {
 
   /** Clean up DOM elements and observers */
   destroy() {
-    this._clearHighlight();
+    this.fullCleanup();
     this._highlightEl.remove();
     this.predictor.destroy();
   }

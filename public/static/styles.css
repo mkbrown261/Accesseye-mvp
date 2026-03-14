@@ -2119,3 +2119,162 @@ body {
 .snap-dwell-active .dwell-progress {
   background: #7c4dff;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   GESTURE STUDIO UI
+══════════════════════════════════════════════════════════════════ */
+
+/* Page tab */
+.gs-page { padding: 24px; max-width: 860px; margin: 0 auto; }
+
+.gs-panel { display: flex; flex-direction: column; gap: 20px; }
+
+/* Section */
+.gs-section {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.gs-section-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.gs-section-title {
+  font-size: 13px; font-weight: 600; color: #b0bec5;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 12px;
+}
+.gs-section-title i { color: #7c4dff; }
+.gs-count {
+  background: #7c4dff; color: #fff;
+  border-radius: 10px; padding: 1px 7px; font-size: 11px;
+}
+
+/* Built-in gesture cards */
+.gs-builtin-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+@media (max-width: 520px) { .gs-builtin-row { grid-template-columns: 1fr; } }
+
+.gs-builtin-card {
+  display: flex; align-items: flex-start; gap: 12px;
+  background: rgba(124,77,255,0.07);
+  border: 1px solid rgba(124,77,255,0.20);
+  border-radius: 10px; padding: 12px 14px;
+}
+.gs-builtin-icon { font-size: 24px; line-height: 1; }
+.gs-builtin-info { display: flex; flex-direction: column; gap: 2px; }
+.gs-builtin-name { font-size: 13px; font-weight: 600; color: #e0e0e0; }
+.gs-builtin-desc { font-size: 11px; color: #78909c; }
+.gs-builtin-action { font-size: 11px; color: #7c4dff; margin-top: 3px; font-weight: 600; }
+
+/* Custom gesture list */
+.gs-list { display: flex; flex-direction: column; gap: 10px; }
+.gs-empty {
+  text-align: center; padding: 32px 16px;
+  color: #546e7a; display: flex; flex-direction: column;
+  align-items: center; gap: 10px;
+}
+.gs-empty i { font-size: 32px; opacity: 0.4; }
+.gs-empty p { font-size: 13px; line-height: 1.6; margin: 0; }
+
+/* Individual gesture card */
+.gs-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px; overflow: hidden;
+  transition: border-color 0.2s;
+}
+.gs-card:hover { border-color: rgba(124,77,255,0.35); }
+
+.gs-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; gap: 10px;
+}
+.gs-card-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.gs-card-name { font-size: 14px; font-weight: 600; color: #cfd8dc; truncate: ellipsis; }
+.gs-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.gs-card-body {
+  padding: 0 14px 12px;
+  display: grid; grid-template-columns: auto 1fr; gap: 6px 10px;
+  align-items: center;
+}
+
+.gs-card-meta {
+  padding: 6px 14px 10px;
+  font-size: 11px; color: #546e7a;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+
+/* Status badges */
+.gs-status {
+  font-size: 10px; padding: 2px 7px; border-radius: 8px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.gs-status-ready     { background: rgba(0,200,83,0.15); color: #00c853; border: 1px solid rgba(0,200,83,0.3); }
+.gs-status-unrecorded{ background: rgba(255,165,0,0.15); color: #ffa726; border: 1px solid rgba(255,165,0,0.3); }
+
+/* Buttons */
+.gs-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px; border-radius: 7px;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.05);
+  color: #b0bec5;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.gs-btn:hover { background: rgba(255,255,255,0.10); color: #e0e0e0; }
+.gs-btn-primary {
+  background: rgba(124,77,255,0.18); color: #b388ff;
+  border-color: rgba(124,77,255,0.35);
+}
+.gs-btn-primary:hover { background: rgba(124,77,255,0.30); color: #d0aaff; }
+.gs-btn-danger { color: #ef9a9a; }
+.gs-btn-danger:hover { background: rgba(229,57,53,0.15); border-color: rgba(229,57,53,0.35); color: #ff8a80; }
+.gs-btn-sm { padding: 4px 9px; font-size: 11px; }
+.gs-btn-record { color: #ef9a9a; border-color: rgba(229,57,53,0.3); }
+.gs-btn-record.active { background: rgba(229,57,53,0.25); color: #ff5252; border-color: #ff5252; animation: gs-rec-pulse 1s infinite; }
+@keyframes gs-rec-pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+
+/* Labels, selects, sliders */
+.gs-label { font-size: 11px; color: #78909c; white-space: nowrap; }
+.gs-select {
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+  color: #cfd8dc; border-radius: 6px; padding: 4px 8px;
+  font-size: 12px; cursor: pointer;
+}
+.gs-slider {
+  width: 100%; accent-color: #7c4dff;
+  cursor: pointer; height: 4px;
+}
+.gs-thresh-val { color: #7c4dff; font-weight: 700; }
+
+/* Recording progress */
+.gs-rec-progress { padding: 8px 14px 10px; border-top: 1px solid rgba(255,255,255,0.05); }
+.gs-rec-bar {
+  height: 4px; background: rgba(255,255,255,0.08);
+  border-radius: 2px; overflow: hidden; margin-bottom: 5px;
+}
+.gs-rec-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg,#7c4dff,#ff4081);
+  transition: width 0.1s linear;
+  border-radius: 2px;
+}
+.gs-rec-label { font-size: 11px; color: #78909c; }
+
+/* Feedback */
+.gs-feedback {
+  padding: 10px 14px; border-radius: 8px;
+  font-size: 12px; font-weight: 500;
+}
+.gs-feedback-success { background: rgba(0,200,83,0.12); color: #69f0ae; border: 1px solid rgba(0,200,83,0.25); }
+.gs-feedback-error   { background: rgba(229,57,53,0.12); color: #ff8a80; border: 1px solid rgba(229,57,53,0.25); }
+.gs-feedback-info    { background: rgba(124,77,255,0.10); color: #b388ff; border: 1px solid rgba(124,77,255,0.25); }
+
+/* Nav tab for Gesture Studio */
+.nav-btn[data-page="studio"] i { color: #7c4dff; }
