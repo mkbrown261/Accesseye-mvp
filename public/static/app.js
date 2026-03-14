@@ -1861,6 +1861,10 @@ class AccessEyeApp {
     this.log          = new InteractionLog();
     this.sim          = new SimulationEngine();
 
+    // ── Snap-To / Intelligent Target Prediction / Adaptive Learning ──
+    // Initialise lazily after DOM is ready (SnapToEngine reads DOM)
+    this.snapEngine = null;
+
     // Mode
     this.mode     = 'mouse';  // 'mouse' | 'gaze' | 'calibrate'
     this.cameraOn = false;
@@ -1891,6 +1895,7 @@ class AccessEyeApp {
     this._setupSimulation();
     this._setupHeroButtons();
     this._setupDebugPanel();
+    this._setupSnapEngine();        // Snap-To + Adaptive Learning
     this._startCursorFromMouse(); // Default: mouse sim for demos
   }
 
@@ -2186,10 +2191,21 @@ class AccessEyeApp {
   /* ── GAZE CURSOR ────────────────────────────────────────── */
   _updateGazeCursor(px, py) {
     if (!this.gazeCursor) return;
+
+    // ── Snap-To processing ───────────────────────────────────────────
+    // When snapEngine is enabled it smooth-interpolates the cursor and
+    // optionally snaps it to the nearest high-score interactive element.
+    let cpx = px, cpy = py;
+    if (this.snapEngine) {
+      const result = this.snapEngine.update(px, py);
+      cpx = result.x;
+      cpy = result.y;
+    }
+
     // PRECISION-8: Clamp cursor pixels to screen bounds (even with relaxed mapGaze clamp)
     const W = window.innerWidth, H = window.innerHeight;
-    const cpx = clamp(px, 0, W);
-    const cpy = clamp(py, 0, H);
+    cpx = clamp(cpx, 0, W);
+    cpy = clamp(cpy, 0, H);
     this.gazeCursor.style.display = 'block';
     this.gazeCursor.style.left = `${cpx}px`;
     this.gazeCursor.style.top  = `${cpy}px`;
@@ -2460,6 +2476,144 @@ class AccessEyeApp {
    * Shortcut: Alt+D to toggle.
    * All values are live — update every gaze frame when camera is running.
    ─────────────────────────────────────────────────────────────────────── */
+  /* ── SNAP-TO ENGINE ─────────────────────────────────────── */
+  _setupSnapEngine() {
+    // Guard: SnapToEngine is loaded via snap-engine.js (separate file)
+    if (typeof SnapToEngine === 'undefined') {
+      console.warn('[AccessEye] snap-engine.js not loaded — Snap-To disabled');
+      return;
+    }
+
+    this.snapEngine = new SnapToEngine({
+      enabled         : false,   // off by default; toggled via UI
+      autoDwellClick  : false,   // dwell-to-click requires explicit opt-in
+    });
+
+    // ── Snap events ──────────────────────────────────────────────────
+    this.snapEngine.on('snap', ({ el, score, dist }) => {
+      const label = el.dataset?.label || el.textContent?.trim().slice(0, 30) || el.tagName;
+      this.log.add(`Snap-To: <strong>${label}</strong> (score ${score.toFixed(2)}, ${Math.round(dist)}px)`, 'focus');
+      this._updateCoordTarget(label);
+      if (this.audio.enabled) this.audio.speak(label);
+    });
+
+    this.snapEngine.on('release', () => {
+      // Nothing needed — highlight cleared automatically
+    });
+
+    this.snapEngine.on('activate', ({ el, method, duration }) => {
+      const label = el.dataset?.label || el.textContent?.trim().slice(0, 30) || el.tagName;
+      this.log.add(`Snap Activated: <strong>${label}</strong> via ${method} (${Math.round(duration)}ms dwell)`, 'success');
+      this.toast.show(label, `Activated via ${method}`, 'success', 'fas fa-check-circle', 2000);
+      this.audio.speak(`${label} activated`);
+      // Trigger native click for full interactivity
+      try { el.click(); } catch (_) {}
+      this._onElementActivated(el.dataset?.id || '', label, method);
+    });
+
+    this.snapEngine.on('profileReset', () => {
+      this.toast.show('Adaptive Profile', 'Gaze learning profile reset', 'info', 'fas fa-undo', 2500);
+    });
+
+    // ── Wire toggle button(s) — both compact bar and p2 panel ───────
+    const toggleBtns = document.querySelectorAll('#snap-toggle-btn');
+    toggleBtns.forEach(toggleBtn => {
+      toggleBtn.addEventListener('click', () => {
+        const enabled = this.snapEngine.toggle();
+        // Sync all toggle buttons
+        document.querySelectorAll('#snap-toggle-btn').forEach(b => {
+          b.classList.toggle('active', enabled);
+          const lbl = b.querySelector('.snap-toggle-label');
+          if (lbl) lbl.textContent = enabled ? 'ON' : 'OFF';
+        });
+        this.toast.show(
+          'Snap-To Mode',
+          enabled ? 'Cursor will snap to nearby interactive elements' : 'Free gaze mode restored',
+          enabled ? 'success' : 'info',
+          enabled ? 'fas fa-magnet' : 'fas fa-eye',
+          2000,
+        );
+        this.log.add(`Snap-To Mode: ${enabled ? 'enabled' : 'disabled'}`, 'info');
+        this._updateSnapSettingsPanel();
+      });
+    });
+
+    // ── Auto-dwell-click toggle ──────────────────────────────────────
+    const autoDwellBtn = $('#snap-autodwell-btn');
+    if (autoDwellBtn) {
+      autoDwellBtn.addEventListener('click', () => {
+        this.snapEngine.autoDwellClick = !this.snapEngine.autoDwellClick;
+        autoDwellBtn.classList.toggle('active', this.snapEngine.autoDwellClick);
+        autoDwellBtn.querySelector('.autodwell-label').textContent =
+          this.snapEngine.autoDwellClick ? 'ON' : 'OFF';
+        this.toast.show(
+          'Auto Dwell-Click',
+          this.snapEngine.autoDwellClick ? 'Will auto-click after dwell completes' : 'Dwell-click disabled',
+          'info', 'fas fa-clock', 2000,
+        );
+      });
+    }
+
+    // ── Settings sliders ─────────────────────────────────────────────
+    this._bindSnapSlider('snap-threshold-slider', 'snap-threshold-val',
+      v => { this.snapEngine.setConfig({ snapThresholdDistance: v }); return `${v}px`; });
+    this._bindSnapSlider('snap-dwell-slider', 'snap-dwell-val',
+      v => { this.snapEngine.setConfig({ dwellClickTime: v }); return `${v}ms`; });
+    this._bindSnapSlider('snap-smooth-slider', 'snap-smooth-val',
+      v => { const alpha = v / 100; this.snapEngine.setConfig({ cursorSmoothing: alpha }); return `${v}%`; });
+    this._bindSnapSlider('snap-predict-slider', 'snap-predict-val',
+      v => { const w = v / 100; this.snapEngine.setConfig({ predictionWeight: w }); return `${v}%`; });
+
+    // ── Reset profile button ─────────────────────────────────────────
+    const resetBtn = $('#snap-profile-reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => this.snapEngine.resetProfile());
+    }
+
+    // Wire gesture system: pinch/airTap on snap target triggers activation
+    const origHandleGesture = this._handleGesture.bind(this);
+    this._handleGesture = (type) => {
+      // If Snap-To is enabled and a target is snapped, activate it
+      if (this.snapEngine?.enabled && type !== 'openPalm') {
+        if (this.snapEngine.activateSnapped(type)) return;
+      }
+      origHandleGesture(type);
+    };
+
+    this._updateSnapSettingsPanel();
+    console.log('[AccessEye] Snap-To Engine initialised');
+  }
+
+  _bindSnapSlider(sliderId, valId, onChange) {
+    const slider = $(`#${sliderId}`);
+    const valEl  = $(`#${valId}`);
+    if (!slider) return;
+    slider.addEventListener('input', () => {
+      const display = onChange(parseFloat(slider.value));
+      if (valEl) valEl.textContent = display;
+    });
+  }
+
+  _updateSnapSettingsPanel() {
+    if (!this.snapEngine) return;
+    const cfg = this.snapEngine.getConfig();
+    // Sync sliders to current (potentially adaptive) values
+    const setSlider = (id, valId, val, display) => {
+      const s = $(`#${id}`); const v = $(`#${valId}`);
+      if (s) s.value = val;
+      if (v) v.textContent = display;
+    };
+    setSlider('snap-threshold-slider', 'snap-threshold-val', cfg.snapThresholdDistance, `${cfg.snapThresholdDistance}px`);
+    setSlider('snap-dwell-slider',     'snap-dwell-val',     cfg.dwellClickTime,         `${cfg.dwellClickTime}ms`);
+    setSlider('snap-smooth-slider',    'snap-smooth-val',    Math.round(cfg.cursorSmoothing * 100), `${Math.round(cfg.cursorSmoothing * 100)}%`);
+    setSlider('snap-predict-slider',   'snap-predict-val',   Math.round(cfg.predictionWeight * 100), `${Math.round(cfg.predictionWeight * 100)}%`);
+    // Update activation count display
+    const actEl = $('#snap-activations-val');
+    if (actEl && this.snapEngine.learner) {
+      actEl.textContent = this.snapEngine.learner.profile.totalActivations;
+    }
+  }
+
   _setupDebugPanel() {
     this._debugVisible = false;
     this._debugScopeX  = { min: 1, max: 0 };  // track observed raw X range

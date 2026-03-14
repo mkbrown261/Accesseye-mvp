@@ -705,6 +705,20 @@ app.get('/', (c) => {
                 <span class="coord-val" id="target-val">—</span>
               </div>
             </div>
+
+            <!-- Snap-To compact bar (always visible in sidebar) -->
+            <div class="snap-compact-bar" style="
+              display:flex; align-items:center; justify-content:space-between;
+              padding:8px 0 2px; border-top:1px solid var(--border-color); margin-top:10px;">
+              <span style="font-size:0.78rem;color:var(--text-secondary);">
+                <i class="fas fa-magnet" style="color:#7c4dff;margin-right:4px;"></i>Snap-To
+              </span>
+              <button class="p2-toggle-btn snap-master-toggle" id="snap-toggle-btn"
+                      title="Toggle Snap-To Mode (cursor auto-snaps to nearest interactive element)">
+                <i class="fas fa-power-off"></i>
+                <span class="snap-toggle-label">OFF</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1038,6 +1052,98 @@ app.get('/', (c) => {
               </div>
 
               <!-- ═══════════════════════════════════════════════ -->
+
+              <!-- ══════════════════════════════════════════
+                   SNAP-TO MODE + INTELLIGENT TARGETING
+              ══════════════════════════════════════════ -->
+              <div class="snap-panel" id="snap-panel">
+                <div class="snap-panel-header">
+                  <i class="fas fa-magnet"></i>
+                  <span>Snap-To &amp; Intelligent Targeting</span>
+                </div>
+
+                <!-- Master toggle -->
+                <div class="snap-section">
+                  <div class="snap-row">
+                    <span class="snap-lbl"><i class="fas fa-magnet"></i> Snap-To Mode</span>
+                    <button class="p2-toggle-btn snap-master-toggle" id="snap-toggle-btn">
+                      <i class="fas fa-power-off"></i>
+                      Enable &nbsp;<span class="snap-toggle-label">OFF</span>
+                    </button>
+                  </div>
+                  <div style="font-size:0.72rem;color:#888;margin-top:4px;line-height:1.4">
+                    Cursor auto-snaps to the nearest interactive element.
+                    Pinch / air-tap or dwell to activate.
+                  </div>
+                </div>
+
+                <!-- Auto dwell-click -->
+                <div class="snap-section">
+                  <div class="snap-row">
+                    <span class="snap-lbl"><i class="fas fa-clock"></i> Auto Dwell-Click</span>
+                    <button class="p2-toggle-btn" id="snap-autodwell-btn">
+                      <i class="fas fa-hand-pointer"></i>
+                      Auto-click &nbsp;<span class="autodwell-label">OFF</span>
+                    </button>
+                  </div>
+                  <div style="font-size:0.72rem;color:#888;margin-top:4px">
+                    Activates snapped element automatically after dwell time.
+                  </div>
+                </div>
+
+                <!-- Settings sliders -->
+                <div class="snap-section">
+                  <div class="p2-section-title" style="margin-bottom:10px">
+                    <i class="fas fa-sliders-h"></i> Settings
+                  </div>
+
+                  <div class="snap-slider-row">
+                    <label class="snap-slider-lbl">Snap radius</label>
+                    <input type="range" id="snap-threshold-slider" min="40" max="200" step="5" value="90"
+                           class="snap-slider">
+                    <span class="snap-slider-val" id="snap-threshold-val">90px</span>
+                  </div>
+
+                  <div class="snap-slider-row">
+                    <label class="snap-slider-lbl">Dwell time</label>
+                    <input type="range" id="snap-dwell-slider" min="300" max="2000" step="50" value="900"
+                           class="snap-slider">
+                    <span class="snap-slider-val" id="snap-dwell-val">900ms</span>
+                  </div>
+
+                  <div class="snap-slider-row">
+                    <label class="snap-slider-lbl">Cursor smoothing</label>
+                    <input type="range" id="snap-smooth-slider" min="5" max="60" step="1" value="22"
+                           class="snap-slider">
+                    <span class="snap-slider-val" id="snap-smooth-val">22%</span>
+                  </div>
+
+                  <div class="snap-slider-row">
+                    <label class="snap-slider-lbl">Prediction weight</label>
+                    <input type="range" id="snap-predict-slider" min="0" max="70" step="5" value="35"
+                           class="snap-slider">
+                    <span class="snap-slider-val" id="snap-predict-val">35%</span>
+                  </div>
+                </div>
+
+                <!-- Adaptive learning stats -->
+                <div class="snap-section">
+                  <div class="p2-section-title" style="margin-bottom:6px">
+                    <i class="fas fa-brain"></i> Adaptive Gaze Learning
+                  </div>
+                  <div class="snap-stat-row">
+                    <span class="snap-stat-lbl">Total activations</span>
+                    <span class="snap-stat-val" id="snap-activations-val">0</span>
+                  </div>
+                  <div style="font-size:0.72rem;color:#888;margin:4px 0 8px">
+                    Settings auto-tune as you use the system.
+                  </div>
+                  <button class="p2-toggle-btn" id="snap-profile-reset" style="width:100%">
+                    <i class="fas fa-undo"></i> Reset Adaptive Profile
+                  </button>
+                </div>
+              </div>
+              <!-- ═══════════════════════════════════════════════ -->
             </div>
           </div>
         </div>
@@ -1354,6 +1460,7 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/snap-engine.js"></script>
   <script src="/static/phase2-engine.js"></script>
   <script src="/static/phase2-init.js"></script>
   <script src="/static/phase3-engine.js"></script>
