@@ -28,11 +28,11 @@
  */
 
 /* ─── Configuration constants ─── */
-const SCROLL_AMOUNT               = 180;   // px per scroll event
-const SCROLL_INTERVAL_MS          = 80;    // ms between repeated scroll ticks (bite-lip hold)
+const SCROLL_AMOUNT               = 120;   // px per scroll event
+const SCROLL_INTERVAL_MS          = 200;   // ms between repeated scroll ticks (tongue-out hold)
 const LIP_TAP_TIME_WINDOW         = 750;   // ms between two closures
 const LIP_TAP_CONFIDENCE_THRESHOLD = 0.70; // 0-1
-const TONGUE_OUT_THRESHOLD = 0.30;  // lower-lip drop/mouth-width to detect tongue out
+const TONGUE_OUT_THRESHOLD = 0.55;  // lower-lip drop/mouth-width to detect tongue out (needs to be clearly deliberate)
 const GESTURE_COOLDOWN            = 1200;  // ms between any built-in fire
 const CUSTOM_GESTURE_CONFIDENCE   = 0.72;  // 0-1
 
@@ -206,7 +206,7 @@ class FacialGestureEngine {
     // ── Bite-lip state ────────────────────────────────────────────────
     this._tongueActive    = false;
     this._tongueFrames    = 0;
-    this._TONGUE_MIN_FRAMES = 3;
+    this._TONGUE_MIN_FRAMES = 8;  // ~0.25s at 30fps — prevents accidental triggers
     this._tongueInterval  = null;
     this._lastTongueConf  = 0;
 
@@ -343,7 +343,9 @@ class FacialGestureEngine {
     const openRatio = Math.abs(upperMid.y - lowerMid.y) / mW;
 
     const threshold   = this.config.tongueOutThreshold;
-    const isTongueOut = drop > threshold && openRatio > 0.08;
+    // Require both a large drop AND significant mouth opening AND a deliberate protrusion
+    // The drop must also exceed the openRatio (tongue pushes lower lip DOWN more than it opens)
+    const isTongueOut = drop > threshold && openRatio > 0.25 && drop > openRatio * 0.8;
     const confidence  = Math.min(1, Math.max(0, (drop - threshold) / threshold));
 
     if (isTongueOut) {

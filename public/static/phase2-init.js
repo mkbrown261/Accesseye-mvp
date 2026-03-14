@@ -83,25 +83,32 @@ class Phase2InitController {
     const origStart = app._startCamera.bind(app);
 
     app._startCamera = async function() {
-      // ── FIX H-1: Acquire the highest supported FPS BEFORE Phase 1 opens
-      //    the camera.  Phase 1 _startCamera() calls getUserMedia with a
-      //    hard-coded 640x480@30 constraint, overwriting any previous stream.
-      //    By acquiring the high-FPS stream first and injecting it into the
-      //    video element, Phase 1's getUserMedia call is replaced entirely.
-      //
-      //    Strategy:
-      //      1. Try HighFPSCameraController (120→90→60→30 FPS, 1280×720 ideal)
-      //      2. On success: inject stream into #demo-video so Phase 1's
-      //         MediaPipeController finds it already playing.
-      //      3. Monkey-patch navigator.mediaDevices.getUserMedia temporarily
-      //         so Phase 1's call returns the same stream (avoids double acquire).
-      //      4. On failure: fall through to Phase 1 original path.
-      const videoEl = document.querySelector('#demo-video');
-      let highFPSAcquired = false;
-      let _origGetUserMedia = null;
+      // ── FIX CAM-RESTART: Run Phase 1 camera start first so its teardown
+      //    (stop old tracks, null srcObject) completes BEFORE we acquire a
+      //    new HighFPS stream.  Acquiring first then calling origStart() was
+      //    causing origStart to stop the freshly acquired HighFPS tracks.
+      const videoEl  = document.querySelector('#demo-video');
+      const canvasEl = document.querySelector('#overlay-canvas');
 
-      if (videoEl && window.Phase2?.HighFPSCameraController) {
+      // Step 1: Run Phase 1 camera start (handles teardown + getUserMedia @30fps)
+      await origStart();
+
+      // Step 2: After Phase 1 has a live stream, upgrade to HighFPS if possible.
+      // We stop the 30fps stream and replace it with a higher-fps stream,
+      // then re-attach so MediaPipe keeps processing from the same video element.
+      if (videoEl && window.Phase2?.HighFPSCameraController && app.cameraOn) {
         try {
+          // Stop the 30fps stream Phase 1 just opened
+          if (videoEl.srcObject) {
+            videoEl.srcObject.getTracks().forEach(t => t.stop());
+            videoEl.srcObject = null;
+          }
+          // Stop old HighFPS controller if it exists
+          if (orch._highFPSController) {
+            try { orch._highFPSController.stop(); } catch(_) {}
+            orch._highFPSController = null;
+          }
+
           const hfps = new window.Phase2.HighFPSCameraController();
           const caps = await hfps.acquire(videoEl);
 
@@ -109,34 +116,15 @@ class Phase2InitController {
           orch._highFPSController = hfps;
           orch.cameraFPS = caps.fps || caps.requested || 30;
 
-          // Temporarily stub getUserMedia so Phase 1 reuses our stream
-          const existingStream = hfps.stream;
-          _origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-          navigator.mediaDevices.getUserMedia = async () => existingStream;
-
-          highFPSAcquired = true;
           console.log(`[Phase2Init] HighFPS camera: ${caps.fps || caps.requested} FPS @ ${caps.width}×${caps.height}`);
           app.log?.add(`Camera: ${caps.fps || caps.requested} FPS @ ${caps.width}×${caps.height} (HighFPS)`, 'success');
         } catch (err) {
-          console.warn('[Phase2Init] HighFPS acquire failed, falling back:', err.message);
+          console.warn('[Phase2Init] HighFPS upgrade failed, keeping 30fps stream:', err.message);
         }
       }
 
-      // ── Run Phase 1 camera start (will reuse our stream if stub is active) ──
-      await origStart();
-
-      // Restore getUserMedia if we stubbed it
-      if (_origGetUserMedia) {
-        navigator.mediaDevices.getUserMedia = _origGetUserMedia;
-      }
-
-      // Auto-activate Phase 2 after camera + MediaPipe are ready
-      const canvasEl = document.querySelector('#overlay-canvas');
-
-      // FIX CAM-3: Always activate Phase 2 on camera start (not just first time).
-      // The old `!orch.active` guard prevented re-activation after camera restart.
-      // deactivate() now resets all state so re-activation is always safe.
-      if (videoEl) {
+      // Step 3: Auto-activate Phase 2 after camera + MediaPipe are ready
+      if (videoEl && app.cameraOn) {
         // Small delay to ensure MediaPipe controller is wired
         setTimeout(async () => {
           try {

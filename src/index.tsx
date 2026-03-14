@@ -854,7 +854,7 @@ app.get('/', (c) => {
             <!-- ═══════════════════════════════════════════
                  PHASE 2 STATUS PANEL (hidden until active)
             ═══════════════════════════════════════════ -->
-            <div class="p2-panel" id="p2-status-panel" style="display:none">
+            <div class="p2-panel" id="p2-status-panel" style="display:block">
               <div class="p2-panel-header">
                 <i class="fas fa-brain"></i>
                 <span>Phase 2 — Hybrid Engine</span>

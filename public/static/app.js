@@ -2002,10 +2002,7 @@ class AccessEyeApp {
       this.sim.stop();
       if (this.cameraOn) {
         this._showCalibrationFlow();
-        // Auto-start calibration after overlay renders
-        setTimeout(() => {
-          if (this._calibUI) this._calibUI.start();
-        }, 300);
+        // Show overlay — user presses Start Calibration manually
       } else {
         this.toast.show('Camera Required', 'Start the camera first, then select Calibrate.', 'warn');
         // Still show the overlay so user can see Cancel button and instructions
@@ -2471,14 +2468,15 @@ class AccessEyeApp {
           this.toast.show('Camera Required', 'Start the camera first, then click Start Calibration.', 'warn');
           return;
         }
-        // Show overlay if hidden, then start
-        const ov = $('#calibration-overlay');
-        if (ov && ov.style.display === 'none') {
-          this._showCalibrationFlow();
-          setTimeout(() => calibUI.start(), 80);
-        } else {
-          calibUI.start();
+        // Navigate to demo page if needed (calibration overlay lives there)
+        const demoPage = $('#page-demo');
+        if (demoPage && !demoPage.classList.contains('active')) {
+          this._navigateTo('demo');
         }
+        // Show overlay, let user press Start Calibration manually
+        this._showCalibrationFlow();
+        // Switch mode tab to calibrate
+        $$('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === 'calibrate'));
       });
     };
     wireCalibBtn('start-calib-btn');

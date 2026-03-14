@@ -876,15 +876,18 @@ body {
   background: var(--bg-primary);
 }
 
-/* Calibration overlay — FIX CAL-3: full-viewport fixed overlay so calibration
-   points span the entire screen the user will actually gaze at.            */
-/* ── Layer 1: Dark background only — no content, no flex children ── */
+/* Calibration overlay — full-viewport overlay for calibration.
+   Header is at top, footer at bottom, dots are positioned absolutely. */
 .calibration-overlay {
   position: fixed;
   inset: 0;
   background: rgba(10, 14, 26, 0.97);
   z-index: 9000;
-  pointer-events: none;   /* let HUD and dots receive events */
+  pointer-events: none;   /* pass-through by default; children opt in */
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: stretch;
 }
 
 /* ── Layer 2: Dots — full viewport, dots positioned by JS ── */
