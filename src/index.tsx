@@ -1043,6 +1043,74 @@ app.get('/', (c) => {
                     font-style:italic;">
                     Say a button name or “click”…
                   </div>
+
+                  <!-- Voice Command Reference — collapsed by default -->
+                  <div class="vcr-panel" style="margin-top:6px;">
+                    <button class="vcr-header" id="vcr-toggle-btn" aria-expanded="false" aria-controls="vcr-body">
+                      <i class="fas fa-book-open" style="font-size:0.7rem;color:var(--accent-cyan);"></i>
+                      <span style="flex:1;font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--accent-cyan);">Command Reference</span>
+                      <i class="fas fa-chevron-down vcr-arrow" id="vcr-arrow"></i>
+                    </button>
+                    <div class="vcr-body" id="vcr-body">
+
+                      <div class="vcr-category">
+                        <div class="vcr-cat-title"><i class="fas fa-compass"></i> Navigation</div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Scroll Down / Up</span><span class="vcr-desc">Scroll page</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Stop Scrolling</span><span class="vcr-desc">Stop scroll</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Scroll To Top / Bottom</span><span class="vcr-desc">Jump to edge</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Go Back / Forward</span><span class="vcr-desc">Browser history</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Reload Page</span><span class="vcr-desc">Refresh</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Open New Tab</span><span class="vcr-desc">New tab</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Close Tab</span><span class="vcr-desc">Close tab</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Home / Demo / Docs</span><span class="vcr-desc">Go to page</span></div>
+                      </div>
+
+                      <div class="vcr-category">
+                        <div class="vcr-cat-title"><i class="fas fa-mouse-pointer"></i> Click &amp; Select</div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Click</span><span class="vcr-desc">Click gaze target</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Double Click</span><span class="vcr-desc">Double-click</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Right Click</span><span class="vcr-desc">Context menu</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Next / Previous Item</span><span class="vcr-desc">Tab focus</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Select All</span><span class="vcr-desc">Select all</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Copy / Paste / Cut</span><span class="vcr-desc">Clipboard</span></div>
+                      </div>
+
+                      <div class="vcr-category">
+                        <div class="vcr-cat-title"><i class="fas fa-search-plus"></i> Zoom &amp; View</div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Zoom In / Out</span><span class="vcr-desc">Adjust zoom</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Reset Zoom</span><span class="vcr-desc">Default zoom</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Open Settings</span><span class="vcr-desc">Settings panel</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Search</span><span class="vcr-desc">Focus search</span></div>
+                      </div>
+
+                      <div class="vcr-category">
+                        <div class="vcr-cat-title"><i class="fas fa-eye"></i> Discovery</div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Show Clickable Items</span><span class="vcr-desc">Highlight all</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Hide Clickable Items</span><span class="vcr-desc">Remove overlays</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">What Can I Click</span><span class="vcr-desc">Show interactive</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Focus On [name]</span><span class="vcr-desc">Focus element</span></div>
+                      </div>
+
+                      <div class="vcr-category">
+                        <div class="vcr-cat-title"><i class="fas fa-shield-alt"></i> Control Recovery</div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Stop</span><span class="vcr-desc">Cancel action</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Pause Control</span><span class="vcr-desc">Suspend voice</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Resume Control</span><span class="vcr-desc">Re-enable voice</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Reset Cursor</span><span class="vcr-desc">Center cursor</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Clear Selection</span><span class="vcr-desc">Remove highlights</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Exit Mode</span><span class="vcr-desc">Close overlays</span></div>
+                      </div>
+
+                      <div class="vcr-category">
+                        <div class="vcr-cat-title"><i class="fas fa-crosshairs"></i> Intent Fusion</div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Open / Select</span><span class="vcr-desc">Act on gaze target</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Zoom</span><span class="vcr-desc">Zoom gaze area</span></div>
+                        <div class="vcr-cmd"><span class="vcr-phrase">Focus On [name]</span><span class="vcr-desc">Named element</span></div>
+                      </div>
+
+                    </div><!-- /vcr-body -->
+                  </div><!-- /vcr-panel -->
+
                 </div>
 
                 <!-- Snap-To Mode -->
