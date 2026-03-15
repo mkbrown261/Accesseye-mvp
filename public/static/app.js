@@ -1913,6 +1913,7 @@ class AccessEyeApp {
     this._setupDebugPanel();
     this._setupSnapEngine();      // Snap-To + Adaptive Learning
     this._setupGestureStudio();   // Facial gestures + Gesture Studio
+    this._setupPSBottomBar();     // Phase 2+3 status bottom panel toggle
     this._startCursorFromMouse(); // Default: mouse sim for demos
     // Register nav buttons and any gaze-targets visible on load
     this._registerGazeTargets();
@@ -2636,13 +2637,15 @@ class AccessEyeApp {
       autoDwellBtn.addEventListener('click', () => {
         const newState = !this.snapEngine.autoDwellClick;
         this.snapEngine.autoDwellClick = newState;
-        // Also control Phase 3 adaptive dwell
+        // Also control Phase 3 adaptive dwell (phase3 may not exist yet — safe access)
         if (this.phase3) this.phase3.autoDwellEnabled = newState;
         autoDwellBtn.classList.toggle('active', newState);
-        autoDwellBtn.querySelector('.autodwell-label').textContent = newState ? 'ON' : 'OFF';
+        const label = autoDwellBtn.querySelector('.autodwell-label');
+        if (label) label.textContent = newState ? 'ON' : 'OFF';
         this.toast.show('Auto Dwell-Click',
-          newState ? 'Will auto-click after dwell completes' : 'Dwell-click disabled',
-          'info', 'fas fa-clock', 2000);
+          newState ? 'Dwell-click ENABLED — look at a button to auto-click after dwell' : 'Dwell-click DISABLED',
+          newState ? 'success' : 'info', 'fas fa-clock', 2500);
+        this.log.add(`Auto dwell-click: ${newState ? 'ON' : 'OFF'}`, 'info');
       });
     }
 
@@ -2880,6 +2883,26 @@ class AccessEyeApp {
         }, i * 150);
       });
     }, 500);
+  }
+
+  /* ── PHASE 2+3 STATUS BOTTOM BAR TOGGLE ──────────────────── */
+  _setupPSBottomBar() {
+    const bar    = document.getElementById('ps-bottom-bar');
+    const toggle = document.getElementById('ps-bottom-toggle');
+    const arrow  = document.getElementById('ps-toggle-arrow');
+    if (!bar || !toggle) return;
+
+    // Start collapsed so it doesn't eat screen space by default
+    bar.classList.add('collapsed');
+    document.body.classList.add('ps-collapsed');
+
+    toggle.addEventListener('click', () => {
+      const isCollapsed = bar.classList.toggle('collapsed');
+      document.body.classList.toggle('ps-collapsed', isCollapsed);
+      if (arrow) {
+        arrow.style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)';
+      }
+    });
   }
 }
 

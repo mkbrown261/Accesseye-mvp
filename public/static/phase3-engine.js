@@ -1451,13 +1451,11 @@ class Phase3Orchestrator {
     const self    = this;
     const orch    = this.p2;
 
-    // Restore the original Phase 2 method before re-patching (handles camera restart).
-    // On first activation orch._p2OrigProcessFace is undefined so we capture it.
-    // On subsequent activations we restore from the saved original to avoid double-wrapping.
-    if (!orch._p2OrigProcessFace) {
-      orch._p2OrigProcessFace = orch._processPhase2Face.bind(orch);
-    }
-    const origFn = orch._p2OrigProcessFace;
+    // FIX RESTART-3: Always use the CLEAN Phase 2 original as our base.
+    // orch._p2OrigProcessFace is set in Phase2Orchestrator.activate() BEFORE Phase 3
+    // can wrap it, so it always holds the true Phase-2 implementation.
+    // If it's not set yet (shouldn't happen), fall back to current.
+    const origFn = orch._p2OrigProcessFace || orch._processPhase2Face.bind(orch);
 
     // ── P3.1: Patch HybridGazeEngine ONCE during activation ──
     // Apply One Euro filter to raw gaze before it enters the Kalman stabilizer.
@@ -1560,11 +1558,18 @@ class Phase3Orchestrator {
    */
   _hookAdaptiveDwell() {
     const registry = this.app.uiRegistry;
-    if (!registry || registry._p3DwellHooked) return;
+    if (!registry) return;
+    // If already hooked, restore original first so we don't double-wrap
+    if (registry._p3DwellHooked && registry._p3OrigUpdateGaze) {
+      registry.updateGaze = registry._p3OrigUpdateGaze;
+      registry._p3DwellHooked = false;
+    }
     registry._p3DwellHooked = true;
 
     const self = this;
     const origUpdateGaze = registry.updateGaze.bind(registry);
+    // Save original for restoration on deactivate/restart
+    registry._p3OrigUpdateGaze = origUpdateGaze;
 
     registry.updateGaze = function(screenX, screenY) {
       origUpdateGaze(screenX, screenY);
@@ -1660,6 +1665,11 @@ class Phase3Orchestrator {
     this.oneEuro.reset();
     this.ivt.reset();
     this.headFree.reset();
+    // FIX RESTART-4: Clear _p3DwellHooked so _hookAdaptiveDwell() runs again
+    // after camera restart and Phase 3 re-activates.
+    if (this.app?.uiRegistry) {
+      this.app.uiRegistry._p3DwellHooked = false;
+    }
   }
 }
 

@@ -1926,6 +1926,12 @@ class Phase2Orchestrator {
     this.active = true;
     this.confidence.videoEl = videoEl;
 
+    // FIX RESTART-2: Save the original (clean) _processPhase2Face before Phase 3
+    // can wrap it. This ensures deactivate() can always restore the clean version.
+    if (!this._p2OrigProcessFace) {
+      this._p2OrigProcessFace = this._processPhase2Face.bind(this);
+    }
+
     // ── Patch Phase 1 MediaPipeController to redirect results through Phase 2 ──
     const mp = this.app.mpController;
     if (mp) {
@@ -2110,7 +2116,16 @@ class Phase2Orchestrator {
   /* ── UI Update helpers ── */
 
   _updatePhase2StatusUI() {
-    const panel = $('#p2-status-panel');
+    // Show and expand the bottom status bar when Phase 2 activates
+    const bar = document.getElementById('ps-bottom-bar');
+    if (bar) {
+      bar.classList.remove('collapsed');
+      document.body.classList.remove('ps-collapsed');
+      const arrow = document.getElementById('ps-toggle-arrow');
+      if (arrow) arrow.style.transform = 'rotate(0deg)';
+    }
+    // Legacy: also ensure the old panel reference is harmless
+    const panel = document.getElementById('p2-status-panel');
     if (panel) panel.style.display = 'block';
   }
 
@@ -2372,17 +2387,25 @@ class Phase2Orchestrator {
     // FIX INTENT-5: Clear the periodic intent timer on deactivation.
     if (this._intentTimer) { clearInterval(this._intentTimer); this._intentTimer = null; }
     // FIX CAM-2: Reset internal state so re-activation (camera restart) works cleanly.
-    // Without this, Kalman filters, EMA and stabilizer carry stale state from the
-    // previous session, causing the gaze to snap to old positions on restart.
     this.stabilizer.reset?.();
     this.saccade.reset?.();
     this.hybridGaze.rawGaze    = { x: 0.5, y: 0.5 };
     this.hybridGaze.smoothGaze = { x: 0.5, y: 0.5 };
     this.hybridGaze.confidence = 0;
+    // FIX RESTART-1: Restore _processPhase2Face to the ORIGINAL Phase 2 implementation.
+    // Phase 3 wraps this method — on restart we must unwrap it so Phase 3 can
+    // re-wrap a fresh copy on next activation (prevents double-wrapping / stale closures).
+    if (this._p2OrigProcessFace) {
+      this._processPhase2Face = this._p2OrigProcessFace;
+      this._p2OrigProcessFace = null;
+    }
     // Remove the Phase 2 patch from the (now-dead) MediaPipeController so a fresh
     // _patchPhase2Pipeline can be applied to the new controller on next activate().
     this.hybridGaze._p3Patched = false;
     this.hybridGaze._originalProcessResults = null;
+    if (this.hybridGaze._originalProcessResults !== null && this.hybridGaze.processResults !== this.hybridGaze._originalProcessResults) {
+      this.hybridGaze.processResults = this.hybridGaze._originalProcessResults;
+    }
   }
 }
 
