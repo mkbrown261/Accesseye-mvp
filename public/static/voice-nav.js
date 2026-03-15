@@ -643,9 +643,9 @@ class VoiceNavigationController {
       }
       /* ── Control Recovery ── */
       case 'pauseControl': {
-        // Stop eye-tracking camera (same as clicking the Stop button)
+        // Stop eye-tracking — _stopCamera already resets mode to 'mouse' internally
         if (window.app?.cameraOn) {
-          window.app._stopCamera();
+          window.app._stopCamera();         // resets mode to 'mouse' + starts sim
           this._log('Voice: Pause Control — eye tracking paused');
           this._showToast('Pause Control', 'Eye tracking paused', 'info');
         } else {
@@ -654,13 +654,29 @@ class VoiceNavigationController {
         break;
       }
       case 'resumeControl': {
-        // Restart eye-tracking camera (same as clicking Start Camera)
+        // Restart eye-tracking camera then immediately switch to gaze mode
+        // so the simulation is stopped and the eye cursor takes back control.
         if (!window.app?.cameraOn) {
           this._log('Voice: Resume Control — restarting eye tracking');
           this._showToast('Resume Control', 'Restarting eye tracking…', 'success');
-          window.app?._startCamera();
+          const app = window.app;
+          app._startCamera().then(() => {
+            // _startCamera sets mode back to 'mouse' on failure and leaves it
+            // unchanged on success — we must explicitly switch to gaze mode so
+            // the simulation stops and the eye cursor takes over.
+            if (app.cameraOn) {
+              app._setMode('gaze');
+              this._log('Voice: Resume Control — gaze mode restored');
+            } else {
+              this._showToast('Resume Control', 'Camera failed — still in mouse mode', 'warn');
+            }
+          }).catch(() => {
+            this._showToast('Resume Control', 'Camera error', 'error');
+          });
         } else {
-          this._showToast('Resume Control', 'Eye tracking already active', 'info');
+          // Camera already on but mode may be wrong — restore gaze mode
+          window.app._setMode('gaze');
+          this._showToast('Resume Control', 'Gaze control restored', 'success');
         }
         break;
       }
