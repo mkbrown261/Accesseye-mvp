@@ -381,6 +381,61 @@ class AccessibilityControlMode {
     if(el) el.textContent=n;
   }
 
+  /* ── Live stat refresh — called on every a11y:log + by live ticker ── */
+  _updateStats() {
+    const s=this._logger?.stats||{};
+    const $=id=>document.getElementById(id);
+    /* modality counters */
+    const g=$('acm-stat-gaze');     if(g) g.textContent=s.gaze||0;
+    const v=$('acm-stat-voice');    if(v) v.textContent=s.voice||0;
+    const k=$('acm-stat-keyboard'); if(k) k.textContent=s.keyboard||0;
+    const f=$('acm-stat-intent');   if(f) f.textContent=s.intent_fusion||0;
+    /* total log entries */
+    this.updateLogCount(s.total||0);
+    /* element count — always show even when ACM disabled */
+    const cnt=document.querySelectorAll(FOCUSABLE).length;
+    this._setCount(cnt);
+  }
+
+  /* ── Live gaze + system ticker — 4fps, always on after init ── */
+  _startLiveTicker() {
+    if(this._ticker) return;
+    const tick=()=>{
+      /* --- gaze confidence bar --- */
+      const conf=window.app?.gazeEngine?.confidence??null;
+      const confEl=document.getElementById('acm-live-conf');
+      const confBar=document.getElementById('acm-live-conf-bar');
+      if(conf!==null){
+        const pct=Math.round(conf*100);
+        if(confEl)  confEl.textContent=pct+'%';
+        if(confBar) confBar.style.width=pct+'%';
+      } else {
+        if(confEl)  confEl.textContent='—';
+        if(confBar) confBar.style.width='0%';
+      }
+      /* --- cursor XY --- */
+      const cx=window.app?._lastScreenX, cy=window.app?._lastScreenY;
+      const xyEl=document.getElementById('acm-live-xy');
+      if(xyEl){
+        if(typeof cx==='number' && typeof cy==='number')
+          xyEl.textContent=Math.round(cx)+'px, '+Math.round(cy)+'px';
+        else xyEl.textContent='—';
+      }
+      /* --- phase label --- */
+      const phEl=document.getElementById('acm-live-phase');
+      if(phEl){
+        const p2=window.phase2Engine?.isActive?.();
+        const p3=window.phase3Engine?.isActive?.();
+        phEl.textContent=p3?'Phase 3':p2?'Phase 2':'Phase 1';
+      }
+      /* --- modality stat counters (always refreshed) --- */
+      this._updateStats();
+    };
+    /* 4 fps — lightweight, no DOM query heavier than getElementById */
+    this._ticker=setInterval(tick, 250);
+    tick(); /* immediate first paint */
+  }
+
   /* ── Keyboard augmentation (WCAG 2.1.1) — only logs, never blocks ── */
   _onKey(e) {
     if(!this._enabled) return;
@@ -470,7 +525,10 @@ class AccessibilityControlMode {
     window.AccessEye.acm=acm;
     window.acm=acm;
 
-    window.addEventListener('a11y:log',()=>acm.updateLogCount(logger.count));
+    /* update all stat counters on every logged event */
+    window.addEventListener('a11y:log',()=>acm._updateStats());
+    /* start 4fps live ticker for gaze confidence + XY + phase */
+    acm._startLiveTicker();
   };
 
   if(document.readyState==='loading'){

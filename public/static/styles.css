@@ -2713,3 +2713,21 @@ body {
   font-size:.8rem;
   cursor:pointer;
 }
+
+/* ── ACM live data readouts ─────────────────────────────────────────── */
+#acm-live-conf, #acm-live-xy, #acm-live-phase {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.69rem;
+  transition: color .3s;
+}
+/* confidence bar track already styled inline; bar fill is #acm-live-conf-bar */
+#acm-live-conf-bar {
+  background: linear-gradient(90deg, #0099cc, #00d4ff);
+}
+/* pulse animation when gaze is active */
+@keyframes acmGazePulse {
+  0%   { opacity:1; }
+  50%  { opacity:.55; }
+  100% { opacity:1; }
+}
+.acm-gaze-live { animation: acmGazePulse 1.4s ease-in-out infinite; }

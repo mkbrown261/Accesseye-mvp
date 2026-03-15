@@ -1191,18 +1191,50 @@ app.get('/', (c) => {
 
               <div class="acm-body">
 
-                <!-- Col 1: Stats -->
+                <!-- Col 1: Live Stats + Gaze -->
                 <div class="acm-col">
-                  <div class="acm-col-title"><i class="fas fa-chart-bar"></i> Session Stats</div>
-                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-eye" style="color:#00d4ff"></i> Gaze</span><span class="acm-stat-val" id="acm-stat-gaze">0</span></div>
-                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-microphone" style="color:#00ff88"></i> Voice</span><span class="acm-stat-val" id="acm-stat-voice">0</span></div>
-                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-keyboard" style="color:#f59e0b"></i> Keyboard</span><span class="acm-stat-val" id="acm-stat-keyboard">0</span></div>
-                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-crosshairs" style="color:#c4a0ff"></i> Intent Fusion</span><span class="acm-stat-val" id="acm-stat-intent">0</span></div>
-                  <div class="acm-stat-row" style="border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding-top:4px;">
-                    <span class="acm-stat-lbl"><i class="fas fa-list"></i> Total log entries</span>
-                    <span class="acm-stat-val" id="acm-log-count" style="color:#00ff88">0</span>
+                  <div class="acm-col-title"><i class="fas fa-chart-bar"></i> Live Session Stats</div>
+
+                  <!-- Gaze confidence bar — updated live at 4fps -->
+                  <div class="acm-stat-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
+                    <div style="display:flex;justify-content:space-between;width:100%;">
+                      <span class="acm-stat-lbl"><i class="fas fa-eye" style="color:#00d4ff"></i> Gaze Confidence</span>
+                      <span class="acm-stat-val" id="acm-live-conf" style="color:#00d4ff;">—</span>
+                    </div>
+                    <div style="width:100%;height:4px;background:rgba(255,255,255,0.07);border-radius:2px;overflow:hidden;">
+                      <div id="acm-live-conf-bar" style="height:100%;width:0%;background:#00d4ff;border-radius:2px;transition:width .2s ease;"></div>
+                    </div>
                   </div>
-                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-crosshairs"></i> Elements indexed</span><span class="acm-stat-val" id="acm-element-count">—</span></div>
+
+                  <!-- Cursor XY live -->
+                  <div class="acm-stat-row">
+                    <span class="acm-stat-lbl"><i class="fas fa-crosshairs" style="color:#00d4ff"></i> Cursor XY</span>
+                    <span class="acm-stat-val" id="acm-live-xy" style="font-size:0.62rem;color:#00d4ff;">—</span>
+                  </div>
+
+                  <!-- Engine phase -->
+                  <div class="acm-stat-row">
+                    <span class="acm-stat-lbl"><i class="fas fa-microchip" style="color:#c4a0ff"></i> Engine</span>
+                    <span class="acm-stat-val" id="acm-live-phase" style="color:#c4a0ff;">—</span>
+                  </div>
+
+                  <!-- Divider -->
+                  <div style="border-top:1px solid rgba(255,255,255,0.06);margin:5px 0 3px;"></div>
+                  <div class="acm-col-title" style="margin-bottom:2px;"><i class="fas fa-list-ul"></i> Interaction Log</div>
+
+                  <!-- Modality counters — updated on every a11y:log event -->
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-eye" style="color:#00d4ff"></i> Gaze activations</span><span class="acm-stat-val" id="acm-stat-gaze">0</span></div>
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-microphone" style="color:#00ff88"></i> Voice commands</span><span class="acm-stat-val" id="acm-stat-voice">0</span></div>
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-keyboard" style="color:#f59e0b"></i> Key navigations</span><span class="acm-stat-val" id="acm-stat-keyboard">0</span></div>
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-layer-group" style="color:#c4a0ff"></i> Intent fusion</span><span class="acm-stat-val" id="acm-stat-intent">0</span></div>
+                  <div class="acm-stat-row" style="border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding-top:4px;">
+                    <span class="acm-stat-lbl" style="font-weight:700;color:#e2e8f0;"><i class="fas fa-sigma"></i> Total logged</span>
+                    <span class="acm-stat-val" id="acm-log-count" style="color:#00ff88;font-weight:700;">0</span>
+                  </div>
+                  <div class="acm-stat-row">
+                    <span class="acm-stat-lbl"><i class="fas fa-th"></i> Elements indexed</span>
+                    <span class="acm-stat-val" id="acm-element-count">—</span>
+                  </div>
                 </div>
 
                 <!-- Col 2: Dwell + Modalities -->
@@ -1225,14 +1257,14 @@ app.get('/', (c) => {
                   <button class="acm-hint-btn" id="acm-hint-btn"><i class="fas fa-question-circle"></i> Show User Guide</button>
                 </div>
 
-                <!-- Col 3: Export -->
+                <!-- Col 3: Export + Voice cmds -->
                 <div class="acm-col">
                   <div class="acm-col-title"><i class="fas fa-file-alt"></i> Compliance Export</div>
                   <div style="font-size:0.67rem;color:#546e7a;margin-bottom:10px;line-height:1.4;">Export timestamped interaction logs as proof of WCAG / ADA / Section 508 compliance.</div>
                   <button class="acm-export-btn csv" id="acm-export-csv"><i class="fas fa-file-csv"></i> Export CSV</button>
                   <button class="acm-export-btn pdf" id="acm-export-pdf"><i class="fas fa-file-pdf"></i> Export PDF Report</button>
                   <div class="acm-col-title" style="margin-top:10px;"><i class="fas fa-microphone"></i> Voice Commands</div>
-                  <div style="font-size:0.65rem;color:#546e7a;line-height:1.6;">
+                  <div style="font-size:0.65rem;color:#546e7a;line-height:1.7;">
                     <span style="color:#e2e8f0">"Accessibility Mode"</span> — toggle on/off<br>
                     <span style="color:#e2e8f0">"Start Dictation"</span> — type by voice<br>
                     <span style="color:#e2e8f0">"Export Log"</span> — download CSV<br>
