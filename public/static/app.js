@@ -125,28 +125,41 @@ class CalibrationEngine {
      * Mid-edge points (TLM/TRM/BLM/BRM) catch peripheral distortion
      * that the 5-pt model misses (~12% accuracy gain at edges).
      */
-    // EASE-1: 9-point grid — corners at 0.08/0.92 (reachable with eyes-only),
-    // 4 inner-ring points at 0.25/0.75, and center.
-    // WHY 9 not 13: The previous 13-point grid with corners at 0.05/0.95 forced
-    // extreme eye strain to the very screen edge — many users need small head
-    // movements to reach those points.  Head movement during calibration adds
-    // noise and instability.  Moving corners to 0.08/0.92 means ~90% of the
-    // screen is covered while remaining comfortably reachable with eyes alone.
-    // 9 points × 30 samples = ~25 seconds vs 13 × 50 = ~75 seconds.
-    // The degree-3 polynomial only needs 10 coefficients — 9 points is sufficient
-    // for a well-conditioned fit, and the padding + extrapolation handles the
-    // last 8% of screen edge without explicit corner samples there.
+    // FIX CENTER-1: Upgrade from 9-point to 13-point calibration grid.
+    // ROOT CAUSE: The 9-point grid had only 1 center point and 8 edge/corner
+    // points. The polynomial was over-anchored at edges (7× more edge data)
+    // and under-constrained in the center, creating a center dead-zone.
+    //
+    // NEW GRID adds 4 mid-axis points: (0.50, 0.25), (0.50, 0.75),
+    //   (0.25, 0.50), (0.75, 0.50) — the midpoints of each screen edge.
+    // These give the polynomial 4 extra center-region anchors with weight 2.5×
+    // each, dramatically improving fit quality for gaze in the central 50%
+    // of the screen where most UI interaction happens.
+    //
+    // Point order matters for graceful early-abort: corners first, then
+    // inner ring, then mid-axis, then center. If the user stops early,
+    // we still have the most critical points.
+    //
+    // Total: 13 points × 30 samples = ~30s (vs 9 × 30 = ~23s, only 7s more)
+    // The extra 4 points are fast because they're easy to fixate (near center).
     this.CALIB_POINTS = [
       // ── 4 corners — close enough to reach with eyes alone ──
       { sx: 0.08, sy: 0.08, label: 'Top-Left'     },
       { sx: 0.92, sy: 0.08, label: 'Top-Right'    },
       { sx: 0.08, sy: 0.92, label: 'Bottom-Left'  },
       { sx: 0.92, sy: 0.92, label: 'Bottom-Right' },
-      // ── 4 inner-ring points ──
+      // ── 4 inner-ring points (0.25/0.75 diagonal) ──
       { sx: 0.25, sy: 0.25, label: 'Inner-TL'     },
       { sx: 0.75, sy: 0.25, label: 'Inner-TR'     },
       { sx: 0.25, sy: 0.75, label: 'Inner-BL'     },
       { sx: 0.75, sy: 0.75, label: 'Inner-BR'     },
+      // ── 4 mid-axis points — FIX CENTER-1: anchor center polynomial ──
+      // These constrain the polynomial in the central screen area where
+      // the 9-point grid had NO data, causing the center dead-zone.
+      { sx: 0.50, sy: 0.25, label: 'Mid-Top'      },
+      { sx: 0.50, sy: 0.75, label: 'Mid-Bottom'   },
+      { sx: 0.25, sy: 0.50, label: 'Mid-Left'     },
+      { sx: 0.75, sy: 0.50, label: 'Mid-Right'    },
       // ── Center ──
       { sx: 0.50, sy: 0.50, label: 'Center'       }
     ];
@@ -226,22 +239,26 @@ class CalibrationEngine {
     return Math.max(0, 1 - dist / (sigma * 3));
   }
 
-  /* EASE-1: Return trim fraction for a given point index (9-point grid) */
+  /* FIX CENTER-1: Return trim fraction for a given point index (13-point grid) */
   _trimFraction(pointIdx) {
     if (pointIdx < 4)  return this.CORNER_TRIM;    // corners 0-3
-    return this.INTERIOR_TRIM;                      // inner ring + center
+    if (pointIdx < 8)  return this.MIDEDGE_TRIM;   // inner ring 4-7
+    return this.INTERIOR_TRIM;                     // mid-axis 8-11 + center 12
   }
 
-  /* IMPROVEMENT 2 (v14): Return regression weight for a given point index (9-point grid).
-   * Bug-fix: MIDEDGE_WEIGHT (2.0) was defined but never applied — _pointWeight returned
-   * INTERIOR_WEIGHT (1.0) for ALL non-corner points including mid-edges (idx 4-7).
-   * Fix: idx 0-3 = corners (4×), idx 4-7 = mid-edges (2.5×), idx 8 = center (1×).
-   * Result: the regression polynomial fits edge midpoints more precisely, reducing
-   * the systematic 2-4% accuracy loss at screen edges documented in CHI 2017 study. */
+  /* FIX CENTER-1: Return regression weight for 13-point grid.
+   * idx 0-3  = corners (4×)     — anchors polynomial at screen corners
+   * idx 4-7  = inner ring (2.5×) — intermediate distance anchors
+   * idx 8-11 = mid-axis (2.0×)  — FIX CENTER-1: center-region anchors
+   *                               (was interior weight=1.0× before this fix)
+   * idx 12   = center (1.5×)    — slightly upweighted vs interior because
+   *                               fixing center dead-zone is the priority
+   */
   _pointWeight(pointIdx) {
-    if (pointIdx < 4)  return this.CORNER_WEIGHT;   // 4.0× — corners are hardest to reach
-    if (pointIdx < 8)  return this.MIDEDGE_WEIGHT;  // 2.5× — mid-edges were getting 1× (BUG)
-    return this.INTERIOR_WEIGHT;                     // 1.0× — center point
+    if (pointIdx < 4)  return this.CORNER_WEIGHT;    // 4.0× — corners
+    if (pointIdx < 8)  return this.MIDEDGE_WEIGHT;   // 2.5× — inner ring
+    if (pointIdx < 12) return 2.0;                   // 2.0× — mid-axis (FIX CENTER-1)
+    return 1.5;                                       // 1.5× — center
   }
 
   /* PRECISION-4 / EDGE-2: Two-pass robust mean for each calibration point.
@@ -324,8 +341,16 @@ class CalibrationEngine {
     // rotation). Use more padding on the bottom so the polynomial extrapolates
     // further, letting the cursor reach the screen bottom even if the user's
     // downward gaze during calibration fell slightly short.
-    const PAD   = 0.22;      // was 0.18 — symmetric sides/top increase
-    const PAD_B = 0.28;      // extra for bottom edge specifically
+    // FIX CENTER-2: Reduce padding from 0.22/0.28 → 0.15/0.20.
+    // PROBLEM: Large PAD (0.22) expanded the normalization range so much that
+    // actual center gaze values became a small fraction of [-0.5,+0.5], making
+    // the polynomial output a narrow screen band for center gaze (dead-zone).
+    // With the 13-point grid now anchoring the center, we no longer need extra
+    // padding to compensate for missing center data. Reduced padding means the
+    // observed gaze range maps more tightly to the polynomial input space,
+    // giving the center region a proportionally larger share of the screen.
+    const PAD   = 0.15;      // was 0.22 — reduced now that 13-pt grid provides center anchors
+    const PAD_B = 0.20;      // was 0.28 — bottom still gets slight extra room for downward gaze
     const rangeX = rawMaxX - rawMinX;
     const rangeY = rawMaxY - rawMinY;
     this.gazeRangeX = {
@@ -1160,7 +1185,8 @@ class CalibrationUI {
     // 40 good samples @ 50ms = ~2s of stable fixation per point.
     // Still enough for a robust centroid (research min = 500ms stable fixation).
     // This halves the time per point from ~4.6s to ~2.6s (including lock).
-    // Total 9-point calib: ~23s vs ~41s previously.
+    // Total 13-point calib: ~34s (was 23s for 9-pt, only 11s more for much
+    // better center accuracy — worth it to fix the center dead-zone).
     this.GOOD_SAMPLES_NEEDED = 40;
     // FIX CAL-THRESH: Relax quality gate from 0.55 to 0.45.
     // The 0.55 threshold required very tight fixation which is hard for users.

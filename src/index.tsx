@@ -1157,6 +1157,27 @@ app.get('/', (c) => {
                   </div>
                 </div>
 
+                <!-- Cursor Sensitivity — FIX CENTER-3 (Accuracy Engine v3) -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-expand-arrows-alt" style="color:#a78bfa;"></i> Cursor Sensitivity</div>
+                  <div style="font-size:0.70rem;color:#888;margin-bottom:7px;line-height:1.4;">
+                    Adjusts how far the cursor travels per unit of eye movement.
+                    Lower if cursor overshoots; raise if hard to reach screen edges.
+                  </div>
+                  <div class="snap-slider-row">
+                    <label class="snap-slider-lbl" title="0.5× = compressed range | 1.0× = default | 2.0× = expanded range">Sensitivity</label>
+                    <input type="range" id="acc-sensitivity-slider" min="0.5" max="2.0" step="0.1" value="1.0"
+                      class="snap-slider" style="accent-color:#a78bfa;"
+                      title="Adjusts gaze-to-cursor travel. Lower = cursor stays more central. Raise = cursor can reach edges more easily.">
+                    <span class="snap-slider-val" id="acc-sensitivity-val" style="color:#a78bfa;">1.0×</span>
+                  </div>
+                  <div style="font-size:0.69rem;color:#666;display:flex;gap:16px;margin-top:2px;padding:0 2px;">
+                    <span>0.5× = narrow</span>
+                    <span style="flex:1;text-align:center;">1.0× = default</span>
+                    <span>2.0× = wide</span>
+                  </div>
+                </div>
+
                 <!-- Adaptive Gaze Learning -->
                 <div class="p2-section">
                   <div class="p2-section-title"><i class="fas fa-brain"></i> Adaptive Gaze Learning</div>
