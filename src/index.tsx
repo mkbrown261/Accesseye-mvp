@@ -1045,6 +1045,78 @@ app.get('/', (c) => {
                   </div>
                 </div>
 
+                <!-- Voice Command Reference Panel (collapsible) -->
+                <div class="p2-section vcr-panel">
+                  <div class="vcr-header" id="vcr-toggle-btn">
+                    <span class="p2-section-title" style="margin-bottom:0;flex:1;"><i class="fas fa-book-open"></i> Command Reference</span>
+                    <i class="fas fa-chevron-down vcr-arrow" id="vcr-arrow"></i>
+                  </div>
+                  <div class="vcr-body" id="vcr-body" style="display:none;">
+
+                    <div class="vcr-category">
+                      <div class="vcr-cat-title"><i class="fas fa-compass"></i> Navigation</div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Scroll Down</span><span class="vcr-desc">Scroll page down</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Scroll Up</span><span class="vcr-desc">Scroll page up</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Stop Scrolling</span><span class="vcr-desc">Stop active scroll</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Scroll To Top</span><span class="vcr-desc">Jump to top</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Scroll To Bottom</span><span class="vcr-desc">Jump to bottom</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Go Back</span><span class="vcr-desc">Previous page</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Go Forward</span><span class="vcr-desc">Next page</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Reload Page</span><span class="vcr-desc">Refresh page</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Open New Tab</span><span class="vcr-desc">New browser tab</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Close Tab</span><span class="vcr-desc">Close current tab</span></div>
+                    </div>
+
+                    <div class="vcr-category">
+                      <div class="vcr-cat-title"><i class="fas fa-mouse-pointer"></i> Click &amp; Select</div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Click</span><span class="vcr-desc">Click gaze target</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Double Click</span><span class="vcr-desc">Double-click target</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Right Click</span><span class="vcr-desc">Context menu</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Next Item</span><span class="vcr-desc">Focus next element</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Previous Item</span><span class="vcr-desc">Focus prev element</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Select All</span><span class="vcr-desc">Select all content</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Copy / Paste / Cut</span><span class="vcr-desc">Clipboard actions</span></div>
+                    </div>
+
+                    <div class="vcr-category">
+                      <div class="vcr-cat-title"><i class="fas fa-search-plus"></i> Zoom &amp; View</div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Zoom In</span><span class="vcr-desc">Increase zoom</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Zoom Out</span><span class="vcr-desc">Decrease zoom</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Reset Zoom</span><span class="vcr-desc">Default zoom level</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Open Settings</span><span class="vcr-desc">Open settings panel</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Search</span><span class="vcr-desc">Focus search field</span></div>
+                    </div>
+
+                    <div class="vcr-category">
+                      <div class="vcr-cat-title"><i class="fas fa-eye"></i> Discovery</div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Show Clickable Items</span><span class="vcr-desc">Highlight all interactive</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Hide Clickable Items</span><span class="vcr-desc">Remove overlays</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">What Can I Click</span><span class="vcr-desc">Show all clickable</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Focus On [name]</span><span class="vcr-desc">Focus named element</span></div>
+                    </div>
+
+                    <div class="vcr-category">
+                      <div class="vcr-cat-title"><i class="fas fa-shield-alt"></i> Control Recovery</div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Stop</span><span class="vcr-desc">Cancel active action</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Pause Control</span><span class="vcr-desc">Suspend voice commands</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Resume Control</span><span class="vcr-desc">Re-enable voice</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Reset Cursor</span><span class="vcr-desc">Center the cursor</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Clear Selection</span><span class="vcr-desc">Remove highlights</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Exit Mode</span><span class="vcr-desc">Close overlays/modes</span></div>
+                    </div>
+
+                    <div class="vcr-category">
+                      <div class="vcr-cat-title"><i class="fas fa-crosshairs"></i> Intent Fusion (Gaze+Voice)</div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Open / Click / Select</span><span class="vcr-desc">Act on gaze target</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Zoom</span><span class="vcr-desc">Zoom in on gaze area</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Focus On search</span><span class="vcr-desc">Focus search input</span></div>
+                      <div class="vcr-cmd"><span class="vcr-phrase">Focus On login</span><span class="vcr-desc">Focus login field</span></div>
+                    </div>
+
+                  </div><!-- /vcr-body -->
+                </div>
+
+
                 <!-- Snap-To Mode -->
                 <div class="p2-section">
                   <div class="p2-section-title" style="color:#c4a0ff;"><i class="fas fa-magnet" style="color:#7c4dff;"></i> Snap-To &amp; Targeting</div>
@@ -1105,6 +1177,104 @@ app.get('/', (c) => {
               </div><!-- /THIRD col -->
 
             </div><!-- /p2-inner-grid -->
+
+            <!-- ══════════════════════════════════════════════════════════
+                 ACCESSIBILITY CONTROL MODE — Full-width section
+                 WCAG 2.1 / ADA Title III / Section 508
+            ══════════════════════════════════════════════════════════ -->
+            <div class="acm-panel" id="acm-panel">
+
+              <!-- Header row -->
+              <div class="acm-header">
+                <i class="fas fa-universal-access acm-icon"></i>
+                <span class="acm-title">Accessibility Control Mode</span>
+                <span class="acm-status-badge" id="acm-status-badge">INACTIVE</span>
+                <div class="acm-std-row" id="acm-standards-list"><!-- badges injected by JS --></div>
+                <button class="acm-toggle-btn" id="acm-toggle-btn" title="Enable / disable WCAG/ADA/508 control mode">
+                  <i class="fas fa-universal-access"></i> <span>ACM OFF</span>
+                </button>
+              </div>
+
+              <!-- Stats + Controls row -->
+              <div class="acm-body">
+
+                <!-- Column 1: Status & Stats -->
+                <div class="acm-col">
+                  <div class="acm-col-title"><i class="fas fa-chart-bar"></i> Session Stats</div>
+                  <div class="acm-stat-row">
+                    <span class="acm-stat-lbl"><i class="fas fa-eye" style="color:#00d4ff;"></i> Gaze events</span>
+                    <span class="acm-stat-val" id="acm-stat-gaze">0</span>
+                  </div>
+                  <div class="acm-stat-row">
+                    <span class="acm-stat-lbl"><i class="fas fa-microphone" style="color:#00ff88;"></i> Voice events</span>
+                    <span class="acm-stat-val" id="acm-stat-voice">0</span>
+                  </div>
+                  <div class="acm-stat-row">
+                    <span class="acm-stat-lbl"><i class="fas fa-keyboard" style="color:#f59e0b;"></i> Keyboard events</span>
+                    <span class="acm-stat-val" id="acm-stat-keyboard">0</span>
+                  </div>
+                  <div class="acm-stat-row">
+                    <span class="acm-stat-lbl"><i class="fas fa-crosshairs" style="color:#c4a0ff;"></i> Intent fusion</span>
+                    <span class="acm-stat-val" id="acm-stat-intent">0</span>
+                  </div>
+                  <div class="acm-stat-row" style="border-top:1px solid rgba(255,255,255,0.06);padding-top:4px;margin-top:2px;">
+                    <span class="acm-stat-lbl"><i class="fas fa-list"></i> Total log entries</span>
+                    <span class="acm-stat-val" id="acm-log-count" style="color:#00ff88;">0</span>
+                  </div>
+                  <div class="acm-stat-row">
+                    <span class="acm-stat-lbl"><i class="fas fa-crosshairs"></i> Elements indexed</span>
+                    <span class="acm-stat-val" id="acm-element-count">—</span>
+                  </div>
+                </div>
+
+                <!-- Column 2: Gaze Dwell Settings -->
+                <div class="acm-col">
+                  <div class="acm-col-title"><i class="fas fa-clock"></i> Gaze Dwell Activation</div>
+                  <div style="font-size:0.68rem;color:#546e7a;margin-bottom:8px;line-height:1.4;">
+                    Look at any interactive element for the dwell time to activate it via gaze.
+                  </div>
+                  <div class="acm-slider-row">
+                    <label class="acm-slider-lbl">Dwell Time</label>
+                    <input type="range" id="acm-dwell-slider" min="300" max="2000" step="100" value="800" class="snap-slider">
+                    <span class="acm-slider-val" id="acm-dwell-val">800 ms</span>
+                  </div>
+                  <div class="acm-col-title" style="margin-top:10px;"><i class="fas fa-assistive-listening-systems"></i> Modalities Active</div>
+                  <div class="acm-modality-row">
+                    <span class="acm-mod-badge gaze"><i class="fas fa-eye"></i> Gaze</span>
+                    <span class="acm-mod-badge voice"><i class="fas fa-microphone"></i> Voice</span>
+                    <span class="acm-mod-badge fusion"><i class="fas fa-crosshairs"></i> Intent Fusion</span>
+                    <span class="acm-mod-badge snap"><i class="fas fa-magnet"></i> Snap-To</span>
+                    <span class="acm-mod-badge keyboard"><i class="fas fa-keyboard"></i> Keyboard</span>
+                  </div>
+                  <button class="acm-hint-btn" id="acm-hint-btn" title="Show first-time user guide">
+                    <i class="fas fa-question-circle"></i> Show User Guide
+                  </button>
+                </div>
+
+                <!-- Column 3: Export & Compliance -->
+                <div class="acm-col">
+                  <div class="acm-col-title"><i class="fas fa-file-alt"></i> Compliance Log Export</div>
+                  <div style="font-size:0.68rem;color:#546e7a;margin-bottom:10px;line-height:1.4;">
+                    Export timestamped interaction logs as proof of WCAG / ADA / Section 508 compliance.
+                  </div>
+                  <button class="acm-export-btn csv" id="acm-export-csv" title="Export log as CSV for spreadsheet analysis">
+                    <i class="fas fa-file-csv"></i> Export CSV
+                  </button>
+                  <button class="acm-export-btn pdf" id="acm-export-pdf" title="Generate printable PDF compliance report">
+                    <i class="fas fa-file-pdf"></i> Export PDF Report
+                  </button>
+                  <div class="acm-col-title" style="margin-top:10px;"><i class="fas fa-gavel"></i> Voice Commands</div>
+                  <div style="font-size:0.65rem;color:#546e7a;line-height:1.5;">
+                    <span style="color:#e2e8f0;">"Start Dictation"</span> — dictate into focused field<br>
+                    <span style="color:#e2e8f0;">"Accessibility Mode"</span> — toggle ACM on/off<br>
+                    <span style="color:#e2e8f0;">"Export Log"</span> — download CSV log<br>
+                    <span style="color:#e2e8f0;">"Show Guide"</span> — re-show hint overlay
+                  </div>
+                </div>
+
+              </div><!-- /acm-body -->
+            </div><!-- /acm-panel -->
+
           </div><!-- /p2-status-panel -->
 
         </div>
@@ -1466,6 +1636,8 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="/static/phase3-engine.js"></script>
   <script src="/static/phase3-init.js"></script>
   <script src="/static/voice-nav.js"></script>
+  <script src="/static/a11y-logger.js"></script>
+  <script src="/static/a11y-mode.js"></script>
 </body>
 </html>`)
 })

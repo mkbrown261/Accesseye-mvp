@@ -2900,8 +2900,9 @@ document.addEventListener('DOMContentLoaded', () => {
   app = new AccessEyeApp();
   window.app = app; // Expose for Phase 2 initialization
 
-  // Expose public API for external use
-  window.AccessEye = {
+  // Expose public API for external use (merge into existing AccessEye object to
+  // preserve a11yLogger and other modules that may have already attached)
+  window.AccessEye = Object.assign(window.AccessEye || {}, {
     /**
      * Register a UI element as a gaze target
      */
@@ -2953,7 +2954,7 @@ document.addEventListener('DOMContentLoaded', () => {
      * Get current gaze position (normalized 0-1)
      */
     getGaze() { return app.gazeEngine.smoothGaze; }
-  };
+  });  // end Object.assign(window.AccessEye)
 
   // ── Voice Command Reference (VCR) panel toggle ──────────────────
   const vcrBtn  = document.getElementById('vcr-toggle-btn');
@@ -2966,6 +2967,26 @@ document.addEventListener('DOMContentLoaded', () => {
       if (vcrArrow) vcrArrow.classList.toggle('open', !isOpen);
     });
   }
+
+  // ── Accessibility Control Mode — live stat counter updates ───────
+  window.addEventListener('a11y:log', (e) => {
+    const entry = e.detail;
+    if (!entry) return;
+
+    // Update per-modality counters
+    const modalityEls = {
+      gaze:          document.getElementById('acm-stat-gaze'),
+      voice:         document.getElementById('acm-stat-voice'),
+      keyboard:      document.getElementById('acm-stat-keyboard'),
+      intent_fusion: document.getElementById('acm-stat-intent'),
+    };
+    const el = modalityEls[entry.modality];
+    if (el) el.textContent = String(parseInt(el.textContent || '0') + 1);
+
+    // Update total log count
+    const logCountEl = document.getElementById('acm-log-count');
+    if (logCountEl) logCountEl.textContent = String(parseInt(logCountEl.textContent || '0') + 1);
+  });
 
   console.log('%c AccessEye MVP Loaded ✅', 'color:#00d4ff;font-weight:bold;font-size:14px;');
   console.log('%c Version: 1.0.0 | On-device eye + gesture control', 'color:#94a3b8;font-size:12px;');
