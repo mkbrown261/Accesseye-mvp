@@ -2319,6 +2319,9 @@ body {
 .vcr-panel {
   padding: 0 !important;
   overflow: hidden;
+  border: 1px solid rgba(0,212,255,0.18);
+  border-radius: 6px;
+  background: rgba(0,0,0,0.15);
 }
 
 .vcr-header {

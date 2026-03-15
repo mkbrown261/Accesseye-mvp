@@ -2971,9 +2971,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const vcrBody = document.getElementById('vcr-body');
   const vcrArrow = document.getElementById('vcr-arrow');
   if (vcrBtn && vcrBody) {
+    // Start collapsed
+    vcrBody.style.display = 'none';
+    vcrBtn.setAttribute('aria-expanded', 'false');
     vcrBtn.addEventListener('click', () => {
       const isOpen = vcrBody.style.display !== 'none';
       vcrBody.style.display = isOpen ? 'none' : 'block';
+      vcrBtn.setAttribute('aria-expanded', String(!isOpen));
       if (vcrArrow) vcrArrow.classList.toggle('open', !isOpen);
     });
   }

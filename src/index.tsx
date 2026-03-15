@@ -1051,7 +1051,7 @@ app.get('/', (c) => {
                       <span style="flex:1;font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--accent-cyan);">Command Reference</span>
                       <i class="fas fa-chevron-down vcr-arrow" id="vcr-arrow"></i>
                     </button>
-                    <div class="vcr-body" id="vcr-body">
+                    <div class="vcr-body" id="vcr-body" style="display:none">
 
                       <div class="vcr-category">
                         <div class="vcr-cat-title"><i class="fas fa-compass"></i> Navigation</div>
