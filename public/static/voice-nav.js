@@ -41,14 +41,34 @@ const ACTION_COMMANDS = {
   select   : 'select',
   choose   : 'select',
   scroll   : 'scroll',
-  'scroll up'   : 'scrollUp',
-  'scroll down' : 'scrollDown',
+  'scroll up'      : 'scrollUp',
+  'scroll down'    : 'scrollDown',
+  'stop scrolling' : 'stopScrolling',
+  'scroll to top'  : 'scrollTop',
+  'scroll to bottom':'scrollBottom',
+  'go back'        : 'navBack',
+  'go forward'     : 'navForward',
+  'reload page'    : 'reloadPage',
+  'open new tab'   : 'newTab',
+  'close tab'      : 'closeTab',
+  'zoom in'        : 'zoomIn',
+  'zoom out'       : 'zoomOut',
+  'reset zoom'     : 'resetZoom',
+  'double click'   : 'dblclick',
+  'right click'    : 'rightClick',
+  'next item'      : 'focusNext',
+  'previous item'  : 'focusPrev',
+  'pause control'  : 'pauseControl',
+  'resume control' : 'resumeControl',
+  'reset cursor'   : 'resetCursor',
+  'clear selection': 'clearSelection',
+  'exit mode'      : 'exitMode',
   play     : 'play',
   pause    : 'pause',
-  stop     : 'stop',
+  stop     : 'stopControl',
   submit   : 'submit',
   send     : 'submit',
-  back     : 'back',
+  back     : 'navBack',
   cancel   : 'cancel',
   close    : 'cancel',
   home     : 'nav-home',
@@ -63,6 +83,17 @@ const ACTION_COMMANDS = {
   restart  : 'start-camera-btn',
   camera   : 'start-camera-btn',
 };
+
+/* Actions that execute directly without needing a gaze/element target */
+const NO_TARGET_ACTIONS = new Set([
+  'scrollUp','scrollDown','scroll','stopScrolling','scrollTop','scrollBottom',
+  'navBack','navForward','reloadPage','newTab','closeTab',
+  'zoomIn','zoomOut','resetZoom',
+  'focusNext','focusPrev',
+  'pauseControl','resumeControl','stopControl',
+  'resetCursor','clearSelection','exitMode',
+  'play','pause',
+]);
 
 /* ─────────────────────────────────────────────────────────────────────────
    NAVIGATION ELEMENT LIST
@@ -353,9 +384,17 @@ class VoiceNavigationController {
 
     console.log(`[VoiceNav] heard: "${text}" (words: [${words.join(', ')}])`);
 
-    // 1. Check for pure action commands that apply to gaze target (Intent Fusion)
+    // 1. Check for action commands
     const action = this._extractAction(words);
     if (action) {
+      // Control-recovery and element-free navigation commands execute directly —
+      // they do NOT need a gaze target so must not go through intent fusion.
+      if (NO_TARGET_ACTIONS.has(action)) {
+        this._setStatus(`▶ ${text}`, '#00ff88');
+        this._performAction({ el: null, text }, action);
+        return;
+      }
+      // All other actions route through intent fusion (gaze target required)
       this._handleIntentFusion(action, confidence, text);
       return;
     }
@@ -399,14 +438,28 @@ class VoiceNavigationController {
 
   _extractAction(words) {
     const joined = words.join(' ');
-    // Check multi-word commands first
-    if (joined.includes('scroll up'))   return 'scrollUp';
-    if (joined.includes('scroll down')) return 'scrollDown';
-    // Single-word
+    // Check multi-word commands first (longest match wins)
+    const multiWord = [
+      'stop scrolling','scroll to top','scroll to bottom',
+      'scroll up','scroll down',
+      'go back','go forward',
+      'reload page','open new tab','close tab',
+      'zoom in','zoom out','reset zoom',
+      'double click','right click',
+      'next item','previous item',
+      'pause control','resume control',
+      'reset cursor','clear selection','exit mode',
+    ];
+    for (const phrase of multiWord) {
+      if (joined.includes(phrase)) return ACTION_COMMANDS[phrase];
+    }
+    // Single-word — exclude nav/mode words that need an element target
+    const NAV_WORDS = new Set(['home','demo','architecture','docs','studio','calibrate','gaze','mouse','start','restart','camera']);
     for (const w of words) {
-      if (ACTION_COMMANDS[w] && ACTION_COMMANDS[w].startsWith('nav-') === false &&
-          ACTION_COMMANDS[w].startsWith('mode-') === false &&
-          !['home','demo','architecture','docs','studio','calibrate','gaze','mouse','start','restart','camera'].includes(w)) {
+      if (ACTION_COMMANDS[w] &&
+          !ACTION_COMMANDS[w].startsWith('nav-') &&
+          !ACTION_COMMANDS[w].startsWith('mode-') &&
+          !NAV_WORDS.has(w)) {
         return ACTION_COMMANDS[w];
       }
     }
@@ -495,16 +548,163 @@ class VoiceNavigationController {
         }
         break;
       }
+      case 'navBack':
       case 'back':
       case 'cancel': {
-        // Try cancel-calib-btn first, then history.back
         const cancelBtn = document.getElementById('cancel-calib-btn');
         if (cancelBtn && getComputedStyle(cancelBtn.closest('.calibration-overlay') || cancelBtn).display !== 'none') {
           cancelBtn.click();
         } else {
           history.back();
         }
-        this._log('Voice: Back/Cancel');
+        this._log('Voice: Back');
+        break;
+      }
+      case 'navForward': {
+        history.forward();
+        this._log('Voice: Forward');
+        break;
+      }
+      case 'reloadPage': {
+        this._log('Voice: Reload');
+        setTimeout(() => location.reload(), 300);
+        break;
+      }
+      case 'newTab': {
+        window.open('', '_blank');
+        this._log('Voice: New Tab');
+        break;
+      }
+      case 'closeTab': {
+        this._log('Voice: Close Tab');
+        setTimeout(() => window.close(), 300);
+        break;
+      }
+      case 'scrollTop': {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        this._log('Voice: Scroll to Top');
+        break;
+      }
+      case 'scrollBottom': {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        this._log('Voice: Scroll to Bottom');
+        break;
+      }
+      case 'stopScrolling': {
+        // Clear any pending scroll by triggering a zero-scroll
+        window.scrollBy({ top: 0, behavior: 'instant' });
+        this._log('Voice: Stop Scrolling');
+        break;
+      }
+      case 'zoomIn': {
+        const cur = parseFloat(document.body.style.zoom || '1');
+        document.body.style.zoom = Math.min(cur + 0.15, 3.0);
+        this._log('Voice: Zoom In');
+        break;
+      }
+      case 'zoomOut': {
+        const curZ = parseFloat(document.body.style.zoom || '1');
+        document.body.style.zoom = Math.max(curZ - 0.15, 0.5);
+        this._log('Voice: Zoom Out');
+        break;
+      }
+      case 'resetZoom': {
+        document.body.style.zoom = '1';
+        this._log('Voice: Reset Zoom');
+        break;
+      }
+      case 'dblclick': {
+        if (el) el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+        this._log('Voice: Double Click');
+        break;
+      }
+      case 'rightClick': {
+        if (el) el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+        this._log('Voice: Right Click');
+        break;
+      }
+      case 'focusNext': {
+        const focusables = [...document.querySelectorAll(
+          'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+        )].filter(e => e.offsetParent !== null);
+        const idx = focusables.indexOf(document.activeElement);
+        const next = focusables[idx + 1] || focusables[0];
+        if (next) { next.focus(); this._log('Voice: Next Item'); }
+        break;
+      }
+      case 'focusPrev': {
+        const fps = [...document.querySelectorAll(
+          'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+        )].filter(e => e.offsetParent !== null);
+        const pi = fps.indexOf(document.activeElement);
+        const prev = fps[pi - 1] || fps[fps.length - 1];
+        if (prev) { prev.focus(); this._log('Voice: Previous Item'); }
+        break;
+      }
+      /* ── Control Recovery ── */
+      case 'pauseControl': {
+        // Stop eye-tracking camera (same as clicking the Stop button)
+        if (window.app?.cameraOn) {
+          window.app._stopCamera();
+          this._log('Voice: Pause Control — eye tracking paused');
+          this._showToast('Pause Control', 'Eye tracking paused', 'info');
+        } else {
+          this._showToast('Pause Control', 'Eye tracking already off', 'info');
+        }
+        break;
+      }
+      case 'resumeControl': {
+        // Restart eye-tracking camera (same as clicking Start Camera)
+        if (!window.app?.cameraOn) {
+          this._log('Voice: Resume Control — restarting eye tracking');
+          this._showToast('Resume Control', 'Restarting eye tracking…', 'success');
+          window.app?._startCamera();
+        } else {
+          this._showToast('Resume Control', 'Eye tracking already active', 'info');
+        }
+        break;
+      }
+      case 'stopControl': {
+        // Hard stop — same as pause control but labelled 'stop'
+        if (window.app?.cameraOn) {
+          window.app._stopCamera();
+          this._log('Voice: Stop — eye tracking stopped');
+          this._showToast('Stop', 'Eye tracking stopped', 'info');
+        }
+        break;
+      }
+      case 'resetCursor': {
+        // Snap gaze cursor back to screen centre
+        if (window.app) {
+          window.app._lastScreenX = window.innerWidth  / 2;
+          window.app._lastScreenY = window.innerHeight / 2;
+          const cursorEl = document.getElementById('gaze-cursor');
+          if (cursorEl) {
+            cursorEl.style.left = (window.innerWidth  / 2) + 'px';
+            cursorEl.style.top  = (window.innerHeight / 2) + 'px';
+          }
+        }
+        this._log('Voice: Reset Cursor');
+        this._showToast('Reset Cursor', 'Gaze cursor centred', 'info');
+        break;
+      }
+      case 'clearSelection': {
+        window.getSelection()?.removeAllRanges();
+        if (document.activeElement && document.activeElement !== document.body) {
+          document.activeElement.blur();
+        }
+        this._log('Voice: Clear Selection');
+        break;
+      }
+      case 'exitMode': {
+        // Return to mouse simulation mode
+        if (window.app) {
+          window.app.mode = 'mouse';
+          document.querySelectorAll('.mode-tab').forEach(t =>
+            t.classList.toggle('active', t.dataset.mode === 'mouse'));
+        }
+        this._log('Voice: Exit Mode');
+        this._showToast('Exit Mode', 'Returned to mouse mode', 'info');
         break;
       }
       default: {
