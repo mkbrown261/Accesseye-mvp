@@ -95,6 +95,15 @@ const NO_TARGET_ACTIONS = new Set([
   'play','pause',
 ]);
 
+/* FIX VOICE-1: Nav/mode/camera commands must fire directly — they target a
+   specific element by ID and do NOT need a gaze target.  Routing them through
+   intent fusion caused silent failures whenever no element was near the cursor. */
+const DIRECT_ID_ACTIONS = new Set([
+  'nav-home','nav-demo','nav-architecture','nav-docs','nav-studio',
+  'mode-calibrate','mode-gaze','mode-mouse',
+  'start-camera-btn',
+]);
+
 /* ─────────────────────────────────────────────────────────────────────────
    NAVIGATION ELEMENT LIST
    Scans the DOM for interactive elements and caches them.
@@ -394,6 +403,12 @@ class VoiceNavigationController {
         this._performAction({ el: null, text }, action);
         return;
       }
+      // FIX VOICE-1: Nav/mode/camera commands fire directly — no gaze target needed
+      if (DIRECT_ID_ACTIONS.has(action)) {
+        this._setStatus(`▶ ${text}`, '#00ff88');
+        this._performAction({ el: null, text }, action);
+        return;
+      }
       // All other actions route through intent fusion (gaze target required)
       this._handleIntentFusion(action, confidence, text);
       return;
@@ -467,9 +482,14 @@ class VoiceNavigationController {
   }
 
   _extractEmbeddedAction(words) {
+    // FIX VOICE-2: Skip nav/mode/camera words here — they are not action verbs.
+    // "click home" should NOT set action='click' with remaining=[] falling to fusion;
+    // it should fall through so path-3 named-element match finds the nav button.
+    const skipAsVerb = new Set(['home','demo','architecture','docs','studio',
+                                 'calibrate','gaze','mouse','start','restart','camera']);
     for (let i = 0; i < words.length; i++) {
       const w = words[i];
-      if (ACTION_COMMANDS[w]) {
+      if (ACTION_COMMANDS[w] && !skipAsVerb.has(w)) {
         return {
           action: ACTION_COMMANDS[w],
           remaining: [...words.slice(0, i), ...words.slice(i + 1)],
@@ -691,10 +711,12 @@ class VoiceNavigationController {
       }
       case 'resetCursor': {
         // Snap gaze cursor back to screen centre
+        // FIX VOICE-3: The live cursor is #global-gaze-cursor, not #gaze-cursor
+        // (#gaze-cursor is a static element inside the camera preview feed)
         if (window.app) {
           window.app._lastScreenX = window.innerWidth  / 2;
           window.app._lastScreenY = window.innerHeight / 2;
-          const cursorEl = document.getElementById('gaze-cursor');
+          const cursorEl = document.getElementById('global-gaze-cursor');
           if (cursorEl) {
             cursorEl.style.left = (window.innerWidth  / 2) + 'px';
             cursorEl.style.top  = (window.innerHeight / 2) + 'px';
