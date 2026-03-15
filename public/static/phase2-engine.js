@@ -2391,12 +2391,17 @@ class Phase2Orchestrator {
       this._processPhase2Face = this._p2OrigProcessFace;
       this._p2OrigProcessFace = null;
     }
-    // Remove the Phase 2 patch from the (now-dead) MediaPipeController so a fresh
-    // _patchPhase2Pipeline can be applied to the new controller on next activate().
+    // FIX RESTART-5: Restore hybridGaze.processResults to the pre-Phase3 version before
+    // nulling _originalProcessResults.  The old code set _originalProcessResults = null
+    // BEFORE the if-check, so the condition `!== null` was always false — a dead-code
+    // bug that left processResults permanently pointing at the Phase 3 wrapper after the
+    // first restart.  On the second camera start Phase 3 would re-wrap the already-wrapped
+    // function, creating a double-wrap that corrupted the gaze pipeline and stopped tracking.
+    const _origResults = this.hybridGaze._originalProcessResults;
     this.hybridGaze._p3Patched = false;
     this.hybridGaze._originalProcessResults = null;
-    if (this.hybridGaze._originalProcessResults !== null && this.hybridGaze.processResults !== this.hybridGaze._originalProcessResults) {
-      this.hybridGaze.processResults = this.hybridGaze._originalProcessResults;
+    if (_origResults && this.hybridGaze.processResults !== _origResults) {
+      this.hybridGaze.processResults = _origResults;
     }
   }
 }

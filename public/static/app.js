@@ -2525,6 +2525,12 @@ class AccessEyeApp {
     const calibUI = new CalibrationUI(this.calibration, this.gazeEngine, this.log, this.toast);
 
     // Helper: wire a start-calib button by ID
+    // FIX CALIB-BTN-1: Two-phase handler:
+    //   Phase A (overlay hidden)  → navigate to demo page + show overlay
+    //   Phase B (overlay visible) → actually START the calibration sequence
+    // Previously wireCalibBtn always called show(), never start(), so clicking
+    // "Start Calibration" inside the open overlay only re-ran show() and calibration
+    // never began.
     const wireCalibBtn = (btnId) => {
       const btn = $(`#${btnId}`);
       if (!btn) return;
@@ -2533,12 +2539,21 @@ class AccessEyeApp {
           this.toast.show('Camera Required', 'Start the camera first, then click Start Calibration.', 'warn');
           return;
         }
-        // Navigate to demo page if needed (calibration overlay lives there)
+        // If the calibration overlay is already open, this click means "START NOW"
+        const overlay = $('#calibration-overlay');
+        if (overlay && overlay.style.display !== 'none') {
+          // Guard: don't double-start if already collecting
+          if (!calibUI.collecting) {
+            calibUI.start();
+          }
+          return;
+        }
+        // Overlay is not yet open → navigate to demo page and show it
         const demoPage = $('#page-demo');
         if (demoPage && !demoPage.classList.contains('active')) {
           this._navigateTo('demo');
         }
-        // Show overlay, let user press Start Calibration manually
+        // Show overlay (re-enables button so user can press it again to start)
         this._showCalibrationFlow();
         // Switch mode tab to calibrate
         $$('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === 'calibrate'));
