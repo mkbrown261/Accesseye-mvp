@@ -1516,13 +1516,22 @@ class Phase3Orchestrator {
         const ivtResult = self.ivt.update(screenX, screenY, conf);
         self._lastIVTResult = ivtResult;
 
-        // IVT dwell gating: suppress UIRegistry dwell during saccades
-        if (ivtResult.isSaccading) {
-          // Reset dwell progress on saccade start
-          if (orch.app.uiRegistry?.focusedId) {
-            self.dwell.reset(orch.app.uiRegistry.focusedId);
-          }
-        }
+        // FIX DWELL-5: IVT dwell gating — PAUSE only, never reset on saccade.
+        // Old behaviour: self.dwell.reset() on every saccade frame wiped the
+        // dwellStart timestamp, so the dwell progress was zeroed on EVERY
+        // micro-saccade (2-5 Hz during normal fixation). It could never
+        // accumulate to 300ms because micro-saccades arrived first.
+        //
+        // New behaviour: AdaptiveDwellTimer.update() already handles gating
+        // internally — when isFixating=false it returns early without
+        // advancing the timer, but does NOT delete the dwellStart entry.
+        // So dwell pauses during a micro-saccade and RESUMES from where it
+        // left off when fixation restores. No external reset needed here.
+        //
+        // We only reset if the cursor has moved to a DIFFERENT element
+        // (that's handled by AdaptiveDwellTimer detecting elementId change).
+        // Removing the reset below is the entire fix — the pause is already
+        // built into the update() logic above.
 
         // Update P3 UI stats
         self._updateP3UI(ivtResult);

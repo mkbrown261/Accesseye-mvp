@@ -910,6 +910,22 @@ class UIElementRegistry {
     this._lastRefresh = 0;
     this.BBOX_REFRESH_INTERVAL = 200;  // ms
 
+    // FIX DWELL-1: Focus grace period.
+    // Eye tremor causes the cursor to flicker on/off a button boundary many
+    // times per second. Without a grace period every flicker resets dwellStart
+    // to zero, so the dwell NEVER accumulates to completion.
+    // Grace period: the cursor must be OFF a target for at least FOCUS_GRACE_MS
+    // before we commit to unfocusing it. During the grace window the old focused
+    // element is kept and its dwell continues accumulating.
+    this.FOCUS_GRACE_MS = 200;   // ms cursor must be off target before unfocus
+    this._leaveTime    = null;   // timestamp when cursor first left focused element
+    this._pendingHitId = null;   // hitId at last frame (may differ from focusedId)
+
+    // FIX DWELL-4: Expanded hit padding (was 8px — too small for webcam gaze error)
+    // Webcam gaze accuracy is typically ±40–80px. An 8px expansion gives almost
+    // no extra tolerance. 20px gives a meaningful buffer without false positives.
+    this.HIT_PADDING = 20;
+
     // Recalculate bboxes on resize
     window.addEventListener('resize', () => this._refreshBBoxes());
   }
@@ -961,17 +977,40 @@ class UIElementRegistry {
 
     for (const [id, entry] of this.elements) {
       const { x, y, w, h } = entry.bbox;
-      // Expand hit area by 8px for accessibility
-      if (screenX >= x - 8 && screenX <= x + w + 8 &&
-          screenY >= y - 8 && screenY <= y + h + 8) {
+      // FIX DWELL-4: Expanded hit padding (20px, was 8px)
+      const pad = this.HIT_PADDING;
+      if (screenX >= x - pad && screenX <= x + w + pad &&
+          screenY >= y - pad && screenY <= y + h + pad) {
         hitId = id;
         break;
       }
     }
 
-    if (hitId !== this.focusedId) {
-      if (this.focusedId) this._unfocus(this.focusedId);
-      if (hitId) this._beginFocus(hitId);
+    // FIX DWELL-1: Grace-period unfocus logic.
+    // Old code: any frame where hitId !== focusedId immediately reset dwell to 0.
+    // New code: only unfocus after the cursor has been OFF the target for
+    // FOCUS_GRACE_MS continuously. A new valid hit always cancels the grace timer.
+    if (hitId !== null) {
+      // Cursor is on something — cancel any pending leave
+      this._leaveTime = null;
+      if (hitId !== this.focusedId) {
+        // Switched to a different element — immediately focus the new one
+        if (this.focusedId) this._unfocus(this.focusedId);
+        this._beginFocus(hitId);
+      }
+    } else {
+      // Cursor is on nothing
+      if (this.focusedId) {
+        if (this._leaveTime === null) {
+          // Start the grace timer
+          this._leaveTime = t;
+        } else if (t - this._leaveTime >= this.FOCUS_GRACE_MS) {
+          // Grace period expired — now actually unfocus
+          this._unfocus(this.focusedId);
+          this._leaveTime = null;
+        }
+        // else: still within grace period — keep focus, dwell continues
+      }
     }
 
     // Update dwell timer
@@ -1001,6 +1040,7 @@ class UIElementRegistry {
     this.focusedId = null;
     this.dwellStart = null;
     this.dwellProgress = 0;
+    this._leaveTime = null;  // FIX DWELL-1: reset grace timer on explicit unfocus
   }
 
   _updateDwellUI(id, progress) {
@@ -2607,8 +2647,8 @@ class AccessEyeApp {
     }
 
     this.snapEngine = new SnapToEngine({
-      enabled        : false,  // off by default; toggled via UI
-      autoDwellClick : false,  // dwell-to-click requires explicit opt-in
+      enabled        : false,   // off by default; toggled via UI
+      autoDwellClick : true,    // FIX DWELL-3: ON by default — core accessibility feature
     });
 
     // ── Snap events ──────────────────────────────────────────────────
@@ -2660,6 +2700,11 @@ class AccessEyeApp {
     // ── Auto-dwell-click toggle ──────────────────────────────────────
     const autoDwellBtn = $('#snap-autodwell-btn');
     if (autoDwellBtn) {
+      // FIX DWELL-3: Sync initial button appearance to autoDwellClick=true
+      autoDwellBtn.classList.add('active');
+      const initLabel = autoDwellBtn.querySelector('.autodwell-label');
+      if (initLabel) initLabel.textContent = 'ON';
+
       autoDwellBtn.addEventListener('click', () => {
         const newState = !this.snapEngine.autoDwellClick;
         this.snapEngine.autoDwellClick = newState;

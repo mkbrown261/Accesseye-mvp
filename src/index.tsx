@@ -1137,13 +1137,13 @@ app.get('/', (c) => {
                   <div class="p2-section-title"><i class="fas fa-sliders-h"></i> Snap Settings</div>
                   <div class="snap-slider-row">
                     <label class="snap-slider-lbl">Snap radius</label>
-                    <input type="range" id="snap-threshold-slider" min="40" max="200" step="5" value="90" class="snap-slider">
-                    <span class="snap-slider-val" id="snap-threshold-val">90px</span>
+                    <input type="range" id="snap-threshold-slider" min="40" max="200" step="5" value="140" class="snap-slider"><!-- FIX DWELL-4: default 90→140 -->
+                    <span class="snap-slider-val" id="snap-threshold-val">140px</span>
                   </div>
                   <div class="snap-slider-row">
                     <label class="snap-slider-lbl">Dwell time</label>
-                    <input type="range" id="snap-dwell-slider" min="300" max="2000" step="50" value="900" class="snap-slider">
-                    <span class="snap-slider-val" id="snap-dwell-val">900ms</span>
+                    <input type="range" id="snap-dwell-slider" min="300" max="2000" step="50" value="800" class="snap-slider"><!-- FIX DWELL-3: default 900→800 -->
+                    <span class="snap-slider-val" id="snap-dwell-val">800ms</span>
                   </div>
                   <div class="snap-slider-row">
                     <label class="snap-slider-lbl">Smoothing</label>

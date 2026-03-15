@@ -234,8 +234,8 @@ class AdaptiveGazeLearner {
   constructor() {
     /** Live tunable config — SnapToEngine reads these */
     this.config = {
-      snapThresholdDistance : 90,    // px
-      dwellClickTime        : 900,   // ms
+      snapThresholdDistance : 140,   // FIX DWELL-4: was 90px — too small for webcam gaze error (±40-80px)
+      dwellClickTime        : 800,   // ms (slightly reduced from 900 for better UX)
       cursorSmoothing       : 0.22,  // lerp alpha (0=slow, 1=instant)
       predictionWeight      : 0.35,  // history vs geometry
       zoneActivationTime    : 1200,  // ms for gaze-command zones
@@ -352,8 +352,8 @@ class AdaptiveGazeLearner {
       sessionStart     : _now(),
     };
     this.config = {
-      snapThresholdDistance : 90,
-      dwellClickTime        : 900,
+      snapThresholdDistance : 140,   // FIX DWELL-4: was 90px
+      dwellClickTime        : 800,
       cursorSmoothing       : 0.22,
       predictionWeight      : 0.35,
       zoneActivationTime    : 1200,
@@ -392,7 +392,7 @@ class SnapToEngine {
     if (opts.predictionWeight !== undefined) this._cfg.predictionWeight      = opts.predictionWeight;
 
     this.enabled       = opts.enabled ?? false;
-    this.autoDwellClick = opts.autoDwellClick ?? false;
+    this.autoDwellClick = opts.autoDwellClick ?? true;  // FIX DWELL-3: ON by default
 
     // Smooth cursor state
     this._curX   = 0;
@@ -408,6 +408,14 @@ class SnapToEngine {
     this._dwelling     = false;
     this._dwellStart   = 0;
     this._dwellProgress = 0;
+
+    // FIX DWELL-2: Snap release grace period.
+    // Without this, one frame where predict() returns null (cursor slightly
+    // outside snap radius due to tremor) immediately wipes dwell progress.
+    // Grace period: candidate must be absent for RELEASE_GRACE_MS before
+    // we commit to releasing the snap lock and resetting the dwell timer.
+    this._releaseGraceMs  = 150;   // ms candidate must be absent before release
+    this._releaseGraceT   = null;  // timestamp when candidate first disappeared
 
     // Event callbacks
     this._callbacks = {};
@@ -447,6 +455,7 @@ class SnapToEngine {
     this._dwelling      = false;
     this._dwellStart    = 0;
     this._dwellProgress = 0;
+    this._releaseGraceT = null;  // FIX DWELL-2
 
     // Reset smooth-cursor state so next enable() starts from current raw position
     this._curX  = 0;
@@ -502,6 +511,9 @@ class SnapToEngine {
       const candidate = this.predictor.predict(rawPx, rawPy, this._cfg.snapThresholdDistance);
 
       if (candidate) {
+        // Candidate found — cancel any pending release grace
+        this._releaseGraceT = null;
+
         targetX = candidate.center.x;
         targetY = candidate.center.y;
         snapped = true;
@@ -537,14 +549,28 @@ class SnapToEngine {
           this._activateTarget(candidate.el, candidate.dist, vel);
         }
       } else {
-        // No nearby target — release snap
+        // FIX DWELL-2: No nearby target — apply release grace period.
+        // Old code released immediately (1 bad frame = full dwell reset).
+        // New code: only release after RELEASE_GRACE_MS of continuous absence.
         if (this._snapTarget) {
-          this._emit('release', { el: this._snapTarget });
-          this._clearHighlight();
-          this._snapTarget    = null;
-          this._dwelling      = false;
-          this._dwellStart    = 0;
-          this._dwellProgress = 0;
+          if (this._releaseGraceT === null) {
+            // Start grace timer — keep current target locked for now
+            this._releaseGraceT = t;
+          } else if (t - this._releaseGraceT >= this._releaseGraceMs) {
+            // Grace expired — now actually release
+            this._emit('release', { el: this._snapTarget });
+            this._clearHighlight();
+            this._snapTarget    = null;
+            this._dwelling      = false;
+            this._dwellStart    = 0;
+            this._dwellProgress = 0;
+            this._releaseGraceT = null;
+          }
+          // else: still within grace — keep dwell accumulating, use last snap center
+          targetX = this._snapCenterX;
+          targetY = this._snapCenterY;
+          snapped = true;
+          snapEl  = this._snapTarget;
         }
       }
     } else {
@@ -552,6 +578,7 @@ class SnapToEngine {
       if (this._snapTarget) {
         this._clearHighlight();
         this._snapTarget = null;
+        this._releaseGraceT = null;  // FIX DWELL-2
       }
     }
 
