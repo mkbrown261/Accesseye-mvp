@@ -24,7 +24,7 @@
 /* ─────────────────────────────────────────────────────────────────────────
    CONSTANTS
 ───────────────────────────────────────────────────────────────────────── */
-const VN_VERSION = '2.0.0';
+const VN_VERSION = '1.0.0';
 
 // Words to strip before matching
 const FILLER_WORDS = new Set([
@@ -34,7 +34,6 @@ const FILLER_WORDS = new Set([
 
 // Voice commands → action keys
 const ACTION_COMMANDS = {
-  // ── existing ──────────────────────────────────────────────────
   click    : 'click',
   press    : 'click',
   tap      : 'click',
@@ -42,13 +41,8 @@ const ACTION_COMMANDS = {
   select   : 'select',
   choose   : 'select',
   scroll   : 'scroll',
-  'scroll up'      : 'scrollUp',
-  'scroll down'    : 'scrollDown',
-  'stop scrolling' : 'stopScrolling',
-  'scroll top'     : 'scrollTop',
-  'scroll bottom'  : 'scrollBottom',
-  'scroll to top'  : 'scrollTop',
-  'scroll to bottom': 'scrollBottom',
+  'scroll up'   : 'scrollUp',
+  'scroll down' : 'scrollDown',
   play     : 'play',
   pause    : 'pause',
   stop     : 'stop',
@@ -68,71 +62,6 @@ const ACTION_COMMANDS = {
   start    : 'start-camera-btn',
   restart  : 'start-camera-btn',
   camera   : 'start-camera-btn',
-
-  // ── new: navigation ───────────────────────────────────────────
-  forward         : 'navForward',
-  'go forward'    : 'navForward',
-  reload          : 'reloadPage',
-  refresh         : 'reloadPage',
-  'reload page'   : 'reloadPage',
-  'refresh page'  : 'reloadPage',
-  'go home'       : 'nav-home',
-  'open new tab'  : 'newTab',
-  'new tab'       : 'newTab',
-  'close tab'     : 'closeTab',
-
-  // ── new: click variants ───────────────────────────────────────
-  'double click'  : 'dblclick',
-  'right click'   : 'rightClick',
-  'context menu'  : 'rightClick',
-
-  // ── new: focus traversal ──────────────────────────────────────
-  'next item'     : 'focusNext',
-  'previous item' : 'focusPrev',
-  next            : 'focusNext',
-  previous        : 'focusPrev',
-  prev            : 'focusPrev',
-
-  // ── new: zoom ─────────────────────────────────────────────────
-  'zoom in'       : 'zoomIn',
-  'zoom out'      : 'zoomOut',
-  'reset zoom'    : 'zoomReset',
-  zoom            : 'zoomIn',
-
-  // ── new: settings ─────────────────────────────────────────────
-  'open settings' : 'openSettings',
-  settings        : 'openSettings',
-
-  // ── new: text editing ─────────────────────────────────────────
-  search          : 'focusSearch',
-  'select all'    : 'selectAll',
-  copy            : 'copyText',
-  paste           : 'pasteText',
-  cut             : 'cutText',
-  'new folder'    : 'newFolder',
-  rename          : 'renameItem',
-  delete          : 'deleteItem',
-  'open file'     : 'openFile',
-
-  // ── new: discovery ────────────────────────────────────────────
-  'show clickable'       : 'showClickable',
-  'show clickable items' : 'showClickable',
-  'hide clickable'       : 'hideClickable',
-  'hide clickable items' : 'hideClickable',
-  'what can i click'     : 'showClickable',
-  'show interactive'     : 'showClickable',
-  'focus on'             : 'focusOn',
-
-  // ── new: control recovery ─────────────────────────────────────
-  'pause control'  : 'pauseControl',
-  'pause voice'    : 'pauseControl',
-  'resume control' : 'resumeControl',
-  'resume voice'   : 'resumeControl',
-  resume           : 'resumeControl',
-  'reset cursor'   : 'resetCursor',
-  'clear selection': 'clearSelection',
-  'exit mode'      : 'exitMode',
-  exit             : 'exitMode',
 };
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -264,9 +193,6 @@ class NavigationElementList {
 class VoiceNavigationController {
   constructor() {
     this.enabled      = false;
-    this._paused      = false;          // NEW: pause/resume control
-    this._scrollTimer = null;           // NEW: for stop-scrolling
-    this._clickableOverlays = [];       // NEW: discovery overlays
     this.recognition  = null;
     this.navList      = new NavigationElementList();
     this._lastGazeTarget = null;
@@ -422,40 +348,10 @@ class VoiceNavigationController {
 
   /* ── Utterance Processing ── */
   _processUtterance(text, confidence = 1) {
-    const lower = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-
-    // Always allow resume even when paused
-    if (this._paused) {
-      if (lower.includes('resume') || lower.includes('resume control') || lower.includes('resume voice')) {
-        this._performAction(null, 'resumeControl');
-        this._setTranscript('▶ Resumed voice control');
-      } else {
-        this._setTranscript(`⏸ Paused — say "Resume Control" to re-enable`);
-      }
-      return;
-    }
-
     const words = this._tokenise(text);
     if (!words.length) return;
 
     console.log(`[VoiceNav] heard: "${text}" (words: [${words.join(', ')}])`);
-
-    // 0. Check multi-word ACTION_COMMANDS against the raw lowercase text first
-    const multiAction = this._extractMultiWordAction(lower);
-    if (multiAction) {
-      // Special case: "focus on [name]" — extract what follows
-      if (multiAction === 'focusOn') {
-        const afterFocus = lower.replace(/focus on\s*/i, '').trim();
-        if (afterFocus) {
-          this._handleFocusOn(afterFocus);
-        } else {
-          this._setStatus('Focus on — say element name', '#f59e0b');
-        }
-        return;
-      }
-      this._handleIntentFusion(multiAction, confidence, text);
-      return;
-    }
 
     // 1. Check for pure action commands that apply to gaze target (Intent Fusion)
     const action = this._extractAction(words);
@@ -492,18 +388,6 @@ class VoiceNavigationController {
     setTimeout(() => {
       if (this.enabled) this._setStatus('Listening…', '#00d4ff');
     }, 1500);
-  }
-
-  /** Check raw lowercase text against all multi-word ACTION_COMMANDS keys */
-  _extractMultiWordAction(lower) {
-    // Sort by length descending so longest match wins
-    const multiKeys = Object.keys(ACTION_COMMANDS)
-      .filter(k => k.includes(' '))
-      .sort((a, b) => b.length - a.length);
-    for (const key of multiKeys) {
-      if (lower.includes(key)) return ACTION_COMMANDS[key];
-    }
-    return null;
   }
 
   _tokenise(text) {
@@ -544,24 +428,6 @@ class VoiceNavigationController {
 
   /* ── Intent Fusion: apply command to gaze target ── */
   _handleIntentFusion(action, confidence, rawText) {
-    // Actions that don't need a DOM element target
-    const noTargetActions = new Set([
-      'scrollUp','scrollDown','scroll','stopScrolling','scrollTop','scrollBottom',
-      'navForward','reloadPage','newTab','closeTab',
-      'zoomIn','zoomOut','zoomReset',
-      'openSettings','focusSearch','selectAll','copyText','pasteText','cutText',
-      'newFolder','renameItem','deleteItem','openFile',
-      'showClickable','hideClickable',
-      'pauseControl','resumeControl','resetCursor','clearSelection','exitMode',
-      'stop','focusNext','focusPrev',
-    ]);
-
-    if (noTargetActions.has(action)) {
-      this._setStatus(`▶ ${rawText}`, '#00d4ff');
-      this._performAction(null, action);
-      return;
-    }
-
     // Read gaze cursor position from app (read-only, no modification)
     const app = window.app;
     const gx = app?._lastScreenX ?? (window.innerWidth  / 2);
@@ -572,7 +438,7 @@ class VoiceNavigationController {
     if (!nearest) {
       this._setStatus('No target at gaze point', '#f59e0b');
       this._setTranscript(`⚠ No element near gaze for "${rawText}"`);
-      setTimeout(() => { if (this.enabled && !this._paused) this._setStatus('Listening…', '#00d4ff'); }, 2000);
+      setTimeout(() => { if (this.enabled) this._setStatus('Listening…', '#00d4ff'); }, 2000);
       return;
     }
 
@@ -595,48 +461,43 @@ class VoiceNavigationController {
   }
 
   _performAction(entry, action) {
-    const el = entry?.el;
+    const el = entry.el;
 
     switch (action) {
-      // ── existing ────────────────────────────────────────────────
       case 'click':
       case 'select':
       case 'open':
       case 'submit': {
-        if (!el) break;
+        // Dispatch real click — same as manual click
         el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         this._log(`Voice activated: ${entry.text} (${action})`);
         break;
       }
       case 'scrollUp': {
-        const cu = el ? (this._findScrollable(el) || document.documentElement) : document.documentElement;
-        this._activeScrollEl = cu;
-        cu.scrollBy({ top: -200, behavior: 'smooth' });
+        const container = this._findScrollable(el) || document.documentElement;
+        container.scrollBy({ top: -200, behavior: 'smooth' });
         this._log('Voice: Scroll Up');
         break;
       }
       case 'scrollDown':
       case 'scroll': {
-        const cd = el ? (this._findScrollable(el) || document.documentElement) : document.documentElement;
-        this._activeScrollEl = cd;
-        cd.scrollBy({ top: 200, behavior: 'smooth' });
+        const container = this._findScrollable(el) || document.documentElement;
+        container.scrollBy({ top: 200, behavior: 'smooth' });
         this._log('Voice: Scroll Down');
         break;
       }
       case 'play':
       case 'pause': {
         const media = document.querySelector('video, audio');
-        if (media) { action === 'play' ? media.play() : media.pause(); }
-        this._log(`Voice: ${action}`);
-        break;
-      }
-      case 'stop': {
-        clearTimeout(this._confirmTimer);
-        this._log('Voice: Stop');
+        if (media) {
+          action === 'play' ? media.play() : media.pause();
+          this._log(`Voice: ${action}`);
+        }
         break;
       }
       case 'back':
       case 'cancel': {
+        // Try cancel-calib-btn first, then history.back
         const cancelBtn = document.getElementById('cancel-calib-btn');
         if (cancelBtn && getComputedStyle(cancelBtn.closest('.calibration-overlay') || cancelBtn).display !== 'none') {
           cancelBtn.click();
@@ -646,210 +507,6 @@ class VoiceNavigationController {
         this._log('Voice: Back/Cancel');
         break;
       }
-
-      // ── new navigation ──────────────────────────────────────────
-      case 'navForward':
-        history.forward();
-        this._log('Voice: Go Forward');
-        break;
-
-      case 'reloadPage':
-        this._log('Voice: Reload Page');
-        setTimeout(() => location.reload(), 300);
-        break;
-
-      case 'newTab':
-        window.open('about:blank', '_blank');
-        this._log('Voice: Open New Tab');
-        break;
-
-      case 'closeTab':
-        this._log('Voice: Close Tab (browser may block)');
-        window.close();
-        break;
-
-      // ── new click variants ───────────────────────────────────────
-      case 'dblclick': {
-        if (!el) break;
-        el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-        this._log(`Voice: Double Click → ${entry.text}`);
-        break;
-      }
-      case 'rightClick': {
-        if (!el) break;
-        el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-        this._log(`Voice: Right Click → ${entry.text}`);
-        break;
-      }
-
-      // ── new scroll variants ──────────────────────────────────────
-      case 'stopScrolling':
-        clearInterval(this._scrollTimer);
-        this._scrollTimer = null;
-        this._log('Voice: Stop Scrolling');
-        break;
-
-      case 'scrollTop':
-        (this._activeScrollEl || document.documentElement).scrollTo({ top: 0, behavior: 'smooth' });
-        this._log('Voice: Scroll To Top');
-        break;
-
-      case 'scrollBottom': {
-        const sc = this._activeScrollEl || document.documentElement;
-        sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' });
-        this._log('Voice: Scroll To Bottom');
-        break;
-      }
-
-      // ── focus traversal ──────────────────────────────────────────
-      case 'focusNext': {
-        const focusable = Array.from(document.querySelectorAll(
-          'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
-        )).filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
-        const cur = document.activeElement;
-        const idx = focusable.indexOf(cur);
-        const next = focusable[idx + 1] || focusable[0];
-        if (next) { next.focus(); this._highlightElement(next); setTimeout(() => this._unhighlightElement(next), 1000); }
-        this._log('Voice: Next Item');
-        break;
-      }
-      case 'focusPrev': {
-        const focusable2 = Array.from(document.querySelectorAll(
-          'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
-        )).filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
-        const cur2 = document.activeElement;
-        const idx2 = focusable2.indexOf(cur2);
-        const prev = focusable2[idx2 - 1] || focusable2[focusable2.length - 1];
-        if (prev) { prev.focus(); this._highlightElement(prev); setTimeout(() => this._unhighlightElement(prev), 1000); }
-        this._log('Voice: Previous Item');
-        break;
-      }
-
-      // ── zoom ─────────────────────────────────────────────────────
-      case 'zoomIn': {
-        const cur3 = parseFloat(document.body.style.zoom || '1');
-        document.body.style.zoom = Math.min(cur3 + 0.1, 3).toFixed(1);
-        this._log(`Voice: Zoom In → ${document.body.style.zoom}`);
-        break;
-      }
-      case 'zoomOut': {
-        const cur4 = parseFloat(document.body.style.zoom || '1');
-        document.body.style.zoom = Math.max(cur4 - 0.1, 0.5).toFixed(1);
-        this._log(`Voice: Zoom Out → ${document.body.style.zoom}`);
-        break;
-      }
-      case 'zoomReset':
-        document.body.style.zoom = '1';
-        this._log('Voice: Reset Zoom');
-        break;
-
-      // ── settings ─────────────────────────────────────────────────
-      case 'openSettings': {
-        const settingsBtn = document.querySelector('[data-page="settings"], [data-id="settings"], #settings-btn');
-        if (settingsBtn) settingsBtn.click();
-        else this._showToast('Settings', 'No settings panel found', 'warn');
-        this._log('Voice: Open Settings');
-        break;
-      }
-
-      // ── text editing ─────────────────────────────────────────────
-      case 'focusSearch': {
-        const searchEl = document.querySelector('input[type="search"],input[type="text"],[role="searchbox"],#search-input');
-        if (searchEl) { searchEl.focus(); this._highlightElement(searchEl); setTimeout(() => this._unhighlightElement(searchEl), 1500); }
-        this._log('Voice: Focus Search');
-        break;
-      }
-      case 'selectAll':
-        document.execCommand('selectAll');
-        this._log('Voice: Select All');
-        break;
-
-      case 'copyText':
-        document.execCommand('copy');
-        this._log('Voice: Copy');
-        break;
-
-      case 'pasteText':
-        document.execCommand('paste');
-        this._log('Voice: Paste');
-        break;
-
-      case 'cutText':
-        document.execCommand('cut');
-        this._log('Voice: Cut');
-        break;
-
-      case 'newFolder':
-      case 'renameItem':
-      case 'deleteItem':
-      case 'openFile':
-        this._showToast('Voice Command', `"${action}" requires a file manager context`, 'info');
-        this._log(`Voice: ${action} (no-op in browser context)`);
-        break;
-
-      // ── discovery ────────────────────────────────────────────────
-      case 'showClickable':
-        this._showClickableOverlays();
-        break;
-
-      case 'hideClickable':
-        this._hideClickableOverlays();
-        this._log('Voice: Hide Clickable Items');
-        break;
-
-      case 'focusOn':
-        // handled upstream in _processUtterance
-        break;
-
-      // ── control recovery ─────────────────────────────────────────
-      case 'pauseControl':
-        this._paused = true;
-        this._setStatus('⏸ Paused', '#f59e0b');
-        this._setTranscript('Voice control paused — say "Resume Control"');
-        this._showToast('Voice Paused', 'Say "Resume Control" to re-enable', 'info');
-        this._log('Voice: Pause Control');
-        break;
-
-      case 'resumeControl':
-        this._paused = false;
-        this._setStatus('Listening…', '#00d4ff');
-        this._setTranscript('Voice control resumed');
-        this._showToast('Voice Resumed', 'Listening for commands', 'success');
-        this._log('Voice: Resume Control');
-        break;
-
-      case 'resetCursor': {
-        // Move gaze cursor to screen center via app API (read-write on cursor only)
-        const cx = window.innerWidth / 2;
-        const cy = window.innerHeight / 2;
-        const gazeEl = document.getElementById('gaze-cursor');
-        if (gazeEl) {
-          gazeEl.style.left = cx + 'px';
-          gazeEl.style.top  = cy + 'px';
-        }
-        this._log('Voice: Reset Cursor to center');
-        break;
-      }
-
-      case 'clearSelection':
-        window.getSelection?.()?.removeAllRanges();
-        document.querySelectorAll('.gaze-active,.snap-active').forEach(e => e.classList.remove('gaze-active','snap-active'));
-        this._log('Voice: Clear Selection');
-        break;
-
-      case 'exitMode': {
-        // Close any visible overlay (calibration, modals)
-        const calibOverlay = document.getElementById('calibration-overlay');
-        if (calibOverlay && calibOverlay.style.display !== 'none') {
-          document.getElementById('cancel-calib-btn')?.click();
-        }
-        // Remove any highlighted elements
-        this._hideClickableOverlays();
-        window.getSelection?.()?.removeAllRanges();
-        this._log('Voice: Exit Mode');
-        break;
-      }
-
       default: {
         // Treat special action IDs as direct element IDs (nav-*, mode-*)
         const directEl = document.getElementById(action) || document.querySelector(`[data-id="${action}"]`);
@@ -862,11 +519,11 @@ class VoiceNavigationController {
 
     // Brief "executed" badge
     setTimeout(() => {
-      if (this.enabled && !this._paused) this._setStatus('Listening…', '#00d4ff');
+      if (this.enabled) this._setStatus('Listening…', '#00d4ff');
     }, 1500);
 
     // Remove highlight after action
-    if (el) setTimeout(() => this._unhighlightElement(el), 1200);
+    setTimeout(() => this._unhighlightElement(el), 1200);
   }
 
   _findScrollable(startEl) {
@@ -879,79 +536,6 @@ class VoiceNavigationController {
       el = el.parentElement;
     }
     return null;
-  }
-
-  /* ── Discovery: Focus On [name] ── */
-  _handleFocusOn(nameStr) {
-    this.navList.scan();
-    const words = nameStr.split(/\s+/).filter(Boolean);
-    const match = this.navList.findBest(words);
-    if (match) {
-      this._highlightElement(match.entry.el);
-      match.entry.el.focus?.();
-      this._setStatus(`Focus → ${match.entry.text}`, '#00ff88');
-      this._setTranscript(`Focused: ${match.entry.text}`);
-      this._log(`Focus on: ${match.entry.text}`);
-      setTimeout(() => this._unhighlightElement(match.entry.el), 2000);
-    } else {
-      this._setStatus(`No element matching "${nameStr}"`, '#f59e0b');
-      this._setTranscript(`⚠ No element found: "${nameStr}"`);
-    }
-    setTimeout(() => { if (this.enabled && !this._paused) this._setStatus('Listening…', '#00d4ff'); }, 2500);
-  }
-
-  /* ── Discovery: Show / Hide Clickable Items ── */
-  _showClickableOverlays() {
-    this._hideClickableOverlays();
-    this.navList.scan();
-    this.navList.elements.forEach(entry => {
-      const r = entry.el.getBoundingClientRect();
-      if (r.width === 0) return;
-      const badge = document.createElement('div');
-      badge.className = 'vn-clickable-badge';
-      badge.textContent = entry.text.slice(0, 18);
-      badge.style.cssText = `
-        position:fixed;
-        left:${r.left + r.width / 2}px;
-        top:${r.top - 2}px;
-        transform:translate(-50%,-100%);
-        background:rgba(0,212,255,0.85);
-        color:#000;
-        font-size:10px;
-        font-weight:700;
-        padding:2px 5px;
-        border-radius:3px;
-        pointer-events:none;
-        z-index:99999;
-        white-space:nowrap;
-        max-width:120px;
-        overflow:hidden;
-        text-overflow:ellipsis;
-      `;
-      document.body.appendChild(badge);
-      this._clickableOverlays.push(badge);
-      // Also ring the element
-      entry.el._vnRingOrig = entry.el.style.outline;
-      entry.el.style.outline = '1px dashed rgba(0,212,255,0.6)';
-    });
-    this._setStatus(`${this._clickableOverlays.length} clickable items`, '#00d4ff');
-    this._setTranscript(`Showing ${this._clickableOverlays.length} clickable items — say "Hide Clickable Items"`);
-    this._log(`Showing ${this._clickableOverlays.length} clickable items`);
-    // Auto-hide after 8 seconds
-    setTimeout(() => this._hideClickableOverlays(), 8000);
-  }
-
-  _hideClickableOverlays() {
-    this._clickableOverlays.forEach(b => b.remove());
-    this._clickableOverlays = [];
-    // Remove rings
-    this.navList.elements.forEach(entry => {
-      if (entry.el._vnRingOrig !== undefined) {
-        entry.el.style.outline = entry.el._vnRingOrig;
-        delete entry.el._vnRingOrig;
-      }
-    });
-    if (this.enabled && !this._paused) this._setStatus('Listening…', '#00d4ff');
   }
 
   /* ── Visual Confirmation ── */
@@ -1025,7 +609,7 @@ class VoiceNavigationController {
       };
     }
 
-    console.log(`%c Voice Navigation + Intent Fusion ✅ v${VN_VERSION} — 40 commands`,
+    console.log(`%c Voice Navigation + Intent Fusion ✅ v${VN_VERSION}`,
                 'color:#00d4ff;font-weight:bold;font-size:12px;');
   };
 
