@@ -728,7 +728,86 @@ app.get('/', (c) => {
           </div>
         </div>
 
+        <!-- Snap-To & Intelligent Targeting — RIGHT BELOW VOICE NAV -->
+        <div class="snap-panel" id="snap-panel">
+          <div class="snap-panel-header">
+            <i class="fas fa-magnet"></i>
+            <span>Snap-To &amp; Intelligent Targeting</span>
+          </div>
 
+          <!-- Master toggle -->
+          <div class="snap-section">
+            <div class="snap-row">
+              <span class="snap-lbl"><i class="fas fa-magnet"></i> Snap-To Mode</span>
+              <button class="p2-toggle-btn snap-master-toggle" id="snap-toggle-btn">
+                <i class="fas fa-power-off"></i>
+                Enable &nbsp;<span class="snap-toggle-label">OFF</span>
+              </button>
+            </div>
+            <div style="font-size:0.72rem;color:#888;margin-top:4px;line-height:1.4">
+              Cursor auto-snaps to the nearest interactive element.
+              Pinch / air-tap or dwell to activate.
+            </div>
+          </div>
+
+          <!-- Auto dwell-click -->
+          <div class="snap-section">
+            <div class="snap-row">
+              <span class="snap-lbl"><i class="fas fa-clock"></i> Auto Dwell-Click</span>
+              <button class="p2-toggle-btn" id="snap-autodwell-btn">
+                <i class="fas fa-hand-pointer"></i>
+                Auto-click &nbsp;<span class="autodwell-label">OFF</span>
+              </button>
+            </div>
+            <div style="font-size:0.72rem;color:#888;margin-top:4px">
+              Activates snapped element automatically after dwell time.
+            </div>
+          </div>
+
+          <!-- Settings sliders -->
+          <div class="snap-section">
+            <div class="p2-section-title" style="margin-bottom:10px">
+              <i class="fas fa-sliders-h"></i> Settings
+            </div>
+            <div class="snap-slider-row">
+              <label class="snap-slider-lbl">Snap radius</label>
+              <input type="range" id="snap-threshold-slider" min="40" max="200" step="5" value="90" class="snap-slider">
+              <span class="snap-slider-val" id="snap-threshold-val">90px</span>
+            </div>
+            <div class="snap-slider-row">
+              <label class="snap-slider-lbl">Dwell time</label>
+              <input type="range" id="snap-dwell-slider" min="300" max="2000" step="50" value="900" class="snap-slider">
+              <span class="snap-slider-val" id="snap-dwell-val">900ms</span>
+            </div>
+            <div class="snap-slider-row">
+              <label class="snap-slider-lbl">Cursor smoothing</label>
+              <input type="range" id="snap-smooth-slider" min="5" max="60" step="1" value="22" class="snap-slider">
+              <span class="snap-slider-val" id="snap-smooth-val">22%</span>
+            </div>
+            <div class="snap-slider-row">
+              <label class="snap-slider-lbl">Prediction weight</label>
+              <input type="range" id="snap-predict-slider" min="0" max="70" step="5" value="35" class="snap-slider">
+              <span class="snap-slider-val" id="snap-predict-val">35%</span>
+            </div>
+          </div>
+
+          <!-- Adaptive learning stats -->
+          <div class="snap-section">
+            <div class="p2-section-title" style="margin-bottom:6px">
+              <i class="fas fa-brain"></i> Adaptive Gaze Learning
+            </div>
+            <div class="snap-stat-row">
+              <span class="snap-stat-lbl">Total activations</span>
+              <span class="snap-stat-val" id="snap-activations-val">0</span>
+            </div>
+            <div style="font-size:0.72rem;color:#888;margin:4px 0 8px">
+              Settings auto-tune as you use the system.
+            </div>
+            <button class="p2-toggle-btn" id="snap-profile-reset" style="width:100%">
+              <i class="fas fa-undo"></i> Reset Adaptive Profile
+            </button>
+          </div>
+        </div>
 
         <!-- RIGHT: Interactive Demo Area -->
         <div class="demo-main">
@@ -1043,76 +1122,6 @@ app.get('/', (c) => {
                 </div>
 
               </div><!-- /RIGHT col -->
-
-              <!-- SNAP-TO col -->
-              <div class="p2-grid-col p2-snap-col">
-
-                <!-- Snap-To master toggle -->
-                <div class="p2-section">
-                  <div class="p2-section-title" style="color:#a78bfa;"><i class="fas fa-magnet" style="color:#7c4dff;"></i> Snap-To &amp; Targeting</div>
-                  <div class="snap-row" style="margin-bottom:6px;">
-                    <span class="snap-lbl"><i class="fas fa-magnet"></i> Snap-To Mode</span>
-                    <button class="p2-toggle-btn snap-master-toggle" id="snap-toggle-btn">
-                      <i class="fas fa-power-off"></i>
-                      Enable &nbsp;<span class="snap-toggle-label">OFF</span>
-                    </button>
-                  </div>
-                  <div style="font-size:0.70rem;color:#888;margin-bottom:8px;line-height:1.4">
-                    Cursor auto-snaps to nearest interactive element.
-                  </div>
-                  <div class="snap-row" style="margin-bottom:4px;">
-                    <span class="snap-lbl"><i class="fas fa-clock"></i> Auto Dwell-Click</span>
-                    <button class="p2-toggle-btn" id="snap-autodwell-btn">
-                      <i class="fas fa-hand-pointer"></i>
-                      Auto-click &nbsp;<span class="autodwell-label">OFF</span>
-                    </button>
-                  </div>
-                  <div style="font-size:0.70rem;color:#888;margin-bottom:8px;line-height:1.4">
-                    Activates element automatically after dwell.
-                  </div>
-                </div>
-
-                <!-- Settings sliders -->
-                <div class="p2-section">
-                  <div class="p2-section-title"><i class="fas fa-sliders-h"></i> Settings</div>
-                  <div class="snap-slider-row">
-                    <label class="snap-slider-lbl">Snap radius</label>
-                    <input type="range" id="snap-threshold-slider" min="40" max="200" step="5" value="90" class="snap-slider">
-                    <span class="snap-slider-val" id="snap-threshold-val">90px</span>
-                  </div>
-                  <div class="snap-slider-row">
-                    <label class="snap-slider-lbl">Dwell time</label>
-                    <input type="range" id="snap-dwell-slider" min="300" max="2000" step="50" value="900" class="snap-slider">
-                    <span class="snap-slider-val" id="snap-dwell-val">900ms</span>
-                  </div>
-                  <div class="snap-slider-row">
-                    <label class="snap-slider-lbl">Cursor smoothing</label>
-                    <input type="range" id="snap-smooth-slider" min="5" max="60" step="1" value="22" class="snap-slider">
-                    <span class="snap-slider-val" id="snap-smooth-val">22%</span>
-                  </div>
-                  <div class="snap-slider-row">
-                    <label class="snap-slider-lbl">Prediction weight</label>
-                    <input type="range" id="snap-predict-slider" min="0" max="70" step="5" value="35" class="snap-slider">
-                    <span class="snap-slider-val" id="snap-predict-val">35%</span>
-                  </div>
-                </div>
-
-                <!-- Adaptive Gaze Learning -->
-                <div class="p2-section">
-                  <div class="p2-section-title"><i class="fas fa-brain"></i> Adaptive Gaze Learning</div>
-                  <div class="p2-micro-status">
-                    <span class="p2-micro-lbl">Total activations</span>
-                    <span class="p2-micro-val" id="snap-activations-val">0</span>
-                  </div>
-                  <div style="font-size:0.70rem;color:#888;margin:4px 0 8px">
-                    Settings auto-tune as you use the system.
-                  </div>
-                  <button class="p2-toggle-btn" id="snap-profile-reset" style="width:100%;font-size:0.7rem;padding:4px 8px;">
-                    <i class="fas fa-undo"></i> Reset Adaptive Profile
-                  </button>
-                </div>
-
-              </div><!-- /SNAP-TO col -->
 
             </div><!-- /p2-inner-grid -->
           </div><!-- /p2-status-panel -->
