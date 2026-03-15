@@ -299,9 +299,95 @@ class AccessibilityControlMode {
     this._wireUI();
     this._watchFocus();
     this._patchVoiceNav();
+    this._hookLiveEvents();   // ← wire all real event buses for live counters
     this._updateUI();
     window.dispatchEvent(new CustomEvent('acm:ready',{detail:{version:ACM_VERSION}}));
     console.log('%c Accessibility Control Mode ✅ v'+ACM_VERSION+' — WCAG/ADA/508','color:#00ff88;font-weight:bold;font-size:12px;');
+  }
+
+  /* ── Hook every real event bus — always on, regardless of ACM enabled state ── */
+  _hookLiveEvents() {
+    const L=this._logger;
+    if(!L) return;
+
+    /* ── 1. Gaze dwell / UIRegistry activations ── */
+    const tryHookRegistry=()=>{
+      const app=window.app;
+      if(!app?.uiRegistry){ setTimeout(tryHookRegistry,500); return; }
+      app.uiRegistry.on('activate',({id,label,gesture})=>{
+        L.log(`Gaze activated "${label||id}" via ${gesture||'dwell'}`,'gaze','activate',
+              app.uiRegistry.elements.get(id)?.el||null);
+        this._updateStats();
+      });
+      console.log('[ACM] hooked uiRegistry.activate');
+    };
+    setTimeout(tryHookRegistry,800);
+
+    /* ── 2. Snap-To activations ── */
+    const tryHookSnap=()=>{
+      const snap=window.snapEngine||window.app?.snapEngine;
+      if(!snap){ setTimeout(tryHookSnap,600); return; }
+      snap.on('activate',({el,method,duration})=>{
+        const lbl=el?.dataset?.label||el?.textContent?.trim().slice(0,40)||el?.tagName||'element';
+        L.log(`Snap-To activated "${lbl}" via ${method} (${Math.round(duration||0)}ms)`,'gaze','activate',el);
+        this._updateStats();
+      });
+      console.log('[ACM] hooked snapEngine.activate');
+    };
+    setTimeout(tryHookSnap,800);
+
+    /* ── 3. Voice nav — ALL actions, not just ones with an el ── */
+    const tryHookVoice=()=>{
+      const vn=window.voiceNav;
+      if(!vn){ setTimeout(tryHookVoice,500); return; }
+      const origPerform=vn._performAction.bind(vn);
+      vn._performAction=(entry,action)=>{
+        /* ACM-specific intercepts (already in _patchVoiceNav, keep here too for safety) */
+        if(action==='acm:dictate:start'){ window.dispatchEvent(new Event('acm:dictate:start')); return; }
+        if(action==='acm:dictate:stop') { window.dispatchEvent(new Event('acm:dictate:stop'));  return; }
+        if(action==='acm:toggle')       { this.toggle(); return; }
+        if(action==='acm:hint')         { this._hint?.reset(); return; }
+        if(action==='acm:csv')          { L.exportCSV(); return; }
+
+        /* Log every voice action — even ones without a target element */
+        const lbl=entry?.text||action;
+        const isIntent=(entry?.gazeTarget||entry?.fusedGaze)?true:false;
+        const modality=isIntent?'intent_fusion':'voice';
+        L.log(`Voice: "${lbl}" (${action})`,modality,'voice_command',entry?.el||null);
+        this._updateStats();
+
+        origPerform(entry,action);
+      };
+      /* Also patch extractMultiWordAction for ACM commands */
+      const origMulti=vn._extractMultiWordAction.bind(vn);
+      vn._extractMultiWordAction=(lower)=>{
+        if(lower.includes('start dictation')||lower.includes('begin dictation')) return 'acm:dictate:start';
+        if(lower.includes('stop dictation'))  return 'acm:dictate:stop';
+        if(lower.includes('accessibility mode')) return 'acm:toggle';
+        if(lower.includes('show guide')||lower.includes('show hint')) return 'acm:hint';
+        if(lower.includes('export log')||lower.includes('download log')) return 'acm:csv';
+        return origMulti(lower);
+      };
+      console.log('[ACM] hooked voiceNav._performAction (all commands)');
+    };
+    setTimeout(tryHookVoice,1000);
+
+    /* ── 4. Keyboard — log Tab/Enter/Space unconditionally (not just when ACM on) ── */
+    document.addEventListener('keydown',(e)=>{
+      const el=document.activeElement;
+      if(!el||el===document.body||el===document.documentElement) return;
+      const lbl=el.getAttribute('aria-label')||el.textContent?.trim().slice(0,40)||el.tagName;
+      if(e.key==='Tab'){
+        L.log(`Tab → focused "${lbl}"`,'keyboard','focus',el);
+        this._updateStats();
+      } else if((e.key==='Enter'||e.key===' ')&&
+                (el.tagName==='BUTTON'||el.tagName==='A'||el.getAttribute('role')==='button')){
+        L.log(`${e.key} → activated "${lbl}"`,'keyboard','activate',el);
+        this._updateStats();
+      }
+    },true);
+
+    console.log('[ACM] live event hooks registered');
   }
 
   enable() {
@@ -436,19 +522,12 @@ class AccessibilityControlMode {
     tick(); /* immediate first paint */
   }
 
-  /* ── Keyboard augmentation (WCAG 2.1.1) — only logs, never blocks ── */
+  /* ── Keyboard augmentation — focus ring only (logging handled in _hookLiveEvents) ── */
   _onKey(e) {
     if(!this._enabled) return;
     const el=document.activeElement;
     if(!el||el===document.body) return;
-    const lbl=el.getAttribute('aria-label')||el.textContent?.trim().slice(0,40)||el.tagName;
-    if(e.key==='Tab'){
-      this._ring.show(el);
-      this._logger?.log(`Navigated to "${lbl}" via Tab`,'keyboard','focus',el);
-      this._ann.say('Focused: '+lbl);
-    } else if(e.key==='Enter'||e.key===' '){
-      this._logger?.log(`Activated "${lbl}" via keyboard (${e.key})`,'keyboard','activate',el);
-    }
+    if(e.key==='Tab') this._ring.show(el);
   }
 
   /* ── Focus change listener ── */
@@ -462,45 +541,8 @@ class AccessibilityControlMode {
     document.addEventListener('focusout',()=>{ if(!this._enabled) return; this._ring.hide(); });
   }
 
-  /* ── Voice-nav extension (additive patch) ── */
-  _patchVoiceNav() {
-    const tryPatch=()=>{
-      const vn=window.voiceNav;
-      if(!vn){ setTimeout(tryPatch,300); return; }
-
-      /* Wrap _performAction to add ACM logging + new ACM-specific actions */
-      const orig=vn._performAction.bind(vn);
-      vn._performAction=(entry,action)=>{
-        /* ACM-specific actions handled here */
-        if(action==='acm:dictate:start'){ window.dispatchEvent(new Event('acm:dictate:start')); return; }
-        if(action==='acm:dictate:stop') { window.dispatchEvent(new Event('acm:dictate:stop'));  return; }
-        if(action==='acm:toggle')       { this.toggle(); return; }
-        if(action==='acm:hint')         { this._hint.reset(); return; }
-        if(action==='acm:csv')          { this._logger?.exportCSV(); return; }
-
-        /* Log voice actions through ACM when enabled */
-        if(this._enabled && this._logger && entry?.el){
-          const lbl=entry.text||action;
-          this._logger.log(`User activated "${lbl}" via voice`,'voice',action,entry.el);
-        }
-        orig(entry,action);
-      };
-
-      /* Inject ACM commands into voice multi-word lookup */
-      const origMulti=vn._extractMultiWordAction.bind(vn);
-      vn._extractMultiWordAction=(lower)=>{
-        if(lower.includes('start dictation')||lower.includes('begin dictation')) return 'acm:dictate:start';
-        if(lower.includes('stop dictation'))  return 'acm:dictate:stop';
-        if(lower.includes('accessibility mode')) return 'acm:toggle';
-        if(lower.includes('show guide')||lower.includes('show hint')) return 'acm:hint';
-        if(lower.includes('export log')||lower.includes('download log')) return 'acm:csv';
-        return origMulti(lower);
-      };
-
-      console.log('[ACM] Voice command extensions patched');
-    };
-    setTimeout(tryPatch,900);
-  }
+  /* ── Voice-nav extension — now handled entirely in _hookLiveEvents ── */
+  _patchVoiceNav() { /* no-op: patching moved to _hookLiveEvents for complete coverage */ }
 }
 
 /* ── Bootstrap ────────────────────────────────────────────────────────── */
