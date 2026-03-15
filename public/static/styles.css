@@ -2406,3 +2406,310 @@ body {
   white-space: nowrap;
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ACCESSIBILITY CONTROL MODE (ACM) — WCAG / ADA / Section 508 panel
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Panel wrapper ─────────────────────────────────────────────────── */
+.acm-panel {
+  background: rgba(0,212,255,0.04);
+  border: 1px solid rgba(0,212,255,0.18);
+  border-radius: 8px;
+  padding: 12px 14px 10px;
+  margin-top: 12px;
+}
+
+/* ── Header row ────────────────────────────────────────────────────── */
+.acm-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.acm-icon { color: #00d4ff; font-size: 1rem; }
+.acm-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  flex: 1;
+}
+.acm-status-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.08);
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  transition: background .3s, color .3s;
+}
+.acm-status-badge.active-badge {
+  background: rgba(0,255,136,0.15);
+  color: #00ff88;
+}
+.acm-std-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.acm-std-badge {
+  font-size: 0.58rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(0,212,255,0.12);
+  color: #00d4ff;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+
+/* ── Toggle button ─────────────────────────────────────────────────── */
+.acm-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid rgba(0,212,255,0.3);
+  background: rgba(0,0,0,0.25);
+  color: #94a3b8;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .2s;
+}
+.acm-toggle-btn:hover { border-color: #00d4ff; color: #e2e8f0; }
+.acm-toggle-btn.enabled {
+  background: rgba(0,255,136,0.12);
+  border-color: #00ff88;
+  color: #00ff88;
+}
+
+/* ── Body: 3-column grid ───────────────────────────────────────────── */
+.acm-body {
+  display: grid;
+  grid-template-columns: repeat(3,1fr);
+  gap: 12px;
+}
+@media (max-width: 820px) { .acm-body { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 520px) { .acm-body { grid-template-columns: 1fr; } }
+
+/* ── Column ────────────────────────────────────────────────────────── */
+.acm-col { display: flex; flex-direction: column; gap: 4px; }
+.acm-col-title {
+  font-size: 0.67rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.acm-col-title i { color: #00d4ff; }
+
+/* ── Stat rows ─────────────────────────────────────────────────────── */
+.acm-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+  font-size: 0.7rem;
+}
+.acm-stat-lbl { color: #64748b; display: flex; align-items: center; gap: 5px; }
+.acm-stat-val {
+  font-weight: 700;
+  color: #e2e8f0;
+  min-width: 24px;
+  text-align: right;
+  transition: color .3s;
+}
+
+/* ── Slider row ────────────────────────────────────────────────────── */
+.acm-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.acm-slider-lbl { font-size: 0.68rem; color: #64748b; min-width: 38px; }
+.acm-slider-val { font-size: 0.68rem; color: #00d4ff; min-width: 46px; text-align: right; }
+
+/* ── Modality badges ───────────────────────────────────────────────── */
+.acm-modality-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+.acm-mod-badge {
+  font-size: 0.6rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.acm-mod-badge.gaze    { background:rgba(0,212,255,.12); color:#00d4ff; }
+.acm-mod-badge.voice   { background:rgba(0,255,136,.12); color:#00ff88; }
+.acm-mod-badge.fusion  { background:rgba(196,160,255,.12); color:#c4a0ff; }
+.acm-mod-badge.snap    { background:rgba(245,158,11,.12); color:#f59e0b; }
+.acm-mod-badge.keyboard{ background:rgba(255,255,255,.07); color:#94a3b8; }
+
+/* ── Hint button ───────────────────────────────────────────────────── */
+.acm-hint-btn {
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(245,158,11,.3);
+  background: rgba(245,158,11,.08);
+  color: #f59e0b;
+  font-size: 0.67rem;
+  cursor: pointer;
+  transition: all .2s;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  justify-content: center;
+}
+.acm-hint-btn:hover { background: rgba(245,158,11,.15); border-color: #f59e0b; }
+
+/* ── Export buttons ────────────────────────────────────────────────── */
+.acm-export-btn {
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  justify-content: center;
+  transition: all .2s;
+  border: 1px solid;
+}
+.acm-export-btn.csv {
+  border-color: rgba(0,255,136,.3);
+  background: rgba(0,255,136,.08);
+  color: #00ff88;
+}
+.acm-export-btn.csv:hover { background: rgba(0,255,136,.15); border-color: #00ff88; }
+.acm-export-btn.pdf {
+  border-color: rgba(239,68,68,.3);
+  background: rgba(239,68,68,.08);
+  color: #ef4444;
+}
+.acm-export-btn.pdf:hover { background: rgba(239,68,68,.15); border-color: #ef4444; }
+
+/* ── Voice quick-ref list ──────────────────────────────────────────── */
+.acm-voice-list {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.acm-voice-list li {
+  font-size: 0.65rem;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.acm-voice-list li i { color: #00d4ff; font-size: 0.6rem; }
+
+/* ── ARIA live announcer (visually hidden) ─────────────────────────── */
+#a11y-announcer {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Enhanced focus ring (ACM active state) ────────────────────────── */
+[data-acm-focus] {
+  outline: 3px solid #00d4ff !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 5px rgba(0,212,255,.2) !important;
+}
+
+/* ── Dwell indicator (appended to body by DwellActivator) ──────────── */
+#a11y-dwell-ind { pointer-events: none; }
+
+/* ── ACM focus ring (fixed overlay ring) ───────────────────────────── */
+#a11y-focus-ring {
+  position: fixed;
+  pointer-events: none;
+  z-index: 999990;
+  border: 3px solid #00d4ff;
+  border-radius: 6px;
+  box-shadow: 0 0 0 4px rgba(0,212,255,.25);
+  transition: all .12s ease;
+  display: none;
+}
+
+/* ── Skip-nav link ─────────────────────────────────────────────────── */
+#a11y-skip-nav {
+  position: fixed;
+  top: -40px;
+  left: 8px;
+  z-index: 9999999;
+  background: #00d4ff;
+  color: #0a0f1a;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+  transition: top .15s;
+}
+#a11y-skip-nav:focus { top: 8px; }
+
+/* ── Hint overlay ──────────────────────────────────────────────────── */
+#a11y-hint-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999990;
+  background: rgba(0,0,0,.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeInA11y .25s ease;
+}
+@keyframes fadeInA11y { from{opacity:0} to{opacity:1} }
+.a11y-hint-box {
+  background: #0d1a2e;
+  border: 1px solid rgba(0,212,255,.3);
+  border-radius: 12px;
+  padding: 24px 28px;
+  max-width: 420px;
+  width: 90%;
+  color: #e2e8f0;
+}
+.a11y-hint-box h2 { font-size: 1.1rem; color:#00d4ff; margin:0 0 12px; }
+.a11y-hint-box ul { padding-left:18px; margin:0 0 16px; font-size:.8rem; line-height:1.7; color:#94a3b8; }
+.a11y-hint-box ul li span { color:#e2e8f0; font-weight:600; }
+.a11y-hint-close {
+  width:100%;
+  padding:7px;
+  border-radius:6px;
+  border:1px solid rgba(0,212,255,.3);
+  background:rgba(0,212,255,.1);
+  color:#00d4ff;
+  font-weight:700;
+  font-size:.8rem;
+  cursor:pointer;
+}

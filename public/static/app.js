@@ -2901,7 +2901,8 @@ document.addEventListener('DOMContentLoaded', () => {
   window.app = app; // Expose for Phase 2 initialization
 
   // Expose public API for external use
-  window.AccessEye = {
+  // Merge into existing AccessEye object so a11yLogger (set before DOMContentLoaded) is preserved
+  window.AccessEye = Object.assign(window.AccessEye || {}, {
     /**
      * Register a UI element as a gaze target
      */
@@ -2953,7 +2954,17 @@ document.addEventListener('DOMContentLoaded', () => {
      * Get current gaze position (normalized 0-1)
      */
     getGaze() { return app.gazeEngine.smoothGaze; }
-  };
+  }); // end Object.assign
+
+  // ── ACM live stat counters (update per-modality displays on each log event) ──
+  window.addEventListener('a11y:log', (e) => {
+    const m = e.detail?.modality;
+    const map = { gaze:'acm-stat-gaze', voice:'acm-stat-voice', keyboard:'acm-stat-keyboard', intent_fusion:'acm-stat-intent' };
+    const el = map[m] ? document.getElementById(map[m]) : null;
+    if (el) el.textContent = String(parseInt(el.textContent||'0') + 1);
+    const tot = document.getElementById('acm-log-count');
+    if (tot) tot.textContent = String(parseInt(tot.textContent||'0') + 1);
+  });
 
   // ── Voice Command Reference (VCR) panel toggle ──────────────────
   const vcrBtn  = document.getElementById('vcr-toggle-btn');

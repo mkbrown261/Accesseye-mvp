@@ -1173,6 +1173,76 @@ app.get('/', (c) => {
               </div><!-- /THIRD col -->
 
             </div><!-- /p2-inner-grid -->
+
+            <!-- ═══════════════════════════════════════════════════════
+                 ACCESSIBILITY CONTROL MODE — WCAG / ADA / Section 508
+            ═══════════════════════════════════════════════════════ -->
+            <div class="acm-panel" id="acm-panel">
+
+              <div class="acm-header">
+                <i class="fas fa-universal-access acm-icon"></i>
+                <span class="acm-title">Accessibility Control Mode</span>
+                <span class="acm-status-badge" id="acm-status-badge">INACTIVE</span>
+                <div class="acm-std-row" id="acm-standards-list"></div>
+                <button class="acm-toggle-btn" id="acm-toggle-btn" title="Enable / disable WCAG·ADA·508 mode">
+                  <i class="fas fa-universal-access"></i> <span>ACM OFF</span>
+                </button>
+              </div>
+
+              <div class="acm-body">
+
+                <!-- Col 1: Stats -->
+                <div class="acm-col">
+                  <div class="acm-col-title"><i class="fas fa-chart-bar"></i> Session Stats</div>
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-eye" style="color:#00d4ff"></i> Gaze</span><span class="acm-stat-val" id="acm-stat-gaze">0</span></div>
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-microphone" style="color:#00ff88"></i> Voice</span><span class="acm-stat-val" id="acm-stat-voice">0</span></div>
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-keyboard" style="color:#f59e0b"></i> Keyboard</span><span class="acm-stat-val" id="acm-stat-keyboard">0</span></div>
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-crosshairs" style="color:#c4a0ff"></i> Intent Fusion</span><span class="acm-stat-val" id="acm-stat-intent">0</span></div>
+                  <div class="acm-stat-row" style="border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding-top:4px;">
+                    <span class="acm-stat-lbl"><i class="fas fa-list"></i> Total log entries</span>
+                    <span class="acm-stat-val" id="acm-log-count" style="color:#00ff88">0</span>
+                  </div>
+                  <div class="acm-stat-row"><span class="acm-stat-lbl"><i class="fas fa-crosshairs"></i> Elements indexed</span><span class="acm-stat-val" id="acm-element-count">—</span></div>
+                </div>
+
+                <!-- Col 2: Dwell + Modalities -->
+                <div class="acm-col">
+                  <div class="acm-col-title"><i class="fas fa-clock"></i> Gaze Dwell Time</div>
+                  <div style="font-size:0.67rem;color:#546e7a;margin-bottom:8px;line-height:1.4;">Look at any element for the set time to activate via gaze. Only runs while ACM is ON.</div>
+                  <div class="acm-slider-row">
+                    <label class="acm-slider-lbl">Dwell</label>
+                    <input type="range" id="acm-dwell-slider" min="300" max="2000" step="100" value="800" class="snap-slider">
+                    <span class="acm-slider-val" id="acm-dwell-val">800 ms</span>
+                  </div>
+                  <div class="acm-col-title" style="margin-top:10px;"><i class="fas fa-assistive-listening-systems"></i> Active Modalities</div>
+                  <div class="acm-modality-row">
+                    <span class="acm-mod-badge gaze"><i class="fas fa-eye"></i> Gaze</span>
+                    <span class="acm-mod-badge voice"><i class="fas fa-microphone"></i> Voice</span>
+                    <span class="acm-mod-badge fusion"><i class="fas fa-crosshairs"></i> Fusion</span>
+                    <span class="acm-mod-badge snap"><i class="fas fa-magnet"></i> Snap-To</span>
+                    <span class="acm-mod-badge keyboard"><i class="fas fa-keyboard"></i> Keys</span>
+                  </div>
+                  <button class="acm-hint-btn" id="acm-hint-btn"><i class="fas fa-question-circle"></i> Show User Guide</button>
+                </div>
+
+                <!-- Col 3: Export -->
+                <div class="acm-col">
+                  <div class="acm-col-title"><i class="fas fa-file-alt"></i> Compliance Export</div>
+                  <div style="font-size:0.67rem;color:#546e7a;margin-bottom:10px;line-height:1.4;">Export timestamped interaction logs as proof of WCAG / ADA / Section 508 compliance.</div>
+                  <button class="acm-export-btn csv" id="acm-export-csv"><i class="fas fa-file-csv"></i> Export CSV</button>
+                  <button class="acm-export-btn pdf" id="acm-export-pdf"><i class="fas fa-file-pdf"></i> Export PDF Report</button>
+                  <div class="acm-col-title" style="margin-top:10px;"><i class="fas fa-microphone"></i> Voice Commands</div>
+                  <div style="font-size:0.65rem;color:#546e7a;line-height:1.6;">
+                    <span style="color:#e2e8f0">"Accessibility Mode"</span> — toggle on/off<br>
+                    <span style="color:#e2e8f0">"Start Dictation"</span> — type by voice<br>
+                    <span style="color:#e2e8f0">"Export Log"</span> — download CSV<br>
+                    <span style="color:#e2e8f0">"Show Guide"</span> — re-show hint
+                  </div>
+                </div>
+
+              </div>
+            </div><!-- /acm-panel -->
+
           </div><!-- /p2-status-panel -->
 
         </div>
@@ -1534,6 +1604,8 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="/static/phase3-engine.js"></script>
   <script src="/static/phase3-init.js"></script>
   <script src="/static/voice-nav.js"></script>
+  <script src="/static/a11y-logger.js"></script>
+  <script src="/static/a11y-mode.js"></script>
 </body>
 </html>`)
 })
