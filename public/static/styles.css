@@ -706,7 +706,7 @@ body {
 }
 
 .demo-sidebar {
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border-color);
   display: flex;
@@ -1992,7 +1992,24 @@ body {
   border-radius: var(--radius-md);
   margin-top: 12px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* Fill remaining sidebar space and scroll */
+  flex: 1 1 0;
+  min-height: 0;
 }
+
+/* Header stays fixed, content scrolls */
+.snap-panel-body {
+  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124,77,255,0.4) transparent;
+}
+.snap-panel-body::-webkit-scrollbar { width: 5px; }
+.snap-panel-body::-webkit-scrollbar-track { background: transparent; }
+.snap-panel-body::-webkit-scrollbar-thumb { background: rgba(124,77,255,0.4); border-radius: 3px; }
 
 .snap-panel-header {
   display: flex;

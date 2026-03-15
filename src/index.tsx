@@ -735,6 +735,8 @@ app.get('/', (c) => {
             <span>Snap-To &amp; Intelligent Targeting</span>
           </div>
 
+          <div class="snap-panel-body">
+
           <!-- Master toggle -->
           <div class="snap-section">
             <div class="snap-row">
@@ -807,6 +809,8 @@ app.get('/', (c) => {
               <i class="fas fa-undo"></i> Reset Adaptive Profile
             </button>
           </div>
+
+          </div><!-- /snap-panel-body -->
         </div>
 
         <!-- RIGHT: Interactive Demo Area -->
