@@ -2955,6 +2955,18 @@ document.addEventListener('DOMContentLoaded', () => {
     getGaze() { return app.gazeEngine.smoothGaze; }
   };
 
+  // ── Voice Command Reference (VCR) panel toggle ──────────────────
+  const vcrBtn  = document.getElementById('vcr-toggle-btn');
+  const vcrBody = document.getElementById('vcr-body');
+  const vcrArrow = document.getElementById('vcr-arrow');
+  if (vcrBtn && vcrBody) {
+    vcrBtn.addEventListener('click', () => {
+      const isOpen = vcrBody.style.display !== 'none';
+      vcrBody.style.display = isOpen ? 'none' : 'block';
+      if (vcrArrow) vcrArrow.classList.toggle('open', !isOpen);
+    });
+  }
+
   console.log('%c AccessEye MVP Loaded ✅', 'color:#00d4ff;font-weight:bold;font-size:14px;');
   console.log('%c Version: 1.0.0 | On-device eye + gesture control', 'color:#94a3b8;font-size:12px;');
 });
