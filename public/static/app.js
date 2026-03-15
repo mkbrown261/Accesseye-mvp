@@ -2885,24 +2885,10 @@ class AccessEyeApp {
     }, 500);
   }
 
-  /* ── PHASE 2+3 STATUS BOTTOM BAR TOGGLE ──────────────────── */
+  /* ── PHASE 2+3 STATUS BOTTOM BAR TOGGLE (no-op: panel now lives in demo-main) ──── */
   _setupPSBottomBar() {
-    const bar    = document.getElementById('ps-bottom-bar');
-    const toggle = document.getElementById('ps-bottom-toggle');
-    const arrow  = document.getElementById('ps-toggle-arrow');
-    if (!bar || !toggle) return;
-
-    // Start collapsed so it doesn't eat screen space by default
-    bar.classList.add('collapsed');
-    document.body.classList.add('ps-collapsed');
-
-    toggle.addEventListener('click', () => {
-      const isCollapsed = bar.classList.toggle('collapsed');
-      document.body.classList.toggle('ps-collapsed', isCollapsed);
-      if (arrow) {
-        arrow.style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)';
-      }
-    });
+    // Bottom bar removed – P2 panel is now embedded in demo-main scroll area.
+    // Nothing to wire here; kept so callers don't throw.
   }
 }
 

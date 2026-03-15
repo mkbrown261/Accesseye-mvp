@@ -2116,15 +2116,7 @@ class Phase2Orchestrator {
   /* ── UI Update helpers ── */
 
   _updatePhase2StatusUI() {
-    // Show and expand the bottom status bar when Phase 2 activates
-    const bar = document.getElementById('ps-bottom-bar');
-    if (bar) {
-      bar.classList.remove('collapsed');
-      document.body.classList.remove('ps-collapsed');
-      const arrow = document.getElementById('ps-toggle-arrow');
-      if (arrow) arrow.style.transform = 'rotate(0deg)';
-    }
-    // Legacy: also ensure the old panel reference is harmless
+    // Show the in-page P2 status panel (inside demo-main)
     const panel = document.getElementById('p2-status-panel');
     if (panel) panel.style.display = 'block';
   }

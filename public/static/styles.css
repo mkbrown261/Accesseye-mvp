@@ -2257,99 +2257,42 @@ body {
 .nav-btn[data-page="studio"] i { color: #7c4dff; }
 
 /* ═══════════════════════════════════════════════════════════
-   PHASE 2+3 STATUS — FULL-WIDTH BOTTOM BAR
+   VOICE NAV — COMPACT STRIP
 ═══════════════════════════════════════════════════════════ */
-.ps-bottom-bar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 8000;
-  background: rgba(10, 14, 26, 0.97);
-  border-top: 1px solid rgba(0, 212, 255, 0.25);
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.5);
-  transition: transform 0.3s ease;
+.voice-panel-compact {
+  padding: 10px 16px !important;
 }
-
-.ps-bottom-bar.collapsed .ps-bottom-content {
-  display: none;
-}
-
-.ps-bottom-bar.collapsed .ps-toggle-arrow {
-  transform: rotate(180deg);
-}
-
-.ps-bottom-toggle {
+.voice-compact-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 16px;
-  cursor: pointer;
-  background: rgba(0, 212, 255, 0.05);
-  border-bottom: 1px solid rgba(0, 212, 255, 0.12);
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--accent-cyan);
-  user-select: none;
-  transition: background 0.2s;
 }
-
-.ps-bottom-toggle:hover {
-  background: rgba(0, 212, 255, 0.10);
-}
-
-.ps-toggle-arrow {
-  margin-left: auto;
+.voice-compact-label {
   font-size: 0.75rem;
-  transition: transform 0.3s ease;
-}
-
-.ps-bottom-content {
-  display: flex;
-  flex-direction: row;
-  gap: 0;
-  overflow-x: auto;
-  max-height: 180px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0,212,255,0.3) transparent;
-}
-
-.ps-bottom-content::-webkit-scrollbar {
-  height: 4px;
-}
-.ps-bottom-content::-webkit-scrollbar-track { background: transparent; }
-.ps-bottom-content::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.3); border-radius: 2px; }
-
-.ps-col {
-  flex: 0 0 200px;
-  min-width: 180px;
-  padding: 10px 14px;
-  border-right: 1px solid rgba(255,255,255,0.06);
-  overflow-y: auto;
-  font-size: 0.75rem;
-}
-
-.ps-col:last-child { border-right: none; }
-
-.ps-col-title {
-  font-size: 0.72rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--accent-cyan);
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.voice-compact-label i { color: var(--accent-cyan); margin-right: 4px; }
+
+/* ═══════════════════════════════════════════════════════════
+   PHASE 2+3 STATUS PANEL — inside demo-main (2-col grid)
+═══════════════════════════════════════════════════════════ */
+.p2-inner-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
 }
 
-/* Adjust demo-layout to leave room for the bottom bar */
+.p2-grid-col {
+  border-right: 1px solid var(--border-color);
+}
+.p2-grid-col:last-child { border-right: none; }
+
+/* Restore standard demo-layout height (no bottom bar offset) */
 #page-demo .demo-layout {
-  height: calc(100vh - 64px - 36px); /* 36px = toggle bar height */
-}
-
-/* When bottom bar is expanded, shrink demo layout */
-body:not(.ps-collapsed) #page-demo .demo-layout {
-  height: calc(100vh - 64px - 36px - 180px);
+  height: calc(100vh - 64px);
 }
 

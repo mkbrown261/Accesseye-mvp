@@ -723,25 +723,21 @@ app.get('/', (c) => {
           </div>
         </div>
 
-        <!-- Voice Control Panel -->
-        <div class="demo-panel" id="voice-control-panel">
-          <h3><i class="fas fa-microphone"></i> Voice Navigation</h3>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <!-- Voice Control Panel (compact) -->
+        <div class="demo-panel voice-panel-compact" id="voice-control-panel">
+          <div class="voice-compact-row">
+            <span class="voice-compact-label"><i class="fas fa-microphone"></i> Voice Nav</span>
             <button class="p2-toggle-btn" id="voice-toggle-btn" title="Toggle voice control on/off">
               <i class="fas fa-microphone-slash"></i>
               <span id="voice-toggle-label" style="margin-left:4px;">OFF</span>
             </button>
-            <span id="voice-status-badge" style="font-size:0.72rem;color:#546e7a;padding:2px 8px;background:rgba(0,0,0,0.2);border-radius:10px;">Inactive</span>
+            <span id="voice-status-badge" style="font-size:0.68rem;color:#546e7a;padding:2px 6px;background:rgba(0,0,0,0.2);border-radius:10px;">Inactive</span>
           </div>
           <div id="voice-transcript-bar" style="
-            min-height:28px;padding:4px 8px;background:rgba(0,0,0,0.3);border-radius:6px;
-            font-size:0.78rem;color:#a0aec0;border:1px solid rgba(255,255,255,0.06);
-            margin-bottom:8px;font-style:italic;">
-            Say a button name or "click", "scroll"…
-          </div>
-          <div style="font-size:0.70rem;color:#546e7a;line-height:1.5;">
-            <i class="fas fa-info-circle" style="color:#7c4dff;margin-right:3px;"></i>
-            Say any visible button name&nbsp;<strong>or</strong>&nbsp;look at a button and say <strong>"click"</strong>.
+            min-height:20px;padding:3px 8px;background:rgba(0,0,0,0.3);border-radius:4px;
+            font-size:0.72rem;color:#a0aec0;border:1px solid rgba(255,255,255,0.06);
+            margin-top:6px;font-style:italic;">
+            Say a button name or "click"…
           </div>
         </div>
 
@@ -955,176 +951,195 @@ app.get('/', (c) => {
             </div>
 
           </div>
+
+          <!-- ══════════════════════════════════════════
+               PHASE 2 + 3 STATUS PANEL (inside demo-main)
+          ══════════════════════════════════════════ -->
+          <div class="p2-panel" id="p2-status-panel" style="display:block">
+
+            <!-- Header -->
+            <div class="p2-panel-header">
+              <i class="fas fa-brain"></i>
+              Phase 2 — Hybrid Engine
+              <span class="p2-badge">ACTIVE</span>
+            </div>
+
+            <!-- Pipeline label -->
+            <div class="p2-pipeline-row">
+              <i class="fas fa-sitemap"></i>
+              <span id="p2-pipeline-label">Hybrid | 30FPS | Kalman+EMA+Window</span>
+            </div>
+
+            <!-- Inner two-column grid for all sections -->
+            <div class="p2-inner-grid">
+
+              <!-- LEFT col -->
+              <div class="p2-grid-col">
+
+                <!-- Gaze Confidence -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-eye"></i> Gaze Confidence</div>
+                  <div class="p2-conf-bar-wrap">
+                    <div class="p2-conf-bar">
+                      <div class="p2-conf-fill" id="p2-conf-fill" style="width:0%"></div>
+                    </div>
+                    <span class="p2-conf-val" id="p2-conf-val">0%</span>
+                  </div>
+                  <div class="p2-sub-scores">
+                    <div class="p2-sub"><span class="p2-sub-lbl">Bright</span><span class="p2-sub-val" id="p2-bright">—</span></div>
+                    <div class="p2-sub"><span class="p2-sub-lbl">Occl</span><span class="p2-sub-val" id="p2-occl">—</span></div>
+                    <div class="p2-sub"><span class="p2-sub-lbl">Glare</span><span class="p2-sub-val" id="p2-glare">—</span></div>
+                    <div class="p2-sub"><span class="p2-sub-lbl">Latency</span><span class="p2-sub-val" id="p2-latency">—</span></div>
+                  </div>
+                </div>
+
+                <!-- Head Pose -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-head-side-cough"></i> Head Pose (6-DOF)</div>
+                  <div class="p2-pose-grid">
+                    <div class="p2-pose-item">
+                      <span class="p2-pose-axis yaw-axis">YAW</span>
+                      <span class="p2-pose-val" id="p2-hp-yaw">0°</span>
+                    </div>
+                    <div class="p2-pose-item">
+                      <span class="p2-pose-axis pitch-axis">PITCH</span>
+                      <span class="p2-pose-val" id="p2-hp-pitch">0°</span>
+                    </div>
+                    <div class="p2-pose-item">
+                      <span class="p2-pose-axis roll-axis">ROLL</span>
+                      <span class="p2-pose-val" id="p2-hp-roll">0°</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Micro-Saccade Filter -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-crosshairs"></i> Saccade + IVT</div>
+                  <div class="p2-stats-row">
+                    <div class="p2-stat-item">
+                      <span class="p2-stat-lbl">Fixation</span>
+                      <span class="p2-stat-val" id="p2-fixation" style="color:var(--accent-yellow)">Scanning</span>
+                    </div>
+                    <div class="p2-stat-item">
+                      <span class="p2-stat-lbl">Saccades</span>
+                      <span class="p2-stat-val" id="p2-saccades">0</span>
+                    </div>
+                    <div class="p2-stat-item">
+                      <span class="p2-stat-lbl">Fixations</span>
+                      <span class="p2-stat-val" id="p2-fixcount">0</span>
+                    </div>
+                  </div>
+                  <div class="p2-micro-status" style="margin-top:6px;">
+                    <span class="p2-micro-lbl">IVT:</span>
+                    <span class="p2-micro-val" id="p3-ivt-status" style="color:#00ff88">Scanning</span>
+                  </div>
+                  <div class="p2-micro-status">
+                    <span class="p2-micro-lbl">Velocity:</span>
+                    <span class="p2-micro-val" id="p3-velocity">0px/f</span>
+                  </div>
+                </div>
+
+                <!-- AI Intent -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-robot"></i> AI Intent Prediction</div>
+                  <div class="p2-intent-result" id="p2-intent-result">Starting camera to begin…</div>
+                  <div class="p2-intent-meta">
+                    <span class="p2-intent-conf-lbl">Conf:</span>
+                    <span class="p2-intent-conf" id="p2-intent-conf">0%</span>
+                  </div>
+                  <div class="p2-intent-reason" id="p2-intent-reason"></div>
+                  <button class="p2-toggle-btn active" id="p2-intent-toggle" style="margin-top:6px;font-size:0.7rem;padding:4px 8px;">
+                    <i class="fas fa-power-off"></i> Disable AI Intent
+                  </button>
+                </div>
+
+              </div><!-- /LEFT col -->
+
+              <!-- RIGHT col -->
+              <div class="p2-grid-col">
+
+                <!-- Adaptive Dwell Timer -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-clock"></i> Adaptive Dwell Timer</div>
+                  <div class="p2-micro-status">
+                    <span class="p2-micro-lbl">Preset:</span>
+                    <span class="p2-micro-val" id="p3-dwell-preset">Normal (300ms)</span>
+                  </div>
+                  <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;">
+                    <button class="p2-toggle-btn active" data-dwell-preset="fast"
+                            style="font-size:0.68rem;padding:3px 7px" title="Fast 180ms">⚡ Fast (180ms)</button>
+                    <button class="p2-toggle-btn active" data-dwell-preset="normal"
+                            style="font-size:0.68rem;padding:3px 7px" title="Normal 300ms">🎯 Normal (300ms)</button>
+                    <button class="p2-toggle-btn" data-dwell-preset="accessible"
+                            style="font-size:0.68rem;padding:3px 7px" title="Accessible 500ms">♿ Accessible (500ms)</button>
+                    <button class="p2-toggle-btn" data-dwell-preset="extended"
+                            style="font-size:0.68rem;padding:3px 7px" title="Extended 800ms">🐢 Extended (800ms)</button>
+                  </div>
+                </div>
+
+                <!-- Dynamic Calibration -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-magic"></i> Dynamic Calibration</div>
+                  <div class="p2-micro-status">
+                    <span class="p2-micro-lbl">Micro-samples:</span>
+                    <span class="p2-micro-val" id="p2-micro-count">0</span>
+                  </div>
+                  <div class="p2-micro-status">
+                    <span class="p2-micro-lbl">Drift Bias X/Y:</span>
+                    <span class="p2-micro-val" id="p2-bias-val">0 / 0</span>
+                  </div>
+                  <button class="p2-toggle-btn" id="p2-reset-micro" style="margin-top:6px;font-size:0.7rem;padding:4px 8px;">
+                    <i class="fas fa-undo"></i> Reset Micro-Calib
+                  </button>
+                </div>
+
+                <!-- Benchmark -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-tachometer-alt"></i> Pipeline Benchmark</div>
+                  <div style="display:flex;gap:6px;">
+                    <button class="p2-bench-btn" id="p2-bench-start">
+                      <i class="fas fa-play"></i> Run 30s Benchmark
+                    </button>
+                    <button class="p2-bench-btn" id="p2-bench-stop" disabled>
+                      <i class="fas fa-stop"></i> Stop
+                    </button>
+                  </div>
+                  <div class="benchmark-report" id="benchmark-report" style="display:none;"></div>
+                </div>
+
+                <!-- PACE Recalibration -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-sync-alt"></i> PACE Recalibration</div>
+                  <div class="p2-micro-status">
+                    <span class="p2-micro-lbl">Passive samples:</span>
+                    <span class="p2-micro-val" id="p3-pace-count">0</span>
+                  </div>
+                  <button class="p2-toggle-btn" id="p3-pace-reset" style="margin-top:6px;font-size:0.7rem;padding:4px 8px;width:100%">
+                    <i class="fas fa-undo"></i> Reset PACE
+                  </button>
+                </div>
+
+                <!-- Tools -->
+                <div class="p2-section">
+                  <div class="p2-section-title"><i class="fas fa-tools"></i> Tools</div>
+                  <button class="p2-toggle-btn" id="p3-pursuit-btn" style="width:100%;margin-bottom:5px;font-size:0.7rem;padding:4px 8px;">
+                    <i class="fas fa-route"></i> Smooth Pursuit Calib
+                  </button>
+                  <button class="p2-toggle-btn" id="p3-validate-btn" style="width:100%;margin-bottom:5px;font-size:0.7rem;padding:4px 8px;">
+                    <i class="fas fa-check-circle"></i> Validate Accuracy
+                  </button>
+                  <button class="p2-toggle-btn active" id="p3-headfree-toggle" style="width:100%;font-size:0.7rem;padding:4px 8px;">
+                    <i class="fas fa-arrows-alt"></i> Head-Free Stabilization: ON
+                  </button>
+                  <div class="benchmark-report" id="p3-val-report" style="display:none;font-size:0.68rem;margin-top:6px;"></div>
+                </div>
+
+              </div><!-- /RIGHT col -->
+
+            </div><!-- /p2-inner-grid -->
+          </div><!-- /p2-status-panel -->
+
         </div>
-      </div>
-    </div>
-
-    <!-- ═══════════════════════════════════════════════════════════
-         PHASE 2 + 3 STATUS PANEL — Full-width bottom bar
-         Fixed to bottom of viewport, collapsible
-    ═══════════════════════════════════════════════════════════ -->
-    <div class="ps-bottom-bar" id="ps-bottom-bar">
-      <!-- Toggle handle -->
-      <div class="ps-bottom-toggle" id="ps-bottom-toggle">
-        <i class="fas fa-brain"></i>
-        <span>Phase 2+3 Engine Status</span>
-        <span class="p2-badge">ACTIVE</span>
-        <i class="fas fa-chevron-up ps-toggle-arrow" id="ps-toggle-arrow"></i>
-      </div>
-
-      <!-- Panel content: horizontal scrolling columns -->
-      <div class="ps-bottom-content" id="ps-bottom-content">
-
-        <!-- Column 1: Pipeline + Confidence -->
-        <div class="ps-col">
-          <div class="ps-col-title"><i class="fas fa-sitemap"></i> Pipeline</div>
-          <div style="font-size:0.72rem;color:#a78bfa;margin-bottom:6px;" id="p2-pipeline-label">Hybrid | 30FPS | Kalman+EMA+Window</div>
-          <div class="p2-section-title" style="font-size:0.68rem;">Gaze Confidence</div>
-          <div class="p2-conf-bar-wrap">
-            <div class="p2-conf-bar">
-              <div class="p2-conf-fill" id="p2-conf-fill" style="width:0%"></div>
-            </div>
-            <span class="p2-conf-val" id="p2-conf-val">0%</span>
-          </div>
-          <div class="p2-sub-scores" style="margin-top:4px;">
-            <div class="p2-sub"><span class="p2-sub-lbl">Bright</span><span class="p2-sub-val" id="p2-bright">—</span></div>
-            <div class="p2-sub"><span class="p2-sub-lbl">Occl</span><span class="p2-sub-val" id="p2-occl">—</span></div>
-            <div class="p2-sub"><span class="p2-sub-lbl">Glare</span><span class="p2-sub-val" id="p2-glare">—</span></div>
-            <div class="p2-sub"><span class="p2-sub-lbl">Latency</span><span class="p2-sub-val" id="p2-latency">—</span></div>
-          </div>
-        </div>
-
-        <!-- Column 2: Head Pose -->
-        <div class="ps-col">
-          <div class="ps-col-title"><i class="fas fa-head-side-cough"></i> Head Pose (6-DOF)</div>
-          <div class="p2-pose-grid">
-            <div class="p2-pose-item">
-              <span class="p2-pose-axis yaw-axis">YAW</span>
-              <span class="p2-pose-val" id="p2-hp-yaw">0°</span>
-            </div>
-            <div class="p2-pose-item">
-              <span class="p2-pose-axis pitch-axis">PITCH</span>
-              <span class="p2-pose-val" id="p2-hp-pitch">0°</span>
-            </div>
-            <div class="p2-pose-item">
-              <span class="p2-pose-axis roll-axis">ROLL</span>
-              <span class="p2-pose-val" id="p2-hp-roll">0°</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Column 3: Saccade / Fixation + Phase 3 IVT -->
-        <div class="ps-col">
-          <div class="ps-col-title"><i class="fas fa-crosshairs"></i> Saccade + IVT</div>
-          <div class="p2-stats-row" style="flex-wrap:wrap;gap:6px;">
-            <div class="p2-stat-item">
-              <span class="p2-stat-lbl">Fixation</span>
-              <span class="p2-stat-val" id="p2-fixation" style="color:var(--accent-yellow)">Scanning</span>
-            </div>
-            <div class="p2-stat-item">
-              <span class="p2-stat-lbl">Saccades</span>
-              <span class="p2-stat-val" id="p2-saccades">0</span>
-            </div>
-            <div class="p2-stat-item">
-              <span class="p2-stat-lbl">Fixations</span>
-              <span class="p2-stat-val" id="p2-fixcount">0</span>
-            </div>
-          </div>
-          <div style="margin-top:6px;">
-            <div class="p2-micro-status">
-              <span class="p2-micro-lbl">IVT:</span>
-              <span class="p2-micro-val" id="p3-ivt-status" style="color:#00ff88">Scanning</span>
-            </div>
-            <div class="p2-micro-status">
-              <span class="p2-micro-lbl">Velocity:</span>
-              <span class="p2-micro-val" id="p3-velocity">0px/f</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Column 4: AI Intent -->
-        <div class="ps-col">
-          <div class="ps-col-title"><i class="fas fa-robot"></i> AI Intent</div>
-          <div class="p2-intent-result" id="p2-intent-result" style="font-size:0.72rem;min-height:30px;">Starting camera...</div>
-          <div class="p2-intent-meta">
-            <span class="p2-intent-conf-lbl">Conf:</span>
-            <span class="p2-intent-conf" id="p2-intent-conf">0%</span>
-          </div>
-          <div class="p2-intent-reason" id="p2-intent-reason" style="font-size:0.67rem;"></div>
-          <button class="p2-toggle-btn active" id="p2-intent-toggle" style="margin-top:6px;font-size:0.7rem;padding:4px 8px;">
-            <i class="fas fa-power-off"></i> Disable AI Intent
-          </button>
-        </div>
-
-        <!-- Column 5: Adaptive Dwell + PACE -->
-        <div class="ps-col">
-          <div class="ps-col-title"><i class="fas fa-clock"></i> Adaptive Dwell</div>
-          <div class="p2-micro-status">
-            <span class="p2-micro-lbl">Preset:</span>
-            <span class="p2-micro-val" id="p3-dwell-preset">Normal (300ms)</span>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:6px;">
-            <button class="p2-toggle-btn active" data-dwell-preset="fast"
-                    style="font-size:0.65rem;padding:3px 6px" title="Fast 180ms">⚡ Fast</button>
-            <button class="p2-toggle-btn active" data-dwell-preset="normal"
-                    style="font-size:0.65rem;padding:3px 6px" title="Normal 300ms">🎯 Normal</button>
-            <button class="p2-toggle-btn" data-dwell-preset="accessible"
-                    style="font-size:0.65rem;padding:3px 6px" title="Accessible 500ms">♿ Access.</button>
-            <button class="p2-toggle-btn" data-dwell-preset="extended"
-                    style="font-size:0.65rem;padding:3px 6px" title="Extended 800ms">🐢 Ext.</button>
-          </div>
-          <div style="margin-top:8px;">
-            <div class="p2-micro-status">
-              <span class="p2-micro-lbl">PACE samples:</span>
-              <span class="p2-micro-val" id="p3-pace-count">0</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Column 6: Dynamic Calibration + Benchmark -->
-        <div class="ps-col">
-          <div class="ps-col-title"><i class="fas fa-magic"></i> Dyn. Calibration</div>
-          <div class="p2-micro-status">
-            <span class="p2-micro-lbl">Micro-samples:</span>
-            <span class="p2-micro-val" id="p2-micro-count">0</span>
-          </div>
-          <div class="p2-micro-status">
-            <span class="p2-micro-lbl">Bias X/Y:</span>
-            <span class="p2-micro-val" id="p2-bias-val">0 / 0</span>
-          </div>
-          <button class="p2-toggle-btn" id="p2-reset-micro" style="margin-top:6px;font-size:0.7rem;padding:4px 8px;">
-            <i class="fas fa-undo"></i> Reset Micro-Calib
-          </button>
-          <div style="margin-top:8px;display:flex;gap:4px;">
-            <button class="p2-bench-btn" id="p2-bench-start" style="font-size:0.68rem;padding:3px 6px;">
-              <i class="fas fa-play"></i> Benchmark
-            </button>
-            <button class="p2-bench-btn" id="p2-bench-stop" disabled style="font-size:0.68rem;padding:3px 6px;">
-              <i class="fas fa-stop"></i> Stop
-            </button>
-          </div>
-          <div class="benchmark-report" id="benchmark-report" style="display:none;font-size:0.68rem;"></div>
-        </div>
-
-        <!-- Column 7: Tools (Pursuit + Validate + Head-Free) -->
-        <div class="ps-col">
-          <div class="ps-col-title"><i class="fas fa-tools"></i> Tools</div>
-          <button class="p2-toggle-btn" id="p3-pursuit-btn" style="width:100%;margin-bottom:5px;font-size:0.7rem;padding:4px 8px;">
-            <i class="fas fa-route"></i> Smooth Pursuit Calib
-          </button>
-          <button class="p2-toggle-btn" id="p3-validate-btn" style="width:100%;margin-bottom:5px;font-size:0.7rem;padding:4px 8px;">
-            <i class="fas fa-check-circle"></i> Validate Accuracy
-          </button>
-          <button class="p2-toggle-btn active" id="p3-headfree-toggle" style="width:100%;margin-bottom:5px;font-size:0.7rem;padding:4px 8px;">
-            <i class="fas fa-arrows-alt"></i> Head-Free: ON
-          </button>
-          <button class="p2-toggle-btn" id="p3-pace-reset" style="width:100%;font-size:0.7rem;padding:4px 8px;">
-            <i class="fas fa-undo"></i> Reset PACE
-          </button>
-          <div class="benchmark-report" id="p3-val-report" style="display:none;font-size:0.68rem;margin-top:6px;"></div>
-        </div>
-
-      </div>
       </div>
     </div>
 
