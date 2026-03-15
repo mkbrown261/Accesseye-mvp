@@ -1635,6 +1635,7 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="/static/phase2-init.js"></script>
   <script src="/static/phase3-engine.js"></script>
   <script src="/static/phase3-init.js"></script>
+  <script src="/static/accuracy-engine.js"></script>
   <script src="/static/voice-nav.js"></script>
   <script src="/static/a11y-logger.js"></script>
   <script src="/static/a11y-mode.js"></script>
