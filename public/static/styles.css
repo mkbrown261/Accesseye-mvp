@@ -700,7 +700,7 @@ body {
 /* ── DEMO PAGE ──────────────────────────────────────────────── */
 .demo-layout {
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 280px 1fr;
   height: calc(100vh - 64px);
   overflow: hidden;
 }
@@ -2278,11 +2278,11 @@ body {
 .voice-compact-label i { color: var(--accent-cyan); margin-right: 4px; }
 
 /* ═══════════════════════════════════════════════════════════
-   PHASE 2+3 STATUS PANEL — inside demo-main (2-col grid)
+   PHASE 2+3 STATUS PANEL — inside demo-main (3-col grid)
 ═══════════════════════════════════════════════════════════ */
 .p2-inner-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 0;
 }
 
