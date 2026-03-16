@@ -103,6 +103,17 @@ class HighFPSCameraController {
           };
 
           console.log(`[HighFPS] Acquired camera @ ${settings.frameRate || targetFPS} FPS, ${settings.width}×${settings.height}`);
+
+          // FIX SAFARI-2: Warn if Safari returned a non-4:3 resolution.
+          // Phase 2 uses normalised [0,1] landmarks so the landmark math is
+          // unaffected, but the canvas in Phase 1 must also be locked (handled
+          // in app.js startCamera). Log here for diagnostics.
+          const w = settings.width || 640, h = settings.height || 480;
+          const ar = w / h;
+          if (Math.abs(ar - (4/3)) > 0.15) {
+            console.warn(`[SAFARI-2] HighFPS got non-4:3 stream (${w}×${h}, AR=${ar.toFixed(2)}) — landmark Y range may be compressed`);
+          }
+
           return this.detectedCapabilities;
         }
       } catch (e) {

@@ -1727,29 +1727,54 @@ class MediaPipeController {
 
   async startCamera() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: 'user', frameRate: 30 }
-      });
+      // FIX SAFARI-2: Use exact 640×480 so Safari and Chrome produce identical
+      // landmark coordinate spaces. Safari ignores bare width/height values and
+      // may return 1280×720 or another resolution, which stretches the Y axis
+      // and stops the cursor reaching the bottom of the screen.
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { exact: 640 }, height: { exact: 480 }, facingMode: 'user', frameRate: { ideal: 30, max: 30 } }
+        });
+      } catch (_) {
+        // Fallback for devices that don't support exact constraints
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user', frameRate: { ideal: 30 } }
+        });
+      }
       this.videoEl.srcObject = stream;
+
+      // FIX M-6 + SAFARI-2: Always lock canvas to 640×480 regardless of what
+      // the video stream actually returns. MediaPipe landmark coordinates are
+      // normalised [0,1] so the canvas size only affects overlay drawing —
+      // locking it ensures consistent Y range on all browsers.
+      const setCanvas = () => {
+        // Use actual video dimensions if they match expected aspect ratio,
+        // otherwise fall back to 640×480 to avoid a squashed/stretched Y axis.
+        const vw = this.videoEl.videoWidth  || 640;
+        const vh = this.videoEl.videoHeight || 480;
+        const ar = vw / vh;
+        // Expected aspect ratio is 4:3 (640/480 = 1.333). If Safari returns
+        // something wildly different (e.g. 16:9 = 1.777) lock to 640×480.
+        if (Math.abs(ar - (4/3)) < 0.15) {
+          this.canvasEl.width  = vw;
+          this.canvasEl.height = vh;
+        } else {
+          console.warn(`[SAFARI-2] Unexpected video AR ${ar.toFixed(2)} (${vw}×${vh}) — locking canvas to 640×480`);
+          this.canvasEl.width  = 640;
+          this.canvasEl.height = 480;
+        }
+        this._syncContainerAspect();
+      };
 
       // FIX M-6: set canvas dimensions from loadedmetadata event, not immediately
       // after play() — videoWidth is 0 on some browsers until the first frame arrives
-      this.videoEl.addEventListener('loadedmetadata', () => {
-        this.canvasEl.width  = this.videoEl.videoWidth  || 640;
-        this.canvasEl.height = this.videoEl.videoHeight || 480;
-        // FIX OVL-1: update container aspect ratio to match actual video
-        // so object-fit: cover aligns with canvas landmark coordinates.
-        this._syncContainerAspect();
-      }, { once: true });
+      this.videoEl.addEventListener('loadedmetadata', setCanvas, { once: true });
 
       await this.videoEl.play();
 
       // Fallback: if metadata already loaded (stream was reused), set now
-      if (this.videoEl.videoWidth > 0) {
-        this.canvasEl.width  = this.videoEl.videoWidth;
-        this.canvasEl.height = this.videoEl.videoHeight;
-        this._syncContainerAspect();
-      }
+      if (this.videoEl.videoWidth > 0) setCanvas();
 
       this.running = true;
       this._processLoop();
