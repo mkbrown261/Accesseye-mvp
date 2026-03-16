@@ -404,7 +404,9 @@ class HybridGazeEngine {
       const hPit  = (headPoseResult?.pitch || 0) / 35;
       screen = {
         x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.01, 0.99),
-        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.01, 0.99)
+        // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
+        // reach the full bottom of the screen before calibration remaps it.
+        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.01, 1.00)
       };
     }
 

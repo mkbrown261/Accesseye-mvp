@@ -146,18 +146,22 @@ class CalibrationEngine {
       // ── 4 corners — close enough to reach with eyes alone ──
       { sx: 0.08, sy: 0.08, label: 'Top-Left'     },
       { sx: 0.92, sy: 0.08, label: 'Top-Right'    },
-      { sx: 0.08, sy: 0.92, label: 'Bottom-Left'  },
-      { sx: 0.92, sy: 0.92, label: 'Bottom-Right' },
+      // FIX BOTTOM-1: moved bottom corners from sy:0.92 → sy:0.96 so the
+      // calibration model is trained closer to the true screen edge, allowing
+      // the cursor to reach the bottom without changing any gaze math.
+      { sx: 0.08, sy: 0.96, label: 'Bottom-Left'  },
+      { sx: 0.92, sy: 0.96, label: 'Bottom-Right' },
       // ── 4 inner-ring points (0.25/0.75 diagonal) ──
       { sx: 0.25, sy: 0.25, label: 'Inner-TL'     },
       { sx: 0.75, sy: 0.25, label: 'Inner-TR'     },
-      { sx: 0.25, sy: 0.75, label: 'Inner-BL'     },
-      { sx: 0.75, sy: 0.75, label: 'Inner-BR'     },
+      // FIX BOTTOM-1: inner bottom ring shifted down proportionally (0.75 → 0.78)
+      { sx: 0.25, sy: 0.78, label: 'Inner-BL'     },
+      { sx: 0.75, sy: 0.78, label: 'Inner-BR'     },
       // ── 4 mid-axis points — FIX CENTER-1: anchor center polynomial ──
       // These constrain the polynomial in the central screen area where
       // the 9-point grid had NO data, causing the center dead-zone.
       { sx: 0.50, sy: 0.25, label: 'Mid-Top'      },
-      { sx: 0.50, sy: 0.75, label: 'Mid-Bottom'   },
+      { sx: 0.50, sy: 0.78, label: 'Mid-Bottom'   },  // FIX BOTTOM-1
       { sx: 0.25, sy: 0.50, label: 'Mid-Left'     },
       { sx: 0.75, sy: 0.50, label: 'Mid-Right'    },
       // ── Center ──
@@ -350,7 +354,8 @@ class CalibrationEngine {
     // observed gaze range maps more tightly to the polynomial input space,
     // giving the center region a proportionally larger share of the screen.
     const PAD   = 0.15;      // was 0.22 — reduced now that 13-pt grid provides center anchors
-    const PAD_B = 0.20;      // was 0.28 — bottom still gets slight extra room for downward gaze
+    const PAD_B = 0.28;      // FIX BOTTOM-1: raised 0.20 → 0.28 so polynomial extrapolates further
+                             // below the bottom calibration points, letting cursor reach screen edge
     const rangeX = rawMaxX - rawMinX;
     const rangeY = rawMaxY - rawMinY;
     this.gazeRangeX = {
