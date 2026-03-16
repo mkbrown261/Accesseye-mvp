@@ -41,28 +41,49 @@ const ACTION_COMMANDS = {
   select   : 'select',
   choose   : 'select',
   scroll   : 'scroll',
-  'scroll up'      : 'scrollUp',
-  'scroll down'    : 'scrollDown',
-  'stop scrolling' : 'stopScrolling',
-  'scroll to top'  : 'scrollTop',
-  'scroll to bottom':'scrollBottom',
-  'go back'        : 'navBack',
-  'go forward'     : 'navForward',
-  'reload page'    : 'reloadPage',
-  'open new tab'   : 'newTab',
-  'close tab'      : 'closeTab',
-  'zoom in'        : 'zoomIn',
-  'zoom out'       : 'zoomOut',
-  'reset zoom'     : 'resetZoom',
-  'double click'   : 'dblclick',
-  'right click'    : 'rightClick',
-  'next item'      : 'focusNext',
-  'previous item'  : 'focusPrev',
-  'pause control'  : 'pauseControl',
-  'resume control' : 'resumeControl',
-  'reset cursor'   : 'resetCursor',
-  'clear selection': 'clearSelection',
-  'exit mode'      : 'exitMode',
+  'scroll up'           : 'scrollUp',
+  'scroll down'         : 'scrollDown',
+  'stop scrolling'      : 'stopScrolling',
+  'scroll to top'       : 'scrollTop',
+  'scroll to bottom'    : 'scrollBottom',
+  'go back'             : 'navBack',
+  'go forward'          : 'navForward',
+  'reload page'         : 'reloadPage',
+  'open new tab'        : 'newTab',
+  'close tab'           : 'closeTab',
+  'zoom in'             : 'zoomIn',
+  'zoom out'            : 'zoomOut',
+  'reset zoom'          : 'resetZoom',
+  'double click'        : 'dblclick',
+  'right click'         : 'rightClick',
+  'next item'           : 'focusNext',
+  'previous item'       : 'focusPrev',
+  'pause control'       : 'pauseControl',
+  'resume control'      : 'resumeControl',
+  'reset cursor'        : 'resetCursor',
+  'clear selection'     : 'clearSelection',
+  'exit mode'           : 'exitMode',
+  // FIX VOICE-4: Discovery commands — were never in ACTION_COMMANDS, causing
+  // fallthrough to navList.findBest which matched "Show User Guide" button instead
+  'show clickable items': 'showClickable',
+  'show clickable'      : 'showClickable',
+  'hide clickable items': 'hideClickable',
+  'hide clickable'      : 'hideClickable',
+  'what can i click'    : 'showClickable',
+  'show interactive'    : 'showClickable',
+  'show all clickable'  : 'showClickable',
+  'highlight clickable' : 'showClickable',
+  'focus on'            : 'focusOn',
+  // Editing commands
+  'select all'          : 'selectAll',
+  'open settings'       : 'openSettings',
+  'focus search'        : 'focusSearch',
+  copy     : 'copyText',
+  paste    : 'pasteText',
+  cut      : 'cutText',
+  // Pause/resume voice itself
+  'pause voice'         : 'pauseVoice',
+  'resume voice'        : 'resumeVoice',
   play     : 'play',
   pause    : 'pause',
   stop     : 'stopControl',
@@ -93,6 +114,10 @@ const NO_TARGET_ACTIONS = new Set([
   'pauseControl','resumeControl','stopControl',
   'resetCursor','clearSelection','exitMode',
   'play','pause',
+  // FIX VOICE-4: Discovery + editing commands need no gaze target
+  'showClickable','hideClickable','focusOn',
+  'selectAll','copyText','pasteText','cutText','openSettings','focusSearch',
+  'pauseVoice','resumeVoice',
 ]);
 
 /* FIX VOICE-1: Nav/mode/camera commands must fire directly — they target a
@@ -238,6 +263,10 @@ class VoiceNavigationController {
     this._lastGazeTarget = null;
     this._confirmTimer   = null;
     this._scanScheduled  = false;
+    // FIX VOICE-4: pause/resume voice flag
+    this._paused = false;
+    // FIX VOICE-4: overlay tracking for showClickable / hideClickable
+    this._clickableOverlays = [];
 
     // UI refs (set after DOM ready)
     this._transcriptEl = null;
@@ -388,10 +417,43 @@ class VoiceNavigationController {
 
   /* ── Utterance Processing ── */
   _processUtterance(text, confidence = 1) {
+    // FIX VOICE-4: honour pause/resume voice state
+    if (this._paused) {
+      const lower = text.toLowerCase();
+      if (lower.includes('resume voice') || lower.includes('resume control')) {
+        this._paused = false;
+        this._setStatus('Listening…', '#00d4ff');
+        this._showToast('Voice Resumed', 'Voice navigation active', 'success');
+      }
+      return;
+    }
+
+    const lower = text.toLowerCase();
     const words = this._tokenise(text);
     if (!words.length) return;
 
     console.log(`[VoiceNav] heard: "${text}" (words: [${words.join(', ')}])`);
+
+    // 0. FIX VOICE-4: Multi-word action check against raw lowercase text FIRST
+    //    This ensures "show clickable items", "focus on", "select all" etc. are
+    //    caught before the tokenised single-word pipeline even runs.
+    const multiAction = this._extractMultiWordAction(lower);
+    if (multiAction) {
+      // "focus on <name>" needs special handling — extract the target name
+      if (multiAction === 'focusOn') {
+        const afterFocus = lower.replace(/focus on\s*/i, '').trim();
+        if (afterFocus) {
+          this._handleFocusOn(afterFocus);
+        } else {
+          this._setStatus('Say: focus on [element name]', '#f59e0b');
+          setTimeout(() => { if (this.enabled) this._setStatus('Listening…', '#00d4ff'); }, 2000);
+        }
+        return;
+      }
+      this._setStatus(`▶ ${text}`, '#00ff88');
+      this._performAction({ el: null, text }, multiAction);
+      return;
+    }
 
     // 1. Check for action commands
     const action = this._extractAction(words);
@@ -442,6 +504,18 @@ class VoiceNavigationController {
     setTimeout(() => {
       if (this.enabled) this._setStatus('Listening…', '#00d4ff');
     }, 1500);
+  }
+
+  /* FIX VOICE-4: Match raw lowercase text against multi-word ACTION_COMMANDS keys.
+     Sorts by descending length so longest phrase wins over shorter sub-phrases. */
+  _extractMultiWordAction(lower) {
+    const multiKeys = Object.keys(ACTION_COMMANDS)
+      .filter(k => k.includes(' '))
+      .sort((a, b) => b.length - a.length);
+    for (const key of multiKeys) {
+      if (lower.includes(key)) return ACTION_COMMANDS[key];
+    }
+    return null;
   }
 
   _tokenise(text) {
@@ -661,6 +735,78 @@ class VoiceNavigationController {
         if (prev) { prev.focus(); this._log('Voice: Previous Item'); }
         break;
       }
+      // FIX VOICE-4: Discovery actions
+      case 'showClickable': {
+        this._showClickableOverlays();
+        this._log('Voice: Show Clickable Items');
+        break;
+      }
+      case 'hideClickable': {
+        this._hideClickableOverlays();
+        this._log('Voice: Hide Clickable Items');
+        break;
+      }
+      case 'openSettings': {
+        const settingsBtn = document.querySelector('[data-id="btn-settings"], #btn-settings, [aria-label*="setting" i], [data-label*="setting" i]');
+        if (settingsBtn) {
+          settingsBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          this._log('Voice: Open Settings');
+        } else {
+          this._showToast('Open Settings', 'No settings button found', 'warn');
+        }
+        break;
+      }
+      case 'selectAll': {
+        try { document.execCommand('selectAll'); } catch (_) {}
+        this._log('Voice: Select All');
+        break;
+      }
+      case 'copyText': {
+        try { document.execCommand('copy'); } catch (_) {}
+        this._log('Voice: Copy');
+        break;
+      }
+      case 'pasteText': {
+        try { document.execCommand('paste'); } catch (_) {}
+        this._log('Voice: Paste');
+        break;
+      }
+      case 'cutText': {
+        try { document.execCommand('cut'); } catch (_) {}
+        this._log('Voice: Cut');
+        break;
+      }
+      case 'focusSearch': {
+        const searchEl = document.querySelector('input[type="search"], input[type="text"], input:not([type]), [role="searchbox"]');
+        if (searchEl) {
+          searchEl.focus();
+          this._highlightElement(searchEl);
+          setTimeout(() => this._unhighlightElement(searchEl), 1200);
+          this._log('Voice: Focus Search');
+        } else {
+          this._showToast('Focus Search', 'No search input found', 'warn');
+        }
+        break;
+      }
+      case 'focusOn': {
+        // Handled upstream in _processUtterance — no-op here
+        break;
+      }
+      case 'pauseVoice': {
+        this._paused = true;
+        this._setStatus('⏸ Voice Paused', '#f59e0b');
+        this._setTranscript('Voice paused — say "Resume Voice" to re-enable');
+        this._showToast('Voice Paused', 'Say "Resume Voice" to re-enable', 'info');
+        this._log('Voice: Pause Voice');
+        break;
+      }
+      case 'resumeVoice': {
+        this._paused = false;
+        this._setStatus('Listening…', '#00d4ff');
+        this._showToast('Voice Resumed', 'Voice navigation active', 'success');
+        this._log('Voice: Resume Voice');
+        break;
+      }
       /* ── Control Recovery ── */
       case 'pauseControl': {
         // Stop eye-tracking — _stopCamera already resets mode to 'mouse' internally
@@ -762,6 +908,90 @@ class VoiceNavigationController {
 
     // Remove highlight after action
     setTimeout(() => this._unhighlightElement(el), 1200);
+  }
+
+  /* ── Show / Hide Clickable Overlays (FIX VOICE-4) ── */
+  _showClickableOverlays() {
+    this._hideClickableOverlays(); // clear any existing
+
+    // Re-scan to get the freshest list
+    const count = this.navList.scan();
+
+    this.navList.elements.forEach((entry, idx) => {
+      const rect = entry.rect();
+      if (rect.width === 0 && rect.height === 0) return;
+
+      // Numbered badge overlay
+      const badge = document.createElement('div');
+      badge.className = 'vn-clickable-badge';
+      badge.dataset.vnBadge = '1';
+      badge.textContent = String(idx + 1);
+      Object.assign(badge.style, {
+        position: 'fixed',
+        left:   (rect.left + rect.width  / 2 - 10) + 'px',
+        top:    (rect.top  + rect.height / 2 - 10) + 'px',
+        width:  '20px',
+        height: '20px',
+        lineHeight: '20px',
+        textAlign: 'center',
+        borderRadius: '50%',
+        background: 'rgba(0,212,255,0.9)',
+        color: '#000',
+        fontSize: '11px',
+        fontWeight: 'bold',
+        zIndex: '999999',
+        pointerEvents: 'none',
+        boxShadow: '0 0 6px 2px rgba(0,212,255,0.5)',
+      });
+      document.body.appendChild(badge);
+      this._clickableOverlays.push(badge);
+
+      // Ring highlight on the element itself
+      entry.el._vnRingOrig = entry.el.style.outline;
+      entry.el.style.outline = '2px solid rgba(0,212,255,0.7)';
+    });
+
+    this._setStatus(`✅ ${count} clickable items highlighted`, '#00ff88');
+    this._setTranscript(`${count} clickable items — say a name or "hide clickable"`);
+    this._showToast('Show Clickable', `${count} interactive elements highlighted`, 'success');
+
+    // Auto-clear after 8 seconds
+    setTimeout(() => this._hideClickableOverlays(), 8000);
+  }
+
+  _hideClickableOverlays() {
+    this._clickableOverlays.forEach(el => el.remove());
+    this._clickableOverlays = [];
+    // Restore element outlines
+    this.navList.elements.forEach(entry => {
+      if ('_vnRingOrig' in entry.el) {
+        entry.el.style.outline = entry.el._vnRingOrig;
+        delete entry.el._vnRingOrig;
+      }
+    });
+    if (this.enabled && !this._paused) {
+      this._setStatus('Listening…', '#00d4ff');
+    }
+  }
+
+  /* ── Focus On <name> handler (FIX VOICE-4) ── */
+  _handleFocusOn(nameStr) {
+    const words = nameStr.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+    const match = this.navList.findBest(words);
+    if (!match) {
+      this._setStatus(`No match for "${nameStr}"`, '#f59e0b');
+      this._setTranscript(`⚠ Could not find element "${nameStr}"`);
+      setTimeout(() => { if (this.enabled) this._setStatus('Listening…', '#00d4ff'); }, 2000);
+      return;
+    }
+    const el = match.entry.el;
+    this._highlightElement(el);
+    el.focus?.();
+    this._setStatus(`Focused: ${match.entry.text}`, '#00ff88');
+    this._setTranscript(`Focused on "${match.entry.text}"`);
+    this._log(`Voice: Focus On — ${match.entry.text}`);
+    setTimeout(() => this._unhighlightElement(el), 2000);
+    setTimeout(() => { if (this.enabled) this._setStatus('Listening…', '#00d4ff'); }, 2200);
   }
 
   _findScrollable(startEl) {
