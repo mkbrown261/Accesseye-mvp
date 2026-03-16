@@ -26,6 +26,15 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const dist2D = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
 const now = () => performance.now();
 
+// FIX SAFARI-3: Safari's window.innerHeight EXCLUDES the bottom toolbar when
+// it is visible (~80px), so gaze_y=1.0 maps to a point 80px above the actual
+// bottom of the screen. window.visualViewport.height reflects the ACTUAL
+// visible area and stays in sync as the toolbar shows/hides.
+// We use visualViewport on all browsers that support it (Chrome, Safari 13+)
+// and fall back to window.innerHeight everywhere else.
+const getVH = () => (window.visualViewport?.height) || window.innerHeight;
+const getVW = () => (window.visualViewport?.width)  || window.innerWidth;
+
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    KALMAN FILTER (2D — position + velocity state)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
@@ -1345,7 +1354,7 @@ class CalibrationUI {
     if (gazeCursorEl) gazeCursorEl.style.display = '';
 
     if (success) {
-      const W = window.innerWidth, H = window.innerHeight;
+      const W = getVW(), H = getVH();
       const residuals = this.calibEngine.getResiduals(W, H);
       const cornerResiduals   = residuals.filter((_, i) => i < 4);
       const interiorResiduals = residuals.filter((_, i) => i >= 4);
@@ -2339,7 +2348,7 @@ class AccessEyeApp {
     }
 
     // PRECISION-8: Clamp cursor pixels to screen bounds (even with relaxed mapGaze clamp)
-    const W = window.innerWidth, H = window.innerHeight;
+    const W = getVW(), H = getVH();
     cpx = clamp(cpx, 0, W);
     cpy = clamp(cpy, 0, H);
     this.gazeCursor.style.display = 'block';

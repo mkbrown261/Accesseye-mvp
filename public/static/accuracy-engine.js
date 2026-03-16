@@ -280,8 +280,8 @@ class _AccDriftCorrector {
    * @returns {{ x: number, y: number }}
    */
   update(px, py, isFixated) {
-    const W = window.innerWidth  || 1920;
-    const H = window.innerHeight || 1080;
+    const W = (window.visualViewport?.width  || window.innerWidth)  || 1920;
+    const H = (window.visualViewport?.height || window.innerHeight) || 1080;
 
     // Update correction vector periodically
     this._frameSkip++;
@@ -537,8 +537,8 @@ class _AccCenterGravity {
     // Don't fire in first 2 seconds (startup stabilization)
     if (performance.now() - this._startTime < 2000) return { x: px, y: py };
 
-    const W = window.innerWidth  || 1920;
-    const H = window.innerHeight || 1080;
+    const W = (window.visualViewport?.width  || window.innerWidth)  || 1920;
+    const H = (window.visualViewport?.height || window.innerHeight) || 1080;
 
     const normX = px / W;  // [0,1]
     const normY = py / H;
@@ -692,8 +692,8 @@ class AccuracyOrchestrator {
       if (!self._active) return origUpdate(sx, sy);
 
       try {
-        const W    = window.innerWidth  || 1920;
-        const H    = window.innerHeight || 1080;
+        const W    = (window.visualViewport?.width  || window.innerWidth)  || 1920;
+        const H    = (window.visualViewport?.height || window.innerHeight) || 1080;
         const conf = p2.confidence?.lastScore?.total ?? app.gazeEngine?.confidence ?? 0.5;
 
         // Determine fixation state from best available source

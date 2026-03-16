@@ -1864,8 +1864,8 @@ class Phase2Orchestrator {
       if (!this.active) return;
       const focused = this.app.uiRegistry.getFocused();
       const fakeFixation = {
-        x: this.app._lastScreenX / window.innerWidth || 0.5,
-        y: this.app._lastScreenY / window.innerHeight || 0.5,
+        x: this.app._lastScreenX / (window.visualViewport?.width  || window.innerWidth)  || 0.5,
+        y: this.app._lastScreenY / (window.visualViewport?.height || window.innerHeight) || 0.5,
         isFixated: this.saccade.isFixated,
         fixationAge: this.saccade.fixationAge,
         duration: this.saccade.fixationAge
@@ -1912,8 +1912,8 @@ class Phase2Orchestrator {
       const focused = this.app.uiRegistry.elements.get(id);
       if (focused && this.active) {
         const bbox   = focused.bbox;
-        const targetSX = (bbox.x + bbox.w / 2) / window.innerWidth;
-        const targetSY = (bbox.y + bbox.h / 2) / window.innerHeight;
+        const targetSX = (bbox.x + bbox.w / 2) / (window.visualViewport?.width  || window.innerWidth);
+        const targetSY = (bbox.y + bbox.h / 2) / (window.visualViewport?.height || window.innerHeight);
         this.dynCalib.recordInteraction(
           this.hybridGaze.rawGaze.x,
           this.hybridGaze.rawGaze.y,
@@ -2028,13 +2028,13 @@ class Phase2Orchestrator {
     );
 
     // ── P2.5: Micro-saccade filtering (screen pixels) ──
-    const px = stableGaze.x * window.innerWidth;
-    const py = stableGaze.y * window.innerHeight;
+    const px = stableGaze.x * (window.visualViewport?.width  || window.innerWidth);
+    const py = stableGaze.y * (window.visualViewport?.height || window.innerHeight);
     const saccadeResult = this.saccade.update(px, py, confScore.total);
 
     // Use filtered position
-    const finalX = saccadeResult.x / window.innerWidth;
-    const finalY = saccadeResult.y / window.innerHeight;
+    const finalX = saccadeResult.x / (window.visualViewport?.width  || window.innerWidth);
+    const finalY = saccadeResult.y / (window.visualViewport?.height || window.innerHeight);
 
     // ── Apply dynamic bias correction ──
     const biasFixed = this.dynCalib.applyBiasCorrection(finalX, finalY);
@@ -2081,8 +2081,8 @@ class Phase2Orchestrator {
     this._lastHeadPose = headResult;
 
     // ── Forward to Phase 1 UI pipeline ──
-    const screenX = biasFixed.x * window.innerWidth;
-    const screenY = biasFixed.y * window.innerHeight;
+    const screenX = biasFixed.x * (window.visualViewport?.width  || window.innerWidth);
+    const screenY = biasFixed.y * (window.visualViewport?.height || window.innerHeight);
 
     // FIX INTENT-5: Store final screen coords so the intent timer can read them
     this.app._lastScreenX = screenX;
@@ -2343,8 +2343,8 @@ class Phase2Orchestrator {
 
     // ── Fixation indicator ──
     if (this.saccade.isFixated) {
-      const fxX = this.saccade._anchorX / window.innerWidth * W;
-      const fxY = this.saccade._anchorY / window.innerHeight * H;
+      const fxX = this.saccade._anchorX / (window.visualViewport?.width  || window.innerWidth)  * W;
+      const fxY = this.saccade._anchorY / (window.visualViewport?.height || window.innerHeight) * H;
       const age = Math.min(this.saccade.fixationAge / 500, 1);
       ctx.strokeStyle = `rgba(0,212,255,${0.4 + age * 0.5})`;
       ctx.lineWidth = 2;
