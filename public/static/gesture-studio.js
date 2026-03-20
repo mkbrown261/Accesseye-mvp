@@ -32,7 +32,6 @@ const SCROLL_AMOUNT               = 120;   // px per scroll event
 const SCROLL_INTERVAL_MS          = 200;   // ms between repeated scroll ticks (tongue-out hold)
 const LIP_TAP_TIME_WINDOW         = 750;   // ms between two closures
 const LIP_TAP_CONFIDENCE_THRESHOLD = 0.70; // 0-1
-const SMILE_THRESHOLD = 0.38;  // smile stretch / face-width ratio. Big smile ≈ 0.42-0.55; resting ≈ 0.30-0.36
 const GESTURE_COOLDOWN            = 1200;  // ms between any built-in fire
 const CUSTOM_GESTURE_CONFIDENCE   = 0.72;  // 0-1
 
@@ -185,7 +184,6 @@ class FacialGestureEngine {
       lipTapTimeWindow        : config.lipTapTimeWindow        ?? LIP_TAP_TIME_WINDOW,
       lipTapConfidence        : config.lipTapConfidence        ?? LIP_TAP_CONFIDENCE_THRESHOLD,
       blowThreshold           : config.blowThreshold           ?? BLOW_DETECTION_THRESHOLD,
-      smileThreshold          : config.smileThreshold          ?? SMILE_THRESHOLD,
       scrollIntervalMs        : config.scrollIntervalMs        ?? SCROLL_INTERVAL_MS,
       gestureCooldown         : config.gestureCooldown         ?? GESTURE_COOLDOWN,
       customGestureConfidence : config.customGestureConfidence ?? CUSTOM_GESTURE_CONFIDENCE,
@@ -203,12 +201,6 @@ class FacialGestureEngine {
     this._openFrames      = 0;
     this._cycleComplete   = false;   // one open→closed→open complete
 
-    // ── Smile / show-teeth state ─────────────────────────────────────
-    this._smileActive    = false;
-    this._smileFrames    = 0;
-    this._smileInterval  = null;
-    this._lastSmileConf  = 0;
-    this._SMILE_MIN_FRAMES = 6;  // ~0.20s at 30fps — requires brief hold to confirm
     this._tongueInterval  = null;
     this._lastTongueConf  = 0;
 
@@ -261,7 +253,6 @@ class FacialGestureEngine {
     }
 
     this._detectLipTap(f);
-    this._detectSmile(lm);
   }
 
   // ── Lip-tap: two full open→close→open cycles within LIP_TAP_TIME_WINDOW ──
@@ -325,62 +316,6 @@ class FacialGestureEngine {
     }
   }
 
-  // ── Smile / show-teeth (held) → scroll down continuously ──
-  // Measures lip-corner stretch relative to face width, combined with mouth openness.
-  // A wide open smile (showing teeth) clearly exceeds resting mouth width.
-  _detectSmile(lm) {
-    if (!lm || lm.length < 468) return;
-
-    // Lip corners (outer)
-    const mL   = lm[61];   // left lip corner
-    const mR   = lm[291];  // right lip corner
-    // Face width reference: outer eye corners
-    const eyeL = lm[33];   // right eye outer canthus
-    const eyeR = lm[263];  // left eye outer canthus
-    const faceW = Math.hypot(eyeL.x - eyeR.x, eyeL.y - eyeR.y) || 0.001;
-
-    // Mouth width (lip corners)
-    const mouthW = Math.hypot(mL.x - mR.x, mL.y - mR.y);
-    // Normalised mouth stretch ratio
-    const stretchRatio = mouthW / faceW;
-
-    // Also require mouth to be somewhat open (teeth showing)
-    const upperMid = lm[13];  // inner upper lip
-    const lowerMid = lm[14];  // inner lower lip
-    const mW = mouthW || 0.001;
-    const openRatio = Math.abs(upperMid.y - lowerMid.y) / mW;
-
-    const threshold = this.config.smileThreshold;
-    // Big smile = wide stretch AND mouth at least slightly open (teeth visible)
-    const isSmile    = stretchRatio > threshold && openRatio > 0.10;
-    const confidence = Math.min(1, Math.max(0, (stretchRatio - threshold) / 0.08));
-
-    if (isSmile) {
-      this._smileFrames = Math.min(this._smileFrames + 1, this._SMILE_MIN_FRAMES + 5);
-
-      if (this._smileFrames >= this._SMILE_MIN_FRAMES && !this._smileActive) {
-        this._smileActive = true;
-        this._lastSmileConf = confidence;
-        this._emit('smile', { confidence, active: true, action: 'scrollDown' });
-        this._emit('gesture', { name: 'smile', confidence, action: 'scrollDown' });
-        this._smileInterval = setInterval(() => {
-          this._emit('smile', { confidence: this._lastSmileConf, active: true, action: 'scrollDown' });
-          this._emit('gesture', { name: 'smile', confidence: this._lastSmileConf, action: 'scrollDown' });
-        }, this.config.scrollIntervalMs);
-      }
-      if (this._smileActive) this._lastSmileConf = confidence;
-    } else {
-      this._smileFrames = Math.max(0, this._smileFrames - 1);
-      if (this._smileActive && this._smileFrames === 0) {
-        this._smileActive = false;
-        if (this._smileInterval) {
-          clearInterval(this._smileInterval);
-          this._smileInterval = null;
-        }
-        this._emit('smileRelease', { action: 'scrollDown' });
-      }
-    }
-  }
 
   /** Reset all state (e.g. on camera restart) */
   reset() {
@@ -389,12 +324,6 @@ class FacialGestureEngine {
     this._firstClosureT   = 0;
     this._closedFrames    = 0;
     this._openFrames      = 0;
-    this._smileActive    = false;
-    this._smileFrames     = 0;
-    if (this._smileInterval) {
-      clearInterval(this._smileInterval);
-      this._smileInterval = null;
-    }
     this._mouthBaseline   = null;
     this._baselineFrames  = [];
     this._lastFire        = {};
@@ -813,18 +742,6 @@ class GestureStudio {
       this._emit('builtinGesture', { name: 'lipTap', confidence, action: 'scrollUp' });
     });
 
-    // ── Smile / show-teeth (held) → scroll down continuously ─────────
-    this._faceEngine.on('smile', ({ confidence }) => {
-      _scrollPage(SCROLL_AMOUNT);
-      if (!this._smileActionFired) {
-        this._smileActionFired = true;
-        this._emit('action', { actionId: 'scrollDown', gestureName: 'Big Smile', label: 'Scroll Down', confidence });
-        this._emit('builtinGesture', { name: 'smile', confidence, action: 'scrollDown' });
-      }
-    });
-    this._faceEngine.on('smileRelease', () => {
-      this._smileActionFired = false;
-    });
 
     // ── Custom gestures ──────────────────────────────────────────────
     // Recognizer emits { id, name, action, confidence }
@@ -881,7 +798,7 @@ class GestureStudioUI {
 
     // Builtin gesture feedback
     studio.on('builtinGesture', ({ name, confidence, action }) => {
-      let gLabel = name === 'lipTap' ? '👄 Double Lip-Tap' : name === 'smile' ? '😁 Big Smile' : name;
+      let gLabel = name === 'lipTap' ? '👄 Double Lip-Tap' : name;
       this._showFeedback(`${gLabel}: ${action} (conf ${(confidence * 100).toFixed(0)}%)`, 'success');
     });
 
@@ -915,14 +832,6 @@ class GestureStudioUI {
           <div class="gs-builtin-name">Double Lip-Tap</div>
           <div class="gs-builtin-desc">Two lip closures within 750 ms</div>
           <div class="gs-builtin-action"><i class="fas fa-arrow-up"></i> Scroll Up</div>
-        </div>
-      </div>
-      <div class="gs-builtin-card">
-        <div class="gs-builtin-icon">😁</div>
-        <div class="gs-builtin-info">
-          <div class="gs-builtin-name">Big Smile / Show Teeth</div>
-          <div class="gs-builtin-desc">Hold a wide smile with teeth showing — release to stop</div>
-          <div class="gs-builtin-action"><i class="fas fa-arrow-down"></i> Scroll Down (held)</div>
         </div>
       </div>
     </div>

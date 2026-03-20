@@ -622,14 +622,14 @@ class VoiceNavigationController {
       }
       case 'scrollUp': {
         const container = this._findScrollable(el) || document.documentElement;
-        container.scrollBy({ top: -200, behavior: 'smooth' });
+        container.scrollBy({ top: -600, behavior: 'smooth' });
         this._log('Voice: Scroll Up');
         break;
       }
       case 'scrollDown':
       case 'scroll': {
         const container = this._findScrollable(el) || document.documentElement;
-        container.scrollBy({ top: 200, behavior: 'smooth' });
+        container.scrollBy({ top: 600, behavior: 'smooth' });
         this._log('Voice: Scroll Down');
         break;
       }
