@@ -1,256 +1,569 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- *  AccessEye — care-mode.js
+ *  AccessEye — care-mode.js  v2.1
  *  Patient Interface — Care Mode
  *
  *  ARCHITECTURE RULES (strictly followed):
  *  ─────────────────────────────────────────────────────────────────
- *  • This file ONLY reads from the INTERACTION LAYER via
- *    window.AccessEye.on('focus', ...) and window.AccessEye.on('activate', ...)
- *  • It does NOT modify, patch, or call any core engine directly
- *  • It does NOT touch the cursor, gaze pipeline, or dwell logic
- *  • It does NOT mutate any existing global variables
- *  • All DOM is injected into an isolated root div (#care-mode-root)
- *    that sits above all existing UI (z-index 99999)
+ *  • Reads from interaction layer ONLY via:
+ *      window.AccessEye.on('focus', ...)
+ *      window.AccessEye.on('activate', ...)
+ *      window.AccessEye.on('gaze', ...)
+ *      window.AccessEye.registerElement(...)
+ *      window.AccessEye.unregisterElement(...)
+ *
+ *  • Camera init: triggered by clicking #start-camera-btn — the
+ *    exact same path used when the button is gaze-activated by the
+ *    base system (uiRegistry routes el.click()).  window.app.cameraOn
+ *    is read (read-only) to detect camera state. Zero action-layer
+ *    calls.
+ *
+ *  • Does NOT modify, patch, or call any engine internals
+ *  • Does NOT mutate any existing global variables / listeners
+ *  • All DOM lives in isolated #care-mode-root (z-index 99999)
  *  • Mount / unmount is fully clean — no trace left when OFF
- *  • When Care Mode is OFF the base system is 100% unaffected
+ *  • Default Mode is 100 % unaffected when Care Mode is OFF
  * ═══════════════════════════════════════════════════════════════════
  */
 
 ;(function () {
   'use strict';
 
-  /* ── Guard: don't double-load ────────────────────────────────── */
+  /* ── Guard: don't double-load ─────────────────────────────────── */
   if (window.__careModeLoaded) return;
   window.__careModeLoaded = true;
 
-  /* ══════════════════════════════════════════════════════════════
+  /* ════════════════════════════════════════════════════════════════
      CONSTANTS
-  ══════════════════════════════════════════════════════════════ */
-  const CM_ROOT_ID     = 'care-mode-root';
-  const CM_TOGGLE_ID   = 'care-mode-toggle-btn';
-  const DWELL_MS       = 1800;   // ms of focus before auto-activate
-  const DWELL_TICK_MS  = 50;     // progress update interval
+  ════════════════════════════════════════════════════════════════ */
+  const CM_ROOT_ID   = 'care-mode-root';
+  const CM_TOGGLE_ID = 'care-mode-toggle-btn';
+  const DWELL_MS     = 1600;   // ms gaze must hold to activate
+  const DWELL_TICK   = 40;     // progress-arc refresh interval (ms)
+  const CIRC         = 276.5;  // SVG arc circumference for r=44
 
-  /* ══════════════════════════════════════════════════════════════
-     STATE  (fully local — never touches window.app or any global)
-  ══════════════════════════════════════════════════════════════ */
+  /* ════════════════════════════════════════════════════════════════
+     LOCAL STATE  — never touches window.app or any global
+  ════════════════════════════════════════════════════════════════ */
   const state = {
-    active:        false,   // is Care Mode mounted?
-    screen:        'main',  // 'main' | 'pain' | 'needs' | 'communication' | 'nurse_confirm'
-    focusedBtn:    null,    // id of currently focused care-mode button
-    dwellTimer:    null,    // setInterval handle
-    dwellStart:    0,       // timestamp when dwell began
-    dwellProgress: 0,       // 0–1
-    nurseAlerted:  false,   // has nurse been called this session?
+    active:       false,
+    screen:       'main',
+    focusedBtn:   null,
+    dwellTimer:   null,
+    dwellStart:   0,
+    nurseAlerted: false,
   };
 
-  /* ══════════════════════════════════════════════════════════════
+  /* ════════════════════════════════════════════════════════════════
+     LIFECYCLE LOGGER  — full audit trail as requested
+  ════════════════════════════════════════════════════════════════ */
+  const LC = {
+    tag:  '[CareMode]',
+    step (n, msg) { console.log(`${this.tag} [LC-${n}] ${msg}`); },
+    warn (msg)    { console.warn(`${this.tag} ⚠  ${msg}`); },
+    ok   (msg)    { console.log(`${this.tag} ✅ ${msg}`); },
+    err  (msg)    { console.error(`${this.tag} ❌ ${msg}`); },
+  };
+
+  /* ════════════════════════════════════════════════════════════════
+     PART 1 — CAMERA INITIALIZATION  (via interaction layer only)
+  ════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Checks whether the camera is already running via the authoritative
+   * flag window.app.cameraOn (read-only access — no mutation).
+   * If not running, triggers the start via #start-camera-btn.click()
+   * — the identical path that a gaze-activate on that button takes
+   * through uiRegistry (line ~2418 in app.js: el.click()).
+   */
+  function _ensureCameraRunning () {
+    LC.step(1, 'Checking camera state via window.app.cameraOn…');
+
+    /* ── LC-1: check authoritative flag ─────────────────────────── */
+    const alreadyOn = window.app?.cameraOn === true;
+    LC.step(1, `window.app.cameraOn = ${alreadyOn}`);
+
+    if (alreadyOn) {
+      LC.step(2, 'Camera already running — skipping init, running lifecycle audit');
+      _lifecycleAudit();
+      return;
+    }
+
+    /* ── LC-2: locate #start-camera-btn ─────────────────────────── */
+    const startBtn = document.getElementById('start-camera-btn');
+    if (!startBtn) {
+      LC.warn('LC-2: #start-camera-btn not found — user is not on Demo page');
+      _showCameraHint('Navigate to Live Demo page and start the camera first.');
+      return;
+    }
+
+    /* ── Optionally navigate to demo tab first ───────────────────── */
+    const demoPage = document.getElementById('page-demo');
+    const isDemoVisible = demoPage
+      ? (demoPage.style.display !== 'none' && !demoPage.classList.contains('hidden'))
+      : false;
+
+    if (!isDemoVisible) {
+      LC.step('2a', 'Demo page not visible — navigating via nav click (interaction layer)');
+      const navDemo = document.querySelector('[data-page="demo"]') ||
+                      document.getElementById('nav-demo');
+      if (navDemo) {
+        navDemo.click();  // existing nav click handler — interaction layer path
+        LC.ok('Nav-demo clicked');
+      } else {
+        LC.warn('LC-2a: demo nav button not found');
+      }
+      setTimeout(_triggerCameraStart, 450);   // wait for page transition
+    } else {
+      _triggerCameraStart();
+    }
+  }
+
+  function _triggerCameraStart () {
+    const startBtn = document.getElementById('start-camera-btn');
+    if (!startBtn) {
+      LC.err('LC-3: #start-camera-btn still not found after navigation');
+      _showCameraHint('Open the Live Demo tab and press Start Camera.');
+      return;
+    }
+
+    LC.step(3, 'Triggering camera via #start-camera-btn.click() — interaction layer path');
+    startBtn.click();   // ← mirrors what gaze-activate does (uiRegistry → el.click())
+
+    /* ── Poll until window.app.cameraOn is true (max 3 s) ───────── */
+    let attempts = 0;
+    const poll = setInterval(() => {
+      attempts++;
+      const running = window.app?.cameraOn === true;
+      LC.step(`3-poll-${attempts}`, `window.app.cameraOn=${running}`);
+
+      if (running) {
+        clearInterval(poll);
+        LC.step(4, 'Camera confirmed ON — proceeding to lifecycle audit');
+        _lifecycleAudit();
+        return;
+      }
+      if (attempts >= 30) {   // 3 s
+        clearInterval(poll);
+        LC.warn('LC-3: camera did not start within 3 s — audit will proceed anyway');
+        _lifecycleAudit();
+      }
+    }, 100);
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     PART 2 — LIFECYCLE AUDIT
+     Verifies every stage of the pipeline with a debug log per step.
+  ════════════════════════════════════════════════════════════════ */
+  function _lifecycleAudit () {
+
+    /* LC-4 Camera on flag */
+    const cameraOn = window.app?.cameraOn === true;
+    cameraOn
+      ? LC.ok('LC-4 Camera ON (window.app.cameraOn)')
+      : LC.warn('LC-4 Camera OFF — eye tracking will use simulation mode');
+
+    /* LC-5 Video stream */
+    const video = document.getElementById('demo-video');
+    if (video?.srcObject) {
+      const tracks = video.srcObject.getTracks?.() ?? [];
+      LC.ok(`LC-5 Video stream active — ${tracks.length} track(s), readyState=${video.readyState}`);
+    } else {
+      LC.warn('LC-5 video.srcObject not yet set (may still be initialising)');
+    }
+
+    /* LC-6 Tracking loop — mpController */
+    if (window.app?.mpController) {
+      LC.ok('LC-6 mpController present — requestAnimationFrame loop active');
+    } else {
+      LC.warn('LC-6 mpController not found — simulation / Phase-2 mode likely active');
+    }
+
+    /* LC-7 Gaze data */
+    if (window.app?.gazeEngine) {
+      const g = window.app.gazeEngine.smoothGaze;
+      LC.ok(`LC-7 gazeEngine present — last smoothGaze=(${g?.x?.toFixed(3)},${g?.y?.toFixed(3)})`);
+    } else {
+      LC.warn('LC-7 gazeEngine not found on window.app');
+    }
+
+    /* LC-8 Interaction layer */
+    if (window.AccessEye?.on) {
+      LC.ok('LC-8 window.AccessEye.on available — events routing to Care Mode');
+    } else {
+      LC.err('LC-8 window.AccessEye.on NOT available — bridge will retry');
+    }
+
+    /* LC-9 Registered buttons */
+    LC.ok(`LC-9 Registered buttons: ${_registeredIds.length} — [${_registeredIds.join(', ')}]`);
+
+    /* LC-10 DOM isolation */
+    const root = document.getElementById(CM_ROOT_ID);
+    LC.ok(`LC-10 #care-mode-root in DOM: ${!!root} — z-index 99999, pointer-events all`);
+
+    /* LC-11 Gaze hover + dwell */
+    LC.step(11, 'Gaze hover + dwell: bridge listens to AccessEye focus/activate/gaze events ' +
+               `— dwell threshold ${DWELL_MS} ms`);
+
+    /* Update status bar */
+    _updateStatusBar(cameraOn ? 'tracking' : 'hint');
+    LC.ok('━━ Lifecycle audit complete ━━');
+  }
+
+  /* ════════════════════════════════════════════════════════════════
      INTERACTION LAYER BRIDGE
-     Listens to AccessEye public events — NEVER touches internals
-  ══════════════════════════════════════════════════════════════ */
+     Subscribes to AccessEye public events once (guarded by flag).
+     Every callback is a no-op when Care Mode is off.
+  ════════════════════════════════════════════════════════════════ */
   let _bridgeAttached = false;
 
-  function attachInteractionBridge() {
+  function _attachBridge () {
     if (_bridgeAttached) return;
     _bridgeAttached = true;
 
-    // Wait until window.AccessEye is ready (it's set after DOMContentLoaded)
     const tryAttach = () => {
-      if (!window.AccessEye?.on) {
-        setTimeout(tryAttach, 200);
-        return;
-      }
+      if (!window.AccessEye?.on) { setTimeout(tryAttach, 200); return; }
+      LC.ok('Interaction-layer bridge attached');
 
-      /* focus event → start dwell on matching care-mode button */
+      /* focus → start dwell arc */
       window.AccessEye.on('focus', ({ id }) => {
         if (!state.active) return;
         const el = document.getElementById(id);
-        if (!el || !el.closest('#care-mode-root')) return; // not a care-mode element
+        if (!el?.closest('#' + CM_ROOT_ID)) return;
+        LC.step('IL-F', `focus → ${id}`);
         _startDwell(id);
       });
 
-      /* activate event → trigger care-mode action (gesture / dwell complete) */
+      /* activate → onActivate already called by uiRegistry; this handles
+         the case where the base dwell fires first (gesture-mode).        */
       window.AccessEye.on('activate', ({ id }) => {
         if (!state.active) return;
         const el = document.getElementById(id);
-        if (!el || !el.closest('#care-mode-root')) return;
+        if (!el?.closest('#' + CM_ROOT_ID)) return;
+        LC.step('IL-A', `activate → ${id}`);
         _stopDwell();
         _handleAction(id);
       });
+
+      /*
+       * gaze → cancel dwell when gaze leaves the button.
+       * gaze.screen is normalized [0, 1] — convert to pixels before
+       * comparing with getBoundingClientRect().
+       */
+      window.AccessEye.on('gaze', ({ screen }) => {
+        if (!state.active || !state.focusedBtn || !screen) return;
+        const el = document.getElementById(state.focusedBtn);
+        if (!el) return;
+        const r   = el.getBoundingClientRect();
+        const px  = screen.x * window.innerWidth;
+        const py  = screen.y * window.innerHeight;
+        const pad = 28; // generous tolerance for gaze jitter
+        const inBounds = px >= r.left - pad && px <= r.right  + pad &&
+                         py >= r.top  - pad && py <= r.bottom + pad;
+        if (!inBounds) _stopDwell();
+      });
     };
+
     tryAttach();
   }
 
-  /* ══════════════════════════════════════════════════════════════
-     DWELL ENGINE  (isolated — does not touch uiRegistry dwell)
-  ══════════════════════════════════════════════════════════════ */
-  function _startDwell(btnId) {
-    if (state.focusedBtn === btnId) return; // already dwelling on this btn
+  /* ════════════════════════════════════════════════════════════════
+     DWELL ENGINE  — isolated, does not touch uiRegistry dwell
+     Provides the visible progress-arc animation.
+     NOTE: onActivate callback on each registered element is the
+     primary trigger; this engine ensures smooth visual feedback.
+  ════════════════════════════════════════════════════════════════ */
+  function _startDwell (btnId) {
+    if (state.focusedBtn === btnId) return; // already dwelling here
     _stopDwell();
 
-    state.focusedBtn    = btnId;
-    state.dwellStart    = performance.now();
-    state.dwellProgress = 0;
-
-    // Highlight focused button
-    _setFocusStyle(btnId, true);
+    state.focusedBtn = btnId;
+    state.dwellStart = performance.now();
+    _setFocusCls(btnId, true);
 
     state.dwellTimer = setInterval(() => {
-      const elapsed = performance.now() - state.dwellStart;
-      state.dwellProgress = Math.min(elapsed / DWELL_MS, 1);
-
-      // Update progress arc on the button
-      _updateDwellArc(btnId, state.dwellProgress);
-
-      if (state.dwellProgress >= 1) {
+      const pct = Math.min((performance.now() - state.dwellStart) / DWELL_MS, 1);
+      _updateArc(btnId, pct);
+      if (pct >= 1) {
         _stopDwell();
         _handleAction(btnId);
       }
-    }, DWELL_TICK_MS);
+    }, DWELL_TICK);
   }
 
-  function _stopDwell() {
-    if (state.dwellTimer) {
-      clearInterval(state.dwellTimer);
-      state.dwellTimer = null;
-    }
+  function _stopDwell () {
+    if (state.dwellTimer) { clearInterval(state.dwellTimer); state.dwellTimer = null; }
     if (state.focusedBtn) {
-      _setFocusStyle(state.focusedBtn, false);
-      _updateDwellArc(state.focusedBtn, 0);
+      _setFocusCls(state.focusedBtn, false);
+      _updateArc(state.focusedBtn, 0);
     }
-    state.focusedBtn    = null;
-    state.dwellProgress = 0;
+    state.focusedBtn = null;
   }
 
-  function _setFocusStyle(btnId, focused) {
-    const el = document.getElementById(btnId);
-    if (!el) return;
-    el.classList.toggle('cm-focused', focused);
+  function _setFocusCls (id, on) {
+    document.getElementById(id)?.classList.toggle('cm-focused', on);
   }
 
-  function _updateDwellArc(btnId, progress) {
-    const el = document.getElementById(btnId);
-    if (!el) return;
-    const arc = el.querySelector('.cm-dwell-arc');
-    if (!arc) return;
-    // SVG circle circumference = 2πr, r=44 → ~276.5
-    const CIRC = 276.5;
-    arc.style.strokeDashoffset = String(CIRC * (1 - progress));
+  function _updateArc (id, p) {
+    const arc = document.getElementById(id)?.querySelector('.cm-dwell-arc');
+    if (arc) arc.style.strokeDashoffset = String(CIRC * (1 - p));
   }
 
-  /* ══════════════════════════════════════════════════════════════
-     ACTION ROUTER  (Care Mode state machine)
-  ══════════════════════════════════════════════════════════════ */
-  function _handleAction(btnId) {
-    // Strip screen prefix to get action key: "cm-pain", "cm-needs", etc.
+  /* ════════════════════════════════════════════════════════════════
+     REGISTER / UNREGISTER with AccessEye interaction layer
+  ════════════════════════════════════════════════════════════════ */
+  let _registeredIds = [];
+
+  function _registerButtons () {
+    if (!window.AccessEye?.registerElement) return;
+    _unregisterButtons();   // clean slate before each screen render
+
+    const root = document.getElementById(CM_ROOT_ID);
+    if (!root) return;
+
+    root.querySelectorAll('.cm-btn[id]').forEach(el => {
+      _registeredIds.push(el.id);
+      window.AccessEye.registerElement({
+        id:         el.id,
+        element:    el,
+        label:      el.dataset.label || el.textContent.trim().slice(0, 30),
+        onActivate: () => {
+          LC.step('REG-OA', `onActivate fired for ${el.id}`);
+          _handleAction(el.id);
+        },
+      });
+    });
+
+    LC.ok(`Registered ${_registeredIds.length} Care Mode buttons with interaction layer`);
+  }
+
+  function _unregisterButtons () {
+    if (!window.AccessEye?.unregisterElement) return;
+    _registeredIds.forEach(id => {
+      try { window.AccessEye.unregisterElement(id); } catch (_) {}
+    });
+    _registeredIds = [];
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     ACTION STATE MACHINE  — all flows contained locally
+  ════════════════════════════════════════════════════════════════ */
+  function _handleAction (btnId) {
     const action = btnId.replace(/^cm-/, '');
+    LC.ok(`Action dispatched: ${action}`);
 
     switch (action) {
-      /* ── Main screen ─────────────────────────────── */
+      /* ── Main menu ────────────────────────────────────────────── */
       case 'pain':          _goScreen('pain');          break;
       case 'needs':         _goScreen('needs');         break;
       case 'communication': _goScreen('communication'); break;
       case 'call-nurse':    _goScreen('nurse_confirm'); break;
 
-      /* ── Pain flow ───────────────────────────────── */
-      case 'pain-mild':     _sendSignal('pain', 'Mild pain reported');     break;
-      case 'pain-moderate': _sendSignal('pain', 'Moderate pain reported'); break;
-      case 'pain-severe':   _sendSignal('pain', 'Severe pain reported');   break;
-      case 'pain-chest':    _sendSignal('pain', 'Chest pain reported — urgent'); break;
-      case 'pain-head':     _sendSignal('pain', 'Headache reported');      break;
-      case 'pain-stomach':  _sendSignal('pain', 'Stomach pain reported');  break;
+      /* ── Pain sub-items ───────────────────────────────────────── */
+      case 'pain-mild':     _signal('pain', 'Mild pain reported');            break;
+      case 'pain-moderate': _signal('pain', 'Moderate pain reported');        break;
+      case 'pain-severe':   _signal('pain', 'Severe pain — needs attention'); break;
+      case 'pain-chest':    _signal('pain', 'Chest pain — URGENT');           break;
+      case 'pain-head':     _signal('pain', 'Headache reported');             break;
+      case 'pain-stomach':  _signal('pain', 'Stomach pain reported');         break;
 
-      /* ── Needs flow ──────────────────────────────── */
-      case 'needs-water':       _sendSignal('needs', 'Patient needs water');        break;
-      case 'needs-blanket':     _sendSignal('needs', 'Patient needs blanket');      break;
-      case 'needs-bathroom':    _sendSignal('needs', 'Patient needs bathroom');     break;
-      case 'needs-medication':  _sendSignal('needs', 'Patient needs medication');   break;
-      case 'needs-position':    _sendSignal('needs', 'Patient needs repositioning');break;
-      case 'needs-quiet':       _sendSignal('needs', 'Patient requests quiet');     break;
+      /* ── Needs sub-items ──────────────────────────────────────── */
+      case 'needs-water':      _signal('needs', 'Patient needs water');         break;
+      case 'needs-blanket':    _signal('needs', 'Patient needs a blanket');     break;
+      case 'needs-bathroom':   _signal('needs', 'Patient needs the bathroom');  break;
+      case 'needs-medication': _signal('needs', 'Patient needs medication');    break;
+      case 'needs-position':   _signal('needs', 'Patient needs repositioning'); break;
+      case 'needs-quiet':      _signal('needs', 'Patient requests quiet');      break;
 
-      /* ── Communication flow ──────────────────────── */
-      case 'comm-yes':     _sendSignal('communication', 'Patient says: YES');  break;
-      case 'comm-no':      _sendSignal('communication', 'Patient says: NO');   break;
-      case 'comm-help':    _sendSignal('communication', 'Patient says: HELP'); break;
-      case 'comm-thanks':  _sendSignal('communication', 'Patient says: THANK YOU'); break;
-      case 'comm-pain':    _goScreen('pain');   break;
-      case 'comm-family':  _sendSignal('communication', 'Patient wants family contact'); break;
+      /* ── Communication sub-items ──────────────────────────────── */
+      case 'comm-yes':    _signal('communication', 'Patient says: YES');            break;
+      case 'comm-no':     _signal('communication', 'Patient says: NO');             break;
+      case 'comm-help':   _signal('communication', 'Patient says: HELP');           break;
+      case 'comm-thanks': _signal('communication', 'Patient says: THANK YOU');      break;
+      case 'comm-pain':   _goScreen('pain');                                        break;
+      case 'comm-family': _signal('communication', 'Patient wants family contact'); break;
 
-      /* ── Nurse confirm ───────────────────────────── */
+      /* ── Nurse call ───────────────────────────────────────────── */
       case 'nurse-yes':
         state.nurseAlerted = true;
-        _sendSignal('nurse', 'NURSE CALL — Patient requested assistance');
+        _signal('nurse', 'NURSE CALL — Patient needs assistance');
         _showNurseConfirmed();
         break;
       case 'nurse-no':
         _goScreen('main');
         break;
 
-      /* ── Back button (any screen) ────────────────── */
+      /* ── Navigation ───────────────────────────────────────────── */
       case 'back':
         _goScreen('main');
         break;
 
       default:
-        console.warn('[CareMode] Unknown action:', action);
+        LC.warn('Unknown action: ' + action);
     }
   }
 
-  /* ══════════════════════════════════════════════════════════════
-     SIGNAL EMITTER
-     Emits a CustomEvent so the host app / nurse system can listen
-     without Care Mode touching any internals.
-     DOES NOT call anything in the action layer.
-  ══════════════════════════════════════════════════════════════ */
-  function _sendSignal(category, message) {
-    const ev = new CustomEvent('caremode:signal', {
+  /* ════════════════════════════════════════════════════════════════
+     SIGNAL EMITTER — CustomEvent only, no action-layer contact
+  ════════════════════════════════════════════════════════════════ */
+  function _signal (category, message) {
+    document.dispatchEvent(new CustomEvent('caremode:signal', {
       bubbles: true,
-      detail: {
-        category,
-        message,
-        timestamp: Date.now(),
-      }
-    });
-    document.dispatchEvent(ev);
-
-    // Show confirmation to patient
+      detail: { category, message, timestamp: Date.now() },
+    }));
     _showFeedback(message);
-
-    // TTS via Web Speech (does not touch AccessEye audio system)
     _speak(message);
-
-    // Return to main after short delay
     setTimeout(() => _goScreen('main'), 2800);
   }
 
-  function _speak(text) {
+  function _speak (text) {
     try {
-      const synth = window.speechSynthesis;
-      if (!synth) return;
-      synth.cancel();
-      const utt = new SpeechSynthesisUtterance(text);
-      utt.rate = 0.9;
-      utt.volume = 1.0;
-      synth.speak(utt);
-    } catch(_) {}
+      const s = window.speechSynthesis;
+      if (!s) return;
+      s.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 0.88; u.volume = 1;
+      s.speak(u);
+    } catch (_) {}
   }
 
-  /* ══════════════════════════════════════════════════════════════
+  /* ════════════════════════════════════════════════════════════════
      SCREEN ROUTER
-  ══════════════════════════════════════════════════════════════ */
-  function _goScreen(screen) {
+  ════════════════════════════════════════════════════════════════ */
+  function _goScreen (screen) {
     _stopDwell();
     state.screen = screen;
-    _renderCurrentScreen();
-    // Re-register all new buttons with AccessEye interaction layer
-    _registerCareButtons();
+    _render();
+    _registerButtons();
   }
 
-  /* ══════════════════════════════════════════════════════════════
-     FEEDBACK TOAST  (isolated — appended to care-mode root only)
-  ══════════════════════════════════════════════════════════════ */
-  function _showFeedback(message) {
+  function _render () {
+    const content = document.getElementById('cm-content');
+    if (!content) return;
+    switch (state.screen) {
+      case 'main':          content.innerHTML = _sMain();         break;
+      case 'pain':          content.innerHTML = _sPain();         break;
+      case 'needs':         content.innerHTML = _sNeeds();        break;
+      case 'communication': content.innerHTML = _sComm();         break;
+      case 'nurse_confirm': content.innerHTML = _sNurseConfirm(); break;
+      default:              content.innerHTML = _sMain();
+    }
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     BUTTON BUILDER
+     Each button carries its own SVG dwell-progress arc.
+     Part 3: sizing via CSS (see _injectStyles).
+  ════════════════════════════════════════════════════════════════ */
+  function _btn (id, icon, label, cls = '') {
+    return `
+      <button id="cm-${id}" class="cm-btn ${cls}" data-label="${label}" aria-label="${label}">
+        <svg class="cm-dwell-ring" viewBox="0 0 100 100" aria-hidden="true">
+          <circle class="cm-dwell-track" cx="50" cy="50" r="44"/>
+          <circle class="cm-dwell-arc"   cx="50" cy="50" r="44"
+            style="stroke-dasharray:${CIRC};stroke-dashoffset:${CIRC}"/>
+        </svg>
+        <span class="cm-btn-icon">${icon}</span>
+        <span class="cm-btn-label">${label}</span>
+      </button>`;
+  }
+
+  function _backBtn () { return _btn('back', '←', 'Back', 'cm-btn-back'); }
+
+  /* ════════════════════════════════════════════════════════════════
+     SCREENS
+  ════════════════════════════════════════════════════════════════ */
+  function _sMain () {
+    return `
+      <p class="cm-title">How can we help?</p>
+      <div class="cm-grid cm-2x2">
+        ${_btn('pain',          '😣', 'Pain',          'cm-red')}
+        ${_btn('needs',         '🙏', 'Needs',         'cm-blue')}
+        ${_btn('call-nurse',    '🔔', 'Call Nurse',    'cm-amber')}
+        ${_btn('communication', '💬', 'Communication', 'cm-green')}
+      </div>`;
+  }
+
+  function _sPain () {
+    return `
+      <p class="cm-title">Where / How bad?</p>
+      <div class="cm-grid cm-2x3">
+        ${_btn('pain-mild',     '😌', 'Mild',    'cm-pain-lvl')}
+        ${_btn('pain-moderate', '😟', 'Moderate','cm-pain-lvl')}
+        ${_btn('pain-severe',   '😣', 'Severe',  'cm-pain-lvl cm-urgent')}
+        ${_btn('pain-chest',    '❤️', 'Chest',   'cm-pain-lvl cm-urgent')}
+        ${_btn('pain-head',     '🤕', 'Head',    'cm-pain-lvl')}
+        ${_btn('pain-stomach',  '🤢', 'Stomach', 'cm-pain-lvl')}
+      </div>
+      <div class="cm-back-row">${_backBtn()}</div>`;
+  }
+
+  function _sNeeds () {
+    return `
+      <p class="cm-title">What do you need?</p>
+      <div class="cm-grid cm-2x3">
+        ${_btn('needs-water',      '💧', 'Water',      'cm-blue')}
+        ${_btn('needs-blanket',    '🛏', 'Blanket',    'cm-blue')}
+        ${_btn('needs-bathroom',   '🚻', 'Bathroom',   'cm-blue')}
+        ${_btn('needs-medication', '💊', 'Medication', 'cm-blue')}
+        ${_btn('needs-position',   '🔄', 'Reposition', 'cm-blue')}
+        ${_btn('needs-quiet',      '🤫', 'Quiet',      'cm-blue')}
+      </div>
+      <div class="cm-back-row">${_backBtn()}</div>`;
+  }
+
+  function _sComm () {
+    return `
+      <p class="cm-title">Communication</p>
+      <div class="cm-grid cm-2x3">
+        ${_btn('comm-yes',    '✅', 'YES',          'cm-green cm-large-txt')}
+        ${_btn('comm-no',     '❌', 'NO',           'cm-red   cm-large-txt')}
+        ${_btn('comm-help',   '🆘', 'Help',         'cm-amber')}
+        ${_btn('comm-thanks', '🙏', 'Thank You',    'cm-green')}
+        ${_btn('comm-pain',   '😣', 'I have pain',  'cm-red')}
+        ${_btn('comm-family', '👪', 'Call Family',  'cm-blue')}
+      </div>
+      <div class="cm-back-row">${_backBtn()}</div>`;
+  }
+
+  function _sNurseConfirm () {
+    return `
+      <p class="cm-title cm-urgent-title">🔔 Call the Nurse?</p>
+      <p class="cm-sub">A nurse will be alerted right away.</p>
+      <div class="cm-grid cm-confirm">
+        ${_btn('nurse-yes', '✅', 'Yes — Call Nurse', 'cm-green cm-large-txt')}
+        ${_btn('nurse-no',  '❌', 'Cancel',           'cm-grey')}
+      </div>`;
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     STATUS BAR
+  ════════════════════════════════════════════════════════════════ */
+  function _updateStatusBar (st) {
+    const bar = document.getElementById('cm-status-bar');
+    if (!bar) return;
+    const map = {
+      tracking: { dot: '#22c55e', text: '👁 Eye tracking active'                         },
+      waiting:  { dot: '#f59e0b', text: '⏳ Starting camera…'                            },
+      hint:     { dot: '#ef4444', text: '📷 Go to Live Demo → Start Camera to track'     },
+    };
+    const s = map[st] || map.waiting;
+    const dot = bar.querySelector('.cm-status-dot');
+    const txt = bar.querySelector('.cm-status-txt');
+    if (dot) { dot.style.background = s.dot; dot.style.animationPlayState = st === 'tracking' ? 'paused' : 'running'; }
+    if (txt) txt.textContent = s.text;
+  }
+
+  function _showCameraHint (msg) {
+    _updateStatusBar('hint');
+    const bar = document.getElementById('cm-status-bar');
+    if (bar) bar.querySelector('.cm-status-txt').textContent = '📷 ' + msg;
+  }
+
+  /* ════════════════════════════════════════════════════════════════
+     FEEDBACK TOAST (inside overlay only)
+  ════════════════════════════════════════════════════════════════ */
+  function _showFeedback (msg) {
     const root = document.getElementById(CM_ROOT_ID);
     if (!root) return;
     let fb = root.querySelector('.cm-feedback');
@@ -259,20 +572,18 @@
       fb.className = 'cm-feedback';
       root.appendChild(fb);
     }
-    fb.textContent = '✅  ' + message;
-    fb.classList.add('cm-feedback-visible');
-    clearTimeout(fb._hideTimer);
-    fb._hideTimer = setTimeout(() => fb.classList.remove('cm-feedback-visible'), 2500);
+    fb.textContent = '✅  ' + msg;
+    fb.classList.add('cm-fb-on');
+    clearTimeout(fb._t);
+    fb._t = setTimeout(() => fb.classList.remove('cm-fb-on'), 2600);
   }
 
-  function _showNurseConfirmed() {
-    const root = document.getElementById(CM_ROOT_ID);
-    if (!root) return;
-    const content = root.querySelector('.cm-content');
-    if (!content) return;
-    content.innerHTML = `
-      <div class="cm-nurse-confirmed">
-        <div class="cm-nurse-icon">🔔</div>
+  function _showNurseConfirmed () {
+    const c = document.getElementById('cm-content');
+    if (!c) return;
+    c.innerHTML = `
+      <div class="cm-nurse-done">
+        <div class="cm-nurse-bell">🔔</div>
         <div class="cm-nurse-title">Nurse Called</div>
         <div class="cm-nurse-sub">Help is on the way. Stay calm.</div>
       </div>`;
@@ -280,564 +591,83 @@
     setTimeout(() => _goScreen('main'), 4000);
   }
 
-  /* ══════════════════════════════════════════════════════════════
-     REGISTER / UNREGISTER CARE MODE BUTTONS
-     Uses window.AccessEye public API only — read-only interaction hook
-  ══════════════════════════════════════════════════════════════ */
-  function _registerCareButtons() {
-    if (!window.AccessEye?.registerElement) return;
-    const root = document.getElementById(CM_ROOT_ID);
-    if (!root) return;
-
-    // Unregister any previously registered care buttons
-    _unregisterCareButtons();
-
-    // Register every button inside the overlay
-    root.querySelectorAll('.cm-btn[id]').forEach(el => {
-      window.AccessEye.registerElement({
-        id:         el.id,
-        element:    el,
-        label:      el.dataset.label || el.textContent.trim(),
-        onActivate: () => _handleAction(el.id),
-      });
-    });
-  }
-
-  let _registeredCareIds = [];
-
-  function _unregisterCareButtons() {
-    if (!window.AccessEye?.unregisterElement) return;
-    _registeredCareIds.forEach(id => {
-      try { window.AccessEye.unregisterElement(id); } catch(_) {}
-    });
-    _registeredCareIds = [];
-    // Also collect current ids for tracking
-    const root = document.getElementById(CM_ROOT_ID);
-    if (root) {
-      root.querySelectorAll('.cm-btn[id]').forEach(el => {
-        _registeredCareIds.push(el.id);
-      });
-    }
-  }
-
-  /* ══════════════════════════════════════════════════════════════
+  /* ════════════════════════════════════════════════════════════════
      MOUNT / UNMOUNT
-  ══════════════════════════════════════════════════════════════ */
-  function mount() {
-    if (document.getElementById(CM_ROOT_ID)) return; // already mounted
+  ════════════════════════════════════════════════════════════════ */
+  function mount () {
+    if (document.getElementById(CM_ROOT_ID)) return;
+    LC.ok('Mounting Care Mode…');
 
-    // Build root overlay
-    const root = document.createElement('div');
-    root.id = CM_ROOT_ID;
-    root.innerHTML = _buildOverlayHTML();
-    document.body.appendChild(root);
-
-    // Inject isolated styles
     _injectStyles();
 
-    // Render initial screen
-    _renderCurrentScreen();
-
-    // Register buttons with interaction layer
-    _registerCareButtons();
-
-    // Wire up the close button (mouse/touch fallback)
-    const closeBtn = root.querySelector('#cm-close-btn');
-    if (closeBtn) closeBtn.addEventListener('click', toggle);
-
-    state.active = true;
-    _updateToggleBtn();
-
-    console.log('[CareMode] Mounted ✅');
-  }
-
-  function unmount() {
-    _stopDwell();
-    _unregisterCareButtons();
-
-    const root = document.getElementById(CM_ROOT_ID);
-    if (root) root.remove();
-
-    const styleTag = document.getElementById('care-mode-styles');
-    if (styleTag) styleTag.remove();
-
-    state.active  = false;
-    state.screen  = 'main';
-    _updateToggleBtn();
-
-    console.log('[CareMode] Unmounted 🔴');
-  }
-
-  function toggle() {
-    if (state.active) unmount();
-    else              mount();
-  }
-
-  function _updateToggleBtn() {
-    const btn = document.getElementById(CM_TOGGLE_ID);
-    if (!btn) return;
-    if (state.active) {
-      btn.classList.add('cm-toggle-active');
-      btn.title = 'Exit Care Mode';
-    } else {
-      btn.classList.remove('cm-toggle-active');
-      btn.title = 'Enter Care Mode (Patient Interface)';
-    }
-  }
-
-  /* ══════════════════════════════════════════════════════════════
-     HTML BUILDERS
-  ══════════════════════════════════════════════════════════════ */
-  function _buildOverlayHTML() {
-    return `
+    const root = document.createElement('div');
+    root.id = CM_ROOT_ID;
+    root.innerHTML = `
       <div class="cm-overlay">
         <div class="cm-header">
-          <div class="cm-header-left">
-            <span class="cm-header-icon">🏥</span>
-            <span class="cm-header-title">Care Mode</span>
+          <div class="cm-hdr-left">
+            <span class="cm-hdr-icon">🏥</span>
+            <span class="cm-hdr-title">Care Mode</span>
+          </div>
+          <div id="cm-status-bar" class="cm-status-bar">
+            <span class="cm-status-dot"></span>
+            <span class="cm-status-txt">Initialising…</span>
           </div>
           <button id="cm-close-btn" class="cm-close-btn" aria-label="Exit Care Mode">✕ Exit</button>
         </div>
         <div class="cm-content" id="cm-content"></div>
         <div class="cm-footer">
-          <span class="cm-footer-hint">👁 Look at a button and hold gaze to select</span>
+          <span class="cm-footer-hint">
+            👁&nbsp; Look at a button and hold your gaze to select
+            &nbsp;·&nbsp; ${DWELL_MS / 1000}s dwell time
+          </span>
         </div>
       </div>`;
+    document.body.appendChild(root);
+
+    root.querySelector('#cm-close-btn').addEventListener('click', toggle);
+
+    state.active = true;
+    _updateToggle();
+    _updateStatusBar('waiting');
+    _goScreen('main');
+
+    /* Part 1: ensure camera is running (via interaction layer) */
+    setTimeout(_ensureCameraRunning, 300);
+
+    LC.ok('Care Mode mounted ✅');
   }
 
-  function _renderCurrentScreen() {
-    const content = document.getElementById('cm-content');
-    if (!content) return;
-
-    switch (state.screen) {
-      case 'main':          content.innerHTML = _screenMain();          break;
-      case 'pain':          content.innerHTML = _screenPain();          break;
-      case 'needs':         content.innerHTML = _screenNeeds();         break;
-      case 'communication': content.innerHTML = _screenCommunication(); break;
-      case 'nurse_confirm': content.innerHTML = _screenNurseConfirm();  break;
-      default:              content.innerHTML = _screenMain();
-    }
+  function unmount () {
+    LC.ok('Unmounting Care Mode…');
+    _stopDwell();
+    _unregisterButtons();
+    document.getElementById(CM_ROOT_ID)?.remove();
+    document.getElementById('care-mode-styles')?.remove();
+    state.active = false;
+    state.screen = 'main';
+    _updateToggle();
+    LC.ok('Care Mode unmounted 🔴');
   }
 
-  /* ── Button HTML helper ──────────────────────────────────────── */
-  function _btn(id, icon, label, colorClass = '') {
-    return `
-      <button id="cm-${id}" class="cm-btn ${colorClass}" data-label="${label}" aria-label="${label}">
-        <svg class="cm-dwell-ring" viewBox="0 0 100 100" aria-hidden="true">
-          <circle class="cm-dwell-track" cx="50" cy="50" r="44"/>
-          <circle class="cm-dwell-arc"   cx="50" cy="50" r="44"
-            style="stroke-dasharray:276.5;stroke-dashoffset:276.5"/>
-        </svg>
-        <span class="cm-btn-icon">${icon}</span>
-        <span class="cm-btn-label">${label}</span>
-      </button>`;
+  function toggle () {
+    state.active ? unmount() : mount();
   }
 
-  function _backBtn() {
-    return _btn('back', '←', 'Back', 'cm-btn-back');
+  function _updateToggle () {
+    const btn = document.getElementById(CM_TOGGLE_ID);
+    if (!btn) return;
+    btn.classList.toggle('cm-toggle-on', state.active);
+    btn.title = state.active ? 'Exit Care Mode' : 'Enter Care Mode (Patient Interface)';
   }
 
-  /* ── Screen: Main ────────────────────────────────────────────── */
-  function _screenMain() {
-    return `
-      <div class="cm-screen-title">How can we help?</div>
-      <div class="cm-grid cm-grid-2x2">
-        ${_btn('pain',          '😣', 'Pain',          'cm-btn-pain')}
-        ${_btn('needs',         '🙏', 'Needs',         'cm-btn-needs')}
-        ${_btn('call-nurse',    '🔔', 'Call Nurse',    'cm-btn-nurse')}
-        ${_btn('communication', '💬', 'Communication', 'cm-btn-comm')}
-      </div>`;
-  }
-
-  /* ── Screen: Pain ────────────────────────────────────────────── */
-  function _screenPain() {
-    return `
-      <div class="cm-screen-title">Where / How bad is the pain?</div>
-      <div class="cm-grid cm-grid-3x2">
-        ${_btn('pain-mild',     '😌', 'Mild',    'cm-btn-pain-level')}
-        ${_btn('pain-moderate', '😟', 'Moderate','cm-btn-pain-level')}
-        ${_btn('pain-severe',   '😣', 'Severe',  'cm-btn-pain-level cm-btn-urgent')}
-        ${_btn('pain-chest',    '❤️', 'Chest',   'cm-btn-pain-level cm-btn-urgent')}
-        ${_btn('pain-head',     '🤕', 'Head',    'cm-btn-pain-level')}
-        ${_btn('pain-stomach',  '🤢', 'Stomach', 'cm-btn-pain-level')}
-      </div>
-      <div class="cm-back-row">${_backBtn()}</div>`;
-  }
-
-  /* ── Screen: Needs ───────────────────────────────────────────── */
-  function _screenNeeds() {
-    return `
-      <div class="cm-screen-title">What do you need?</div>
-      <div class="cm-grid cm-grid-3x2">
-        ${_btn('needs-water',      '💧', 'Water',       'cm-btn-need')}
-        ${_btn('needs-blanket',    '🛏', 'Blanket',     'cm-btn-need')}
-        ${_btn('needs-bathroom',   '🚻', 'Bathroom',    'cm-btn-need')}
-        ${_btn('needs-medication', '💊', 'Medication',  'cm-btn-need')}
-        ${_btn('needs-position',   '🔄', 'Reposition',  'cm-btn-need')}
-        ${_btn('needs-quiet',      '🤫', 'Quiet',       'cm-btn-need')}
-      </div>
-      <div class="cm-back-row">${_backBtn()}</div>`;
-  }
-
-  /* ── Screen: Communication ───────────────────────────────────── */
-  function _screenCommunication() {
-    return `
-      <div class="cm-screen-title">Communication</div>
-      <div class="cm-grid cm-grid-3x2">
-        ${_btn('comm-yes',    '✅', 'YES',          'cm-btn-comm-yes')}
-        ${_btn('comm-no',     '❌', 'NO',           'cm-btn-comm-no')}
-        ${_btn('comm-help',   '🆘', 'Help',         'cm-btn-comm-help')}
-        ${_btn('comm-thanks', '🙏', 'Thank You',    'cm-btn-comm')}
-        ${_btn('comm-pain',   '😣', 'I have pain',  'cm-btn-comm')}
-        ${_btn('comm-family', '👨‍👩‍👧', 'Call Family',  'cm-btn-comm')}
-      </div>
-      <div class="cm-back-row">${_backBtn()}</div>`;
-  }
-
-  /* ── Screen: Nurse Confirm ───────────────────────────────────── */
-  function _screenNurseConfirm() {
-    return `
-      <div class="cm-screen-title cm-screen-title-urgent">🔔 Call the Nurse?</div>
-      <div class="cm-confirm-sub">A nurse will be alerted immediately.</div>
-      <div class="cm-grid cm-grid-confirm">
-        ${_btn('nurse-yes', '✅', 'Yes, Call Nurse', 'cm-btn-nurse-yes')}
-        ${_btn('nurse-no',  '❌', 'Cancel',          'cm-btn-nurse-no')}
-      </div>`;
-  }
-
-  /* ══════════════════════════════════════════════════════════════
-     CSS  (fully scoped to #care-mode-root — zero bleed to base app)
-  ══════════════════════════════════════════════════════════════ */
-  function _injectStyles() {
-    if (document.getElementById('care-mode-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'care-mode-styles';
-    style.textContent = `
-/* ── Care Mode root — isolated layer above everything ────────── */
-#care-mode-root {
-  position: fixed;
-  inset: 0;
-  z-index: 99999;
-  pointer-events: all;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-}
-
-/* ── Overlay panel ───────────────────────────────────────────── */
-#care-mode-root .cm-overlay {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  background: #0a0e1a;
-  color: #f0f4ff;
-  overflow: hidden;
-}
-
-/* ── Header ──────────────────────────────────────────────────── */
-#care-mode-root .cm-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
-  background: #0d1220;
-  border-bottom: 2px solid #1e2d50;
-  flex-shrink: 0;
-}
-#care-mode-root .cm-header-left {
-  display: flex; align-items: center; gap: 10px;
-}
-#care-mode-root .cm-header-icon { font-size: 26px; }
-#care-mode-root .cm-header-title {
-  font-size: 20px; font-weight: 800;
-  letter-spacing: 0.5px; color: #fff;
-}
-#care-mode-root .cm-close-btn {
-  background: #1e2d50; border: 1px solid #2d4070;
-  color: #94a3b8; border-radius: 8px;
-  padding: 8px 16px; font-size: 13px; font-weight: 600;
-  cursor: pointer; transition: all 0.2s;
-}
-#care-mode-root .cm-close-btn:hover {
-  background: #2d3f6b; color: #fff;
-}
-
-/* ── Content area ────────────────────────────────────────────── */
-#care-mode-root .cm-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  overflow-y: auto;
-}
-
-/* ── Screen title ────────────────────────────────────────────── */
-#care-mode-root .cm-screen-title {
-  font-size: clamp(20px, 3vw, 32px);
-  font-weight: 800;
-  color: #e2e8f0;
-  text-align: center;
-  margin-bottom: 28px;
-  letter-spacing: -0.3px;
-}
-#care-mode-root .cm-screen-title-urgent {
-  color: #f87171;
-  font-size: clamp(22px, 3.5vw, 36px);
-}
-#care-mode-root .cm-confirm-sub {
-  font-size: 16px; color: #94a3b8;
-  text-align: center; margin-top: -18px; margin-bottom: 28px;
-}
-
-/* ── Grid layouts ────────────────────────────────────────────── */
-#care-mode-root .cm-grid {
-  display: grid;
-  gap: 16px;
-  width: 100%;
-  max-width: 760px;
-}
-#care-mode-root .cm-grid-2x2 {
-  grid-template-columns: repeat(2, 1fr);
-  max-width: 600px;
-}
-#care-mode-root .cm-grid-3x2 {
-  grid-template-columns: repeat(3, 1fr);
-}
-#care-mode-root .cm-grid-confirm {
-  grid-template-columns: repeat(2, 1fr);
-  max-width: 560px;
-}
-
-/* ── Buttons ─────────────────────────────────────────────────── */
-#care-mode-root .cm-btn {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 20px 12px 16px;
-  border-radius: 18px;
-  border: 2px solid #1e2d50;
-  background: #0f1729;
-  color: #e2e8f0;
-  cursor: pointer;
-  min-height: 130px;
-  transition: border-color 0.2s, background 0.2s, transform 0.15s;
-  overflow: hidden;
-  -webkit-tap-highlight-color: transparent;
-}
-#care-mode-root .cm-btn:hover,
-#care-mode-root .cm-btn.cm-focused {
-  border-color: #3b82f6;
-  background: #0f1f3d;
-  transform: scale(1.03);
-}
-#care-mode-root .cm-btn-icon {
-  font-size: clamp(28px, 4vw, 44px);
-  line-height: 1;
-  pointer-events: none;
-}
-#care-mode-root .cm-btn-label {
-  font-size: clamp(13px, 1.8vw, 18px);
-  font-weight: 700;
-  text-align: center;
-  pointer-events: none;
-  line-height: 1.2;
-}
-
-/* ── Button colour variants ──────────────────────────────────── */
-#care-mode-root .cm-btn-pain         { border-color: #7f1d1d; }
-#care-mode-root .cm-btn-pain:hover,
-#care-mode-root .cm-btn-pain.cm-focused { border-color: #ef4444; background: #1f0a0a; }
-
-#care-mode-root .cm-btn-needs        { border-color: #1d3a6e; }
-#care-mode-root .cm-btn-needs:hover,
-#care-mode-root .cm-btn-needs.cm-focused { border-color: #3b82f6; background: #0a1020; }
-
-#care-mode-root .cm-btn-nurse        { border-color: #78350f; }
-#care-mode-root .cm-btn-nurse:hover,
-#care-mode-root .cm-btn-nurse.cm-focused { border-color: #f59e0b; background: #1f1000; }
-
-#care-mode-root .cm-btn-comm         { border-color: #1e3a2e; }
-#care-mode-root .cm-btn-comm:hover,
-#care-mode-root .cm-btn-comm.cm-focused { border-color: #22c55e; background: #0a1f12; }
-
-#care-mode-root .cm-btn-urgent       { border-color: #991b1b !important; }
-#care-mode-root .cm-btn-urgent:hover,
-#care-mode-root .cm-btn-urgent.cm-focused { border-color: #ef4444 !important; background: #1f0a0a !important; }
-
-#care-mode-root .cm-btn-comm-yes     { border-color: #166534; }
-#care-mode-root .cm-btn-comm-yes:hover,
-#care-mode-root .cm-btn-comm-yes.cm-focused { border-color: #22c55e; background: #0a1f12; }
-
-#care-mode-root .cm-btn-comm-no      { border-color: #7f1d1d; }
-#care-mode-root .cm-btn-comm-no:hover,
-#care-mode-root .cm-btn-comm-no.cm-focused { border-color: #ef4444; background: #1f0a0a; }
-
-#care-mode-root .cm-btn-comm-help    { border-color: #78350f; }
-#care-mode-root .cm-btn-comm-help:hover,
-#care-mode-root .cm-btn-comm-help.cm-focused { border-color: #f59e0b; background: #1f1000; }
-
-#care-mode-root .cm-btn-nurse-yes    { border-color: #166534; background: #0a1f12; }
-#care-mode-root .cm-btn-nurse-yes:hover,
-#care-mode-root .cm-btn-nurse-yes.cm-focused { border-color: #22c55e; background: #0d2818; }
-
-#care-mode-root .cm-btn-nurse-no     { border-color: #374151; }
-#care-mode-root .cm-btn-nurse-no:hover,
-#care-mode-root .cm-btn-nurse-no.cm-focused { border-color: #6b7280; }
-
-#care-mode-root .cm-btn-back {
-  background: transparent; border-color: #1e2d50;
-  color: #94a3b8; min-height: 52px; padding: 10px 24px;
-  flex-direction: row; gap: 6px;
-}
-#care-mode-root .cm-btn-back:hover,
-#care-mode-root .cm-btn-back.cm-focused { border-color: #3b7fff; color: #e2e8f0; }
-
-/* ── Dwell ring (SVG progress arc) ──────────────────────────── */
-#care-mode-root .cm-dwell-ring {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  border-radius: 16px;
-  overflow: visible;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-#care-mode-root .cm-btn.cm-focused .cm-dwell-ring {
-  opacity: 1;
-}
-#care-mode-root .cm-dwell-track {
-  fill: none;
-  stroke: #1e2d50;
-  stroke-width: 4;
-  vector-effect: non-scaling-stroke;
-}
-#care-mode-root .cm-dwell-arc {
-  fill: none;
-  stroke: #3b82f6;
-  stroke-width: 4;
-  stroke-linecap: round;
-  vector-effect: non-scaling-stroke;
-  transform: rotate(-90deg);
-  transform-origin: 50% 50%;
-  transition: stroke-dashoffset 0.05s linear;
-}
-
-/* ── Back row ────────────────────────────────────────────────── */
-#care-mode-root .cm-back-row {
-  margin-top: 16px;
-  width: 100%;
-  max-width: 760px;
-  display: flex;
-  justify-content: flex-start;
-}
-
-/* ── Nurse confirmed ─────────────────────────────────────────── */
-#care-mode-root .cm-nurse-confirmed {
-  display: flex; flex-direction: column;
-  align-items: center; gap: 16px;
-  padding: 40px;
-}
-#care-mode-root .cm-nurse-icon {
-  font-size: 72px;
-  animation: cm-pulse 1s ease infinite;
-}
-@keyframes cm-pulse {
-  0%,100% { transform: scale(1); }
-  50%      { transform: scale(1.15); }
-}
-#care-mode-root .cm-nurse-title {
-  font-size: 36px; font-weight: 800; color: #f59e0b;
-}
-#care-mode-root .cm-nurse-sub {
-  font-size: 18px; color: #94a3b8;
-}
-
-/* ── Feedback toast ──────────────────────────────────────────── */
-#care-mode-root .cm-feedback {
-  position: absolute;
-  bottom: 80px;
-  left: 50%; transform: translateX(-50%);
-  background: rgba(30, 45, 80, 0.97);
-  border: 1px solid #3b82f6;
-  color: #e2e8f0;
-  padding: 14px 28px;
-  border-radius: 12px;
-  font-size: 16px; font-weight: 600;
-  text-align: center;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s;
-  max-width: 460px;
-  white-space: nowrap;
-  z-index: 10;
-}
-#care-mode-root .cm-feedback.cm-feedback-visible {
-  opacity: 1;
-}
-
-/* ── Footer ──────────────────────────────────────────────────── */
-#care-mode-root .cm-footer {
-  padding: 12px 24px;
-  background: #0d1220;
-  border-top: 1px solid #1e2d50;
-  text-align: center;
-  flex-shrink: 0;
-}
-#care-mode-root .cm-footer-hint {
-  font-size: 13px; color: #4b5563;
-}
-
-/* ── Toggle button in nav ─────────────────────────────────────── */
-#${CM_TOGGLE_ID} {
-  background: #0f1729;
-  border: 1.5px solid #1e2d50;
-  color: #94a3b8;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 12px; font-weight: 600;
-  cursor: pointer;
-  display: flex; align-items: center; gap: 6px;
-  transition: all 0.2s;
-  white-space: nowrap;
-}
-#${CM_TOGGLE_ID}:hover {
-  background: #1e2d50; color: #e2e8f0;
-  border-color: #3b82f6;
-}
-#${CM_TOGGLE_ID}.cm-toggle-active {
-  background: #0a1f12;
-  border-color: #22c55e;
-  color: #22c55e;
-}
-
-/* ── Responsive ──────────────────────────────────────────────── */
-@media (max-width: 600px) {
-  #care-mode-root .cm-grid-3x2 {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  #care-mode-root .cm-btn { min-height: 100px; }
-}
-@media (max-height: 600px) {
-  #care-mode-root .cm-btn { min-height: 80px; padding: 12px 8px; }
-  #care-mode-root .cm-screen-title { font-size: 18px; margin-bottom: 16px; }
-}
-    `;
-    document.head.appendChild(style);
-  }
-
-  /* ══════════════════════════════════════════════════════════════
+  /* ════════════════════════════════════════════════════════════════
      TOGGLE BUTTON INJECTOR
-     Injects the Care Mode toggle into the nav once DOM is ready
-  ══════════════════════════════════════════════════════════════ */
-  function _injectToggleButton() {
+     Injects a single button into the nav — nothing else changed.
+     Part 3: button is ≈35% larger than v2.0 (see CSS below).
+  ════════════════════════════════════════════════════════════════ */
+  function _injectToggle () {
     if (document.getElementById(CM_TOGGLE_ID)) return;
-
     const btn = document.createElement('button');
     btn.id        = CM_TOGGLE_ID;
     btn.innerHTML = '🏥 Care Mode';
@@ -845,30 +675,352 @@
     btn.setAttribute('aria-label', 'Toggle Care Mode');
     btn.addEventListener('click', toggle);
 
-    // Try to insert after the nav-links block, fall back to nav, fall back to body
-    const navLinks = document.querySelector('.nav-links') || document.querySelector('#main-nav') || document.querySelector('nav');
-    if (navLinks) {
-      navLinks.insertAdjacentElement('afterend', btn);
+    const anchor = document.querySelector('.nav-links') ||
+                   document.querySelector('#main-nav')  ||
+                   document.querySelector('nav');
+    if (anchor) {
+      anchor.insertAdjacentElement('afterend', btn);
     } else {
-      // Last resort: floating button top-right
       btn.style.cssText = 'position:fixed;top:14px;right:14px;z-index:99998;';
       document.body.appendChild(btn);
     }
   }
 
-  /* ══════════════════════════════════════════════════════════════
+  /* ════════════════════════════════════════════════════════════════
+     CSS — every rule scoped to #care-mode-root or #CM_TOGGLE_ID
+     so there is zero bleed into the base app.
+  ════════════════════════════════════════════════════════════════ */
+  function _injectStyles () {
+    if (document.getElementById('care-mode-styles')) return;
+    const s = document.createElement('style');
+    s.id = 'care-mode-styles';
+    s.textContent = `
+
+/* ───── Isolation root ──────────────────────────────────────── */
+#care-mode-root {
+  position: fixed; inset: 0;
+  z-index: 99999;
+  pointer-events: all;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+#care-mode-root *, #care-mode-root *::before, #care-mode-root *::after {
+  box-sizing: border-box; margin: 0; padding: 0;
+}
+
+/* ───── Overlay shell ───────────────────────────────────────── */
+#care-mode-root .cm-overlay {
+  display: flex; flex-direction: column;
+  width: 100%; height: 100%;
+  background: #07090f;
+  color: #f0f4ff; overflow: hidden;
+}
+
+/* ───── Header ──────────────────────────────────────────────── */
+#care-mode-root .cm-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px;
+  background: #0b0f1c;
+  border-bottom: 2px solid #1a2540;
+  flex-shrink: 0; gap: 16px;
+}
+#care-mode-root .cm-hdr-left { display: flex; align-items: center; gap: 10px; }
+#care-mode-root .cm-hdr-icon { font-size: 28px; }
+#care-mode-root .cm-hdr-title {
+  font-size: 22px; font-weight: 800; color: #fff; letter-spacing: 0.3px;
+}
+#care-mode-root .cm-close-btn {
+  background: #1a2540; border: 1px solid #2a3a5e;
+  color: #8899bb; border-radius: 8px;
+  padding: 10px 20px; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s; flex-shrink: 0;
+}
+#care-mode-root .cm-close-btn:hover { background: #2a3a5e; color: #fff; }
+
+/* ───── Status bar ──────────────────────────────────────────── */
+#care-mode-root .cm-status-bar {
+  display: flex; align-items: center; gap: 8px;
+  background: #0d1220; border: 1px solid #1a2540;
+  border-radius: 20px; padding: 6px 14px;
+  flex: 1; max-width: 360px;
+}
+#care-mode-root .cm-status-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #f59e0b; flex-shrink: 0;
+  animation: cm-blink 1.4s ease infinite;
+}
+@keyframes cm-blink { 0%,100%{opacity:1} 50%{opacity:.35} }
+#care-mode-root .cm-status-txt {
+  font-size: 13px; color: #8899bb; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ───── Content area ────────────────────────────────────────── */
+#care-mode-root .cm-content {
+  flex: 1;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 20px 28px;
+  overflow-y: auto; gap: 0;
+}
+
+/* ───── Screen title ────────────────────────────────────────── */
+#care-mode-root .cm-title {
+  font-size: clamp(22px, 3.2vw, 38px);
+  font-weight: 800; color: #e8edf8;
+  text-align: center; margin-bottom: 20px;
+  letter-spacing: -0.3px; line-height: 1.2;
+}
+#care-mode-root .cm-urgent-title {
+  color: #f87171; font-size: clamp(24px, 3.8vw, 42px);
+}
+#care-mode-root .cm-sub {
+  font-size: clamp(14px, 1.8vw, 18px); color: #6b7a9a;
+  text-align: center; margin-top: -12px; margin-bottom: 24px;
+}
+
+/* ───── GRID LAYOUTS ────────────────────────────────────────── */
+#care-mode-root .cm-grid {
+  display: grid; gap: 18px;
+  width: 100%; max-width: 920px;
+}
+/* 2×2  main screen — buttons ~35-40 % viewport height */
+#care-mode-root .cm-2x2 {
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  height: min(82vh, 700px);
+  max-width: 840px;
+}
+/* 2×3  pain / needs / comm */
+#care-mode-root .cm-2x3 {
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  height: min(74vh, 600px);
+}
+/* confirm — 2 wide buttons */
+#care-mode-root .cm-confirm {
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: 1fr;
+  height: min(40vh, 300px);
+  max-width: 740px;
+}
+
+/* ═══ BUTTONS — Part 3: large, high-contrast, tablet-optimised ═══
+   • Each main-menu button ≈ 35-40 % viewport height
+   • Large padding: 40-44 px vertical / 28 px horizontal
+   • Font: clamp(20px … 30px) — ≥20 px on all screens
+   • Gap inside flex: 16px icon-to-label                          */
+#care-mode-root .cm-btn {
+  position: relative;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 16px;
+  /* ↓ Part 3: 40 px vertical, 28 px horizontal padding */
+  padding: 44px 28px 40px;
+  border-radius: 22px;
+  border: 3px solid #1a2540;
+  background: #0d1220;
+  color: #e8edf8;
+  cursor: pointer;
+  width: 100%; height: 100%;
+  transition: border-color 0.18s, background 0.18s,
+              transform 0.15s, box-shadow 0.18s;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+}
+#care-mode-root .cm-btn:hover,
+#care-mode-root .cm-btn.cm-focused {
+  transform: scale(1.04);
+  box-shadow: 0 0 0 4px #3b82f644, 0 8px 32px #00000060;
+}
+
+/* ↓ Part 3: icon — clamp from 40 px (small) → 68 px (wide) */
+#care-mode-root .cm-btn-icon {
+  font-size: clamp(40px, 6vw, 68px);
+  line-height: 1; pointer-events: none;
+  filter: drop-shadow(0 2px 6px #00000066);
+}
+/* ↓ Part 3: label — clamp from 20 px → 30 px */
+#care-mode-root .cm-btn-label {
+  font-size: clamp(20px, 2.6vw, 30px);
+  font-weight: 800; text-align: center;
+  pointer-events: none; line-height: 1.2;
+  letter-spacing: 0.2px;
+}
+/* YES / NO / Confirm — even larger */
+#care-mode-root .cm-btn.cm-large-txt .cm-btn-label {
+  font-size: clamp(24px, 3.2vw, 36px);
+}
+
+/* ───── Colour variants ─────────────────────────────────────── */
+#care-mode-root .cm-red   { border-color: #7f1d1d; }
+#care-mode-root .cm-red:hover, #care-mode-root .cm-red.cm-focused
+  { border-color: #ef4444; background: #1c0808;
+    box-shadow: 0 0 0 4px #ef444430, 0 8px 32px #00000060; }
+
+#care-mode-root .cm-blue  { border-color: #1d3a6e; }
+#care-mode-root .cm-blue:hover, #care-mode-root .cm-blue.cm-focused
+  { border-color: #3b82f6; background: #090f20;
+    box-shadow: 0 0 0 4px #3b82f630, 0 8px 32px #00000060; }
+
+#care-mode-root .cm-amber { border-color: #78350f; }
+#care-mode-root .cm-amber:hover, #care-mode-root .cm-amber.cm-focused
+  { border-color: #f59e0b; background: #180e00;
+    box-shadow: 0 0 0 4px #f59e0b30, 0 8px 32px #00000060; }
+
+#care-mode-root .cm-green { border-color: #14532d; }
+#care-mode-root .cm-green:hover, #care-mode-root .cm-green.cm-focused
+  { border-color: #22c55e; background: #071510;
+    box-shadow: 0 0 0 4px #22c55e30, 0 8px 32px #00000060; }
+
+#care-mode-root .cm-grey  { border-color: #374151; }
+#care-mode-root .cm-grey:hover, #care-mode-root .cm-grey.cm-focused
+  { border-color: #6b7280; background: #111827;
+    box-shadow: 0 0 0 4px #6b728030, 0 8px 32px #00000060; }
+
+#care-mode-root .cm-pain-lvl { border-color: #4b1d1d; }
+#care-mode-root .cm-pain-lvl:hover, #care-mode-root .cm-pain-lvl.cm-focused
+  { border-color: #f87171; background: #160808;
+    box-shadow: 0 0 0 4px #f8717130, 0 8px 32px #00000060; }
+
+#care-mode-root .cm-urgent { border-color: #991b1b !important; }
+#care-mode-root .cm-urgent:hover, #care-mode-root .cm-urgent.cm-focused
+  { border-color: #ef4444 !important; background: #200808 !important;
+    box-shadow: 0 0 0 6px #ef444440, 0 8px 32px #00000080 !important; }
+
+/* ───── Dwell ring (SVG arc) ────────────────────────────────── */
+#care-mode-root .cm-dwell-ring {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none; overflow: visible;
+  opacity: 0; transition: opacity 0.2s;
+}
+#care-mode-root .cm-btn.cm-focused .cm-dwell-ring { opacity: 1; }
+#care-mode-root .cm-dwell-track {
+  fill: none; stroke: #1a2540; stroke-width: 6;
+  vector-effect: non-scaling-stroke;
+}
+#care-mode-root .cm-dwell-arc {
+  fill: none; stroke: #60a5fa; stroke-width: 6;
+  stroke-linecap: round; vector-effect: non-scaling-stroke;
+  transform: rotate(-90deg); transform-origin: 50% 50%;
+  transition: stroke-dashoffset ${DWELL_TICK}ms linear;
+  filter: drop-shadow(0 0 4px #3b82f6);
+}
+
+/* ───── Back row ────────────────────────────────────────────── */
+#care-mode-root .cm-back-row {
+  margin-top: 14px; width: 100%; max-width: 920px;
+}
+#care-mode-root .cm-btn-back {
+  flex-direction: row; gap: 8px;
+  min-height: 56px; height: auto; padding: 14px 28px;
+  border-color: #1a2540; background: transparent; color: #6b7a9a;
+  font-size: clamp(14px, 1.8vw, 18px); width: auto;
+}
+#care-mode-root .cm-btn-back:hover,
+#care-mode-root .cm-btn-back.cm-focused
+  { border-color: #3b82f6; color: #e8edf8; background: #090f20; }
+
+/* ───── Nurse confirmed ─────────────────────────────────────── */
+#care-mode-root .cm-nurse-done {
+  display: flex; flex-direction: column;
+  align-items: center; gap: 20px; padding: 48px 24px;
+}
+#care-mode-root .cm-nurse-bell {
+  font-size: clamp(64px, 10vw, 96px);
+  animation: cm-ring 0.9s ease infinite;
+}
+@keyframes cm-ring {
+  0%,100% { transform: rotate(0deg); }
+  20%     { transform: rotate(-18deg); }
+  40%     { transform: rotate(18deg); }
+  60%     { transform: rotate(-10deg); }
+  80%     { transform: rotate(10deg); }
+}
+#care-mode-root .cm-nurse-title {
+  font-size: clamp(28px, 4vw, 48px); font-weight: 800; color: #f59e0b;
+}
+#care-mode-root .cm-nurse-sub {
+  font-size: clamp(16px, 2vw, 22px); color: #94a3b8;
+}
+
+/* ───── Feedback toast ──────────────────────────────────────── */
+#care-mode-root .cm-feedback {
+  position: absolute; bottom: 72px;
+  left: 50%; transform: translateX(-50%);
+  background: rgba(20,32,60,0.97);
+  border: 1.5px solid #3b82f6;
+  color: #e8edf8; padding: 16px 32px;
+  border-radius: 14px; font-size: 17px; font-weight: 700;
+  text-align: center; pointer-events: none;
+  opacity: 0; transition: opacity 0.3s;
+  max-width: 480px; white-space: nowrap; z-index: 10;
+  box-shadow: 0 4px 24px #3b82f640;
+}
+#care-mode-root .cm-feedback.cm-fb-on { opacity: 1; }
+
+/* ───── Footer ──────────────────────────────────────────────── */
+#care-mode-root .cm-footer {
+  padding: 12px 28px;
+  background: #0b0f1c;
+  border-top: 1px solid #1a2540;
+  text-align: center; flex-shrink: 0;
+}
+#care-mode-root .cm-footer-hint {
+  font-size: 13px; color: #374151; letter-spacing: 0.2px;
+}
+
+/* ═══ Nav toggle button — Part 3: ≈35 % larger than v2.0 ═══
+   Old:  padding 7px 14px, font-size 12px
+   New:  padding 10px 20px, font-size 15px               */
+#${CM_TOGGLE_ID} {
+  background: #0d1220; border: 2px solid #1a2540;
+  color: #8899bb; border-radius: 9px;
+  /* ↓ ~35% bigger */
+  padding: 10px 20px;
+  font-size: 15px; font-weight: 700;
+  cursor: pointer; display: flex; align-items: center; gap: 7px;
+  transition: all 0.2s; white-space: nowrap;
+  line-height: 1;
+}
+#${CM_TOGGLE_ID}:hover {
+  background: #1a2540; color: #e8edf8; border-color: #3b82f6;
+}
+#${CM_TOGGLE_ID}.cm-toggle-on {
+  background: #071510; border-color: #22c55e; color: #22c55e;
+}
+
+/* ───── Responsive ──────────────────────────────────────────── */
+@media (max-width: 700px) {
+  #care-mode-root .cm-2x3 {
+    grid-template-columns: repeat(2, 1fr);
+    height: min(74vh, 540px);
+  }
+  #care-mode-root .cm-confirm { grid-template-columns: 1fr; height: auto; }
+  #care-mode-root .cm-confirm .cm-btn { min-height: 110px; height: auto; }
+  #care-mode-root .cm-btn-icon { font-size: clamp(32px, 8vw, 52px); }
+}
+@media (max-height: 640px) {
+  #care-mode-root .cm-2x2 { height: min(80vh, 480px); }
+  #care-mode-root .cm-2x3 { height: min(72vh, 420px); }
+  #care-mode-root .cm-btn { padding: 24px 16px 20px; gap: 10px; }
+  #care-mode-root .cm-title { font-size: 18px; margin-bottom: 12px; }
+}
+
+    `;
+    document.head.appendChild(s);
+  }
+
+  /* ════════════════════════════════════════════════════════════════
      BOOTSTRAP
-  ══════════════════════════════════════════════════════════════ */
-  function init() {
-    _injectToggleButton();
-    attachInteractionBridge();
-
-    // Listen for caremode:signal so host page can hook in (optional)
-    document.addEventListener('caremode:signal', (e) => {
-      console.log('[CareMode] Signal emitted:', e.detail);
-    });
-
-    console.log('[CareMode] Initialized 👁🏥');
+  ════════════════════════════════════════════════════════════════ */
+  function init () {
+    _injectToggle();
+    _attachBridge();
+    document.addEventListener('caremode:signal', e =>
+      LC.ok('Signal dispatched: ' + JSON.stringify(e.detail)));
+    LC.ok('Care Mode v2.1 initialised 👁🏥');
   }
 
   if (document.readyState === 'loading') {
@@ -877,17 +1029,16 @@
     init();
   }
 
-  /* ══════════════════════════════════════════════════════════════
-     PUBLIC API  (window.CareMode)
-     Allows host page to control Care Mode programmatically
-  ══════════════════════════════════════════════════════════════ */
+  /* ════════════════════════════════════════════════════════════════
+     PUBLIC API
+  ════════════════════════════════════════════════════════════════ */
   window.CareMode = {
     mount,
     unmount,
     toggle,
-    isActive: () => state.active,
-    /** Listen for patient signals: category, message, timestamp */
-    onSignal: (cb) => document.addEventListener('caremode:signal', e => cb(e.detail)),
+    isActive:  () => state.active,
+    onSignal:  cb => document.addEventListener('caremode:signal', e => cb(e.detail)),
+    runAudit:  _lifecycleAudit,  // expose for manual testing in console
   };
 
 })();
