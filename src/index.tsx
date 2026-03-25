@@ -1660,6 +1660,7 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="/static/voice-nav.js"></script>
   <script src="/static/a11y-logger.js"></script>
   <script src="/static/a11y-mode.js"></script>
+  <script src="/static/care-mode.js"></script>
 </body>
 </html>`)
 })
