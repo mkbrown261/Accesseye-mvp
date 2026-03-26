@@ -1312,7 +1312,7 @@ app.get('/', (c) => {
             <i class="fas fa-sliders-h" style="color:#7c4dff;margin-right:8px;"></i>Gesture Studio
           </h2>
           <p style="font-size:13px;color:#78909c;margin:0;">
-            Create and customise hands-free facial gestures. Built-in lip-tap and blow gestures are always active once the camera is running.
+            Create and customise hands-free gestures using hand movements and head poses. Custom gestures are always active once the camera is running.
           </p>
         </div>
 
@@ -1322,7 +1322,7 @@ app.get('/', (c) => {
           border-radius:10px;padding:12px 16px;margin-bottom:16px;
           font-size:12px;color:#ffa726;display:flex;align-items:center;gap:10px;">
           <i class="fas fa-camera" style="font-size:18px;"></i>
-          <span>Start the camera on the <strong>Live Demo</strong> page to enable gesture detection. Built-in gestures (lip-tap &amp; blow) activate automatically.</span>
+          <span>Start the camera on the <strong>Live Demo</strong> page to enable gesture detection. Custom gestures activate automatically once recorded.</span>
         </div>
 
         <!-- Gesture Studio panel (rendered by GestureStudioUI) -->

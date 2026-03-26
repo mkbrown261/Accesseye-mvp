@@ -4,9 +4,10 @@
  *
  *  Four co-operating modules:
  *
- *  1. FacialGestureEngine   — Built-in lip-tap (scroll-up) and bite-bottom-lip
- *                             (scroll-down, held) detectors with confidence scoring,
+ *  1. FacialGestureEngine   — Built-in bite-bottom-lip (scroll-down, held)
+ *                             detector with confidence scoring,
  *                             minimum-duration gates, and per-gesture cooldowns.
+ *                             NOTE: Double Lip-Tap gesture has been removed.
  *
  *  2. CustomGestureRecorder — Captures 2–4 s of facial landmark data and
  *                             stores it as a reference profile (mouth shape,
@@ -28,7 +29,7 @@
  */
 
 /* ─── Configuration constants ─── */
-const SCROLL_AMOUNT               = 120;   // px per scroll event
+const SCROLL_AMOUNT               = 600;   // px per scroll event (matches voice scroll)
 const SCROLL_INTERVAL_MS          = 200;   // ms between repeated scroll ticks (tongue-out hold)
 const LIP_TAP_TIME_WINDOW         = 750;   // ms between two closures
 const LIP_TAP_CONFIDENCE_THRESHOLD = 0.70; // 0-1
@@ -287,13 +288,9 @@ class FacialGestureEngine {
           this._lipClosureCount = 1;
           this._firstClosureT   = now;
         } else if (this._lipClosureCount === 1 && now - this._firstClosureT <= this.config.lipTapTimeWindow) {
-          // Second closure within window — double lip-tap!
+          // Second closure within window — double lip-tap removed (deprecated)
           this._lipClosureCount = 0;
-          if (this._canFire('lipTap')) {
-            this._fired('lipTap');
-            this._emit('lipTap', { confidence: closeConf, action: 'scrollUp' });
-            this._emit('gesture', { name: 'lipTap', confidence: closeConf, action: 'scrollUp' });
-          }
+          // lipTap gesture intentionally disabled
         } else {
           // Too slow — restart
           this._lipClosureCount = 1;
@@ -735,13 +732,8 @@ class GestureStudio {
   }
 
   _wireBuiltins() {
-    // ── Lip-tap (double) → scroll up ────────────────────────────────
-    this._faceEngine.on('lipTap', ({ confidence }) => {
-      _scrollPage(-SCROLL_AMOUNT);
-      this._emit('action', { actionId: 'scrollUp', gestureName: 'Double Lip-Tap', label: 'Scroll Up', confidence });
-      this._emit('builtinGesture', { name: 'lipTap', confidence, action: 'scrollUp' });
-    });
-
+    // NOTE: Double Lip-Tap gesture has been removed (deprecated).
+    // The lipTap event is no longer emitted or wired.
 
     // ── Custom gestures ──────────────────────────────────────────────
     // Recognizer emits { id, name, action, confidence }
@@ -796,10 +788,9 @@ class GestureStudioUI {
     // Recording progress
     studio.on('recordingStarted', () => this._renderRecordingState(true));
 
-    // Builtin gesture feedback
+    // Builtin gesture feedback (custom gestures only — lipTap removed)
     studio.on('builtinGesture', ({ name, confidence, action }) => {
-      let gLabel = name === 'lipTap' ? '👄 Double Lip-Tap' : name;
-      this._showFeedback(`${gLabel}: ${action} (conf ${(confidence * 100).toFixed(0)}%)`, 'success');
+      this._showFeedback(`🎯 ${name}: ${action} (conf ${(confidence * 100).toFixed(0)}%)`, 'success');
     });
 
     // Custom gesture feedback
@@ -827,11 +818,19 @@ class GestureStudioUI {
     <div class="gs-section-title"><i class="fas fa-bolt"></i> Built-In Gestures</div>
     <div class="gs-builtin-row">
       <div class="gs-builtin-card">
-        <div class="gs-builtin-icon">👄</div>
+        <div class="gs-builtin-icon">✋</div>
         <div class="gs-builtin-info">
-          <div class="gs-builtin-name">Double Lip-Tap</div>
-          <div class="gs-builtin-desc">Two lip closures within 750 ms</div>
-          <div class="gs-builtin-action"><i class="fas fa-arrow-up"></i> Scroll Up</div>
+          <div class="gs-builtin-name">Hand Gestures</div>
+          <div class="gs-builtin-desc">Detected via MediaPipe Hands</div>
+          <div class="gs-builtin-action"><i class="fas fa-magic"></i> Assigned via Custom Gestures</div>
+        </div>
+      </div>
+      <div class="gs-builtin-card">
+        <div class="gs-builtin-icon">🗣</div>
+        <div class="gs-builtin-info">
+          <div class="gs-builtin-name">Head Movements</div>
+          <div class="gs-builtin-desc">Detected via head pose estimation</div>
+          <div class="gs-builtin-action"><i class="fas fa-arrows-alt"></i> Assigned via Custom Gestures</div>
         </div>
       </div>
     </div>

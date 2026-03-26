@@ -2702,7 +2702,7 @@ class AccessEyeApp {
 
     this.snapEngine = new SnapToEngine({
       enabled        : false,   // off by default; toggled via UI
-      autoDwellClick : true,    // FIX DWELL-3: ON by default — core accessibility feature
+      autoDwellClick : false,   // PHASE 6: OFF by default — user must enable manually
     });
 
     // ── Snap events ──────────────────────────────────────────────────
@@ -2754,10 +2754,10 @@ class AccessEyeApp {
     // ── Auto-dwell-click toggle ──────────────────────────────────────
     const autoDwellBtn = $('#snap-autodwell-btn');
     if (autoDwellBtn) {
-      // FIX DWELL-3: Sync initial button appearance to autoDwellClick=true
-      autoDwellBtn.classList.add('active');
+      // PHASE 6: Sync initial button appearance to autoDwellClick=false
+      autoDwellBtn.classList.remove('active');
       const initLabel = autoDwellBtn.querySelector('.autodwell-label');
-      if (initLabel) initLabel.textContent = 'ON';
+      if (initLabel) initLabel.textContent = 'OFF';
 
       autoDwellBtn.addEventListener('click', () => {
         const newState = !this.snapEngine.autoDwellClick;

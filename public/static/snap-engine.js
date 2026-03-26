@@ -392,7 +392,7 @@ class SnapToEngine {
     if (opts.predictionWeight !== undefined) this._cfg.predictionWeight      = opts.predictionWeight;
 
     this.enabled       = opts.enabled ?? false;
-    this.autoDwellClick = opts.autoDwellClick ?? true;  // FIX DWELL-3: ON by default
+    this.autoDwellClick = opts.autoDwellClick ?? false;  // PHASE 6: OFF by default — user must enable manually
 
     // Smooth cursor state
     this._curX   = 0;

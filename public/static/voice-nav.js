@@ -24,7 +24,32 @@
 /* ─────────────────────────────────────────────────────────────────────────
    CONSTANTS
 ───────────────────────────────────────────────────────────────────────── */
-const VN_VERSION = '1.0.0';
+const VN_VERSION = '2.0.0';
+
+/* ─────────────────────────────────────────────────────────────────────────
+   INTENT CONSTANTS (Phase 7 — Intent Layer Enforcement)
+   All voice commands MUST flow:
+     Voice Input → _processUtterance → _extractMultiWordAction / _extractAction
+       → ACTION_COMMANDS[key] → INTENT_* constant → _performAction(INTENT)
+   NO direct DOM manipulation from the speech handler.
+───────────────────────────────────────────────────────────────────────── */
+const INTENT_SCROLL_UP      = 'scrollUp';
+const INTENT_SCROLL_DOWN    = 'scrollDown';
+const INTENT_SCROLL_TOP     = 'scrollTop';
+const INTENT_SCROLL_BOTTOM  = 'scrollBottom';
+const INTENT_CLICK          = 'click';
+const INTENT_SHOW_CLICKABLE = 'showClickable';
+const INTENT_HIDE_CLICKABLE = 'hideClickable';
+const INTENT_NAV_BACK       = 'navBack';
+const INTENT_NAV_FORWARD    = 'navForward';
+const INTENT_RELOAD         = 'reloadPage';
+const INTENT_ZOOM_IN        = 'zoomIn';
+const INTENT_ZOOM_OUT       = 'zoomOut';
+const INTENT_ZOOM_RESET     = 'resetZoom';
+const INTENT_PAUSE_VOICE    = 'pauseVoice';
+const INTENT_RESUME_VOICE   = 'resumeVoice';
+const INTENT_PAUSE_CONTROL  = 'pauseControl';
+const INTENT_RESUME_CONTROL = 'resumeControl';
 
 // Words to strip before matching
 const FILLER_WORDS = new Set([
@@ -32,64 +57,68 @@ const FILLER_WORDS = new Set([
   'just','hey','um','uh','like','that','this','it','on','at','in','with'
 ]);
 
-// Voice commands → action keys
+// Voice commands → intent keys (Phase 7: Intent Layer)
+// ARCHITECTURE: Voice Input → this map → _performAction(intent)
 const ACTION_COMMANDS = {
-  click    : 'click',
-  press    : 'click',
-  tap      : 'click',
+  click    : INTENT_CLICK,
+  press    : INTENT_CLICK,
+  tap      : INTENT_CLICK,
   open     : 'open',
   select   : 'select',
   choose   : 'select',
-  scroll   : 'scroll',
-  'scroll up'           : 'scrollUp',
-  'scroll down'         : 'scrollDown',
-  'stop scrolling'      : 'stopScrolling',
-  'scroll to top'       : 'scrollTop',
-  'scroll to bottom'    : 'scrollBottom',
-  'go back'             : 'navBack',
-  'go forward'          : 'navForward',
-  'reload page'         : 'reloadPage',
-  'open new tab'        : 'newTab',
-  'close tab'           : 'closeTab',
-  'zoom in'             : 'zoomIn',
-  'zoom out'            : 'zoomOut',
-  'reset zoom'          : 'resetZoom',
-  'double click'        : 'dblclick',
-  'right click'         : 'rightClick',
-  'next item'           : 'focusNext',
-  'previous item'       : 'focusPrev',
-  'pause control'       : 'pauseControl',
-  'resume control'      : 'resumeControl',
-  'reset cursor'        : 'resetCursor',
-  'clear selection'     : 'clearSelection',
-  'exit mode'           : 'exitMode',
-  // FIX VOICE-4: Discovery commands — were never in ACTION_COMMANDS, causing
-  // fallthrough to navList.findBest which matched "Show User Guide" button instead
-  'show clickable items': 'showClickable',
-  'show clickable'      : 'showClickable',
-  'hide clickable items': 'hideClickable',
-  'hide clickable'      : 'hideClickable',
-  'what can i click'    : 'showClickable',
-  'show interactive'    : 'showClickable',
-  'show all clickable'  : 'showClickable',
-  'highlight clickable' : 'showClickable',
-  'focus on'            : 'focusOn',
+  scroll   : INTENT_SCROLL_DOWN,
+  'scroll up'               : INTENT_SCROLL_UP,
+  'scroll down'             : INTENT_SCROLL_DOWN,
+  'stop scrolling'          : 'stopScrolling',
+  'scroll to top'           : INTENT_SCROLL_TOP,
+  'scroll to bottom'        : INTENT_SCROLL_BOTTOM,
+  'go back'                 : INTENT_NAV_BACK,
+  'go forward'              : INTENT_NAV_FORWARD,
+  'reload page'             : INTENT_RELOAD,
+  'open new tab'            : 'newTab',
+  'close tab'               : 'closeTab',
+  'zoom in'                 : INTENT_ZOOM_IN,
+  'zoom out'                : INTENT_ZOOM_OUT,
+  'reset zoom'              : INTENT_ZOOM_RESET,
+  'double click'            : 'dblclick',
+  'right click'             : 'rightClick',
+  'next item'               : 'focusNext',
+  'previous item'           : 'focusPrev',
+  'pause control'           : INTENT_PAUSE_CONTROL,
+  'resume control'          : INTENT_RESUME_CONTROL,
+  'reset cursor'            : 'resetCursor',
+  'clear selection'         : 'clearSelection',
+  'exit mode'               : 'exitMode',
+  // Discovery commands
+  'show clickable items'    : INTENT_SHOW_CLICKABLE,
+  'show clickable'          : INTENT_SHOW_CLICKABLE,
+  'show clickable elements' : INTENT_SHOW_CLICKABLE,
+  'show all elements'       : INTENT_SHOW_CLICKABLE,
+  'hide clickable items'    : INTENT_HIDE_CLICKABLE,
+  'hide clickable'          : INTENT_HIDE_CLICKABLE,
+  'hide clickable elements' : INTENT_HIDE_CLICKABLE,
+  'what can i click'        : INTENT_SHOW_CLICKABLE,
+  'show interactive'        : INTENT_SHOW_CLICKABLE,
+  'show all clickable'      : INTENT_SHOW_CLICKABLE,
+  'highlight clickable'     : INTENT_SHOW_CLICKABLE,
+  'list clickable'          : INTENT_SHOW_CLICKABLE,
+  'focus on'                : 'focusOn',
   // Editing commands
-  'select all'          : 'selectAll',
-  'open settings'       : 'openSettings',
-  'focus search'        : 'focusSearch',
+  'select all'              : 'selectAll',
+  'open settings'           : 'openSettings',
+  'focus search'            : 'focusSearch',
   copy     : 'copyText',
   paste    : 'pasteText',
   cut      : 'cutText',
   // Pause/resume voice itself
-  'pause voice'         : 'pauseVoice',
-  'resume voice'        : 'resumeVoice',
+  'pause voice'             : INTENT_PAUSE_VOICE,
+  'resume voice'            : INTENT_RESUME_VOICE,
   play     : 'play',
   pause    : 'pause',
   stop     : 'stopControl',
   submit   : 'submit',
   send     : 'submit',
-  back     : 'navBack',
+  back     : INTENT_NAV_BACK,
   cancel   : 'cancel',
   close    : 'cancel',
   home     : 'nav-home',
@@ -267,6 +296,8 @@ class VoiceNavigationController {
     this._paused = false;
     // FIX VOICE-4: overlay tracking for showClickable / hideClickable
     this._clickableOverlays = [];
+    // Maps display number (1-based) → navList element index for number-click
+    this._numberMap = {};
 
     // UI refs (set after DOM ready)
     this._transcriptEl = null;
@@ -433,6 +464,11 @@ class VoiceNavigationController {
     if (!words.length) return;
 
     console.log(`[VoiceNav] heard: "${text}" (words: [${words.join(', ')}])`);
+
+    // PHASE 3 — Number click: if overlays are visible and user says a number
+    // (optionally preceded by "click"), map number → element and click it.
+    const numClicked = this._tryNumberClick(lower);
+    if (numClicked) return;
 
     // 0. FIX VOICE-4: Multi-word action check against raw lowercase text FIRST
     //    This ensures "show clickable items", "focus on", "select all" etc. are
@@ -621,16 +657,14 @@ class VoiceNavigationController {
         break;
       }
       case 'scrollUp': {
-        const container = this._findScrollable(el) || document.documentElement;
-        container.scrollBy({ top: -600, behavior: 'smooth' });
-        this._log('Voice: Scroll Up');
+        this._scrollPageReliable(-600);
+        this._log('Voice: Scroll Up 600px');
         break;
       }
       case 'scrollDown':
       case 'scroll': {
-        const container = this._findScrollable(el) || document.documentElement;
-        container.scrollBy({ top: 600, behavior: 'smooth' });
-        this._log('Voice: Scroll Down');
+        this._scrollPageReliable(600);
+        this._log('Voice: Scroll Down 600px');
         break;
       }
       case 'play':
@@ -675,12 +709,12 @@ class VoiceNavigationController {
         break;
       }
       case 'scrollTop': {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        this._scrollToEdge('top');
         this._log('Voice: Scroll to Top');
         break;
       }
       case 'scrollBottom': {
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        this._scrollToEdge('bottom');
         this._log('Voice: Scroll to Bottom');
         break;
       }
@@ -910,38 +944,48 @@ class VoiceNavigationController {
     setTimeout(() => this._unhighlightElement(el), 1200);
   }
 
-  /* ── Show / Hide Clickable Overlays (FIX VOICE-4) ── */
+  /* ── Show / Hide Clickable Overlays — PHASE 3 ── */
   _showClickableOverlays() {
     this._hideClickableOverlays(); // clear any existing
+    this._numberMap = {};
 
     // Re-scan to get the freshest list
-    const count = this.navList.scan();
+    this.navList.scan();
 
+    let displayNum = 1;
     this.navList.elements.forEach((entry, idx) => {
       const rect = entry.rect();
       if (rect.width === 0 && rect.height === 0) return;
+      // Skip elements scrolled off screen (not visible in viewport)
+      if (rect.bottom < 0 || rect.top > window.innerHeight ||
+          rect.right < 0  || rect.left > window.innerWidth) return;
 
-      // Numbered badge overlay
+      // Map display number → element index
+      this._numberMap[displayNum] = idx;
+
+      // Badge: larger & more readable (26×26px, 13px font)
       const badge = document.createElement('div');
       badge.className = 'vn-clickable-badge';
-      badge.dataset.vnBadge = '1';
-      badge.textContent = String(idx + 1);
+      badge.dataset.vnBadge = String(displayNum);
+      badge.textContent = String(displayNum);
       Object.assign(badge.style, {
         position: 'fixed',
-        left:   (rect.left + rect.width  / 2 - 10) + 'px',
-        top:    (rect.top  + rect.height / 2 - 10) + 'px',
-        width:  '20px',
-        height: '20px',
-        lineHeight: '20px',
+        left:   Math.max(0, rect.left + rect.width  / 2 - 13) + 'px',
+        top:    Math.max(0, rect.top  + rect.height / 2 - 13) + 'px',
+        width:  '26px',
+        height: '26px',
+        lineHeight: '26px',
         textAlign: 'center',
         borderRadius: '50%',
-        background: 'rgba(0,212,255,0.9)',
+        background: 'rgba(0,212,255,0.95)',
         color: '#000',
-        fontSize: '11px',
-        fontWeight: 'bold',
+        fontSize: '13px',
+        fontWeight: '900',
         zIndex: '999999',
         pointerEvents: 'none',
-        boxShadow: '0 0 6px 2px rgba(0,212,255,0.5)',
+        boxShadow: '0 0 8px 3px rgba(0,212,255,0.6)',
+        border: '2px solid #ffffff',
+        userSelect: 'none',
       });
       document.body.appendChild(badge);
       this._clickableOverlays.push(badge);
@@ -949,19 +993,24 @@ class VoiceNavigationController {
       // Ring highlight on the element itself
       entry.el._vnRingOrig = entry.el.style.outline;
       entry.el.style.outline = '2px solid rgba(0,212,255,0.7)';
+
+      displayNum++;
     });
 
-    this._setStatus(`✅ ${count} clickable items highlighted`, '#00ff88');
-    this._setTranscript(`${count} clickable items — say a name or "hide clickable"`);
-    this._showToast('Show Clickable', `${count} interactive elements highlighted`, 'success');
+    const count = displayNum - 1;
+    this._setStatus(`✅ ${count} clickable items — say a number to click`, '#00ff88');
+    this._setTranscript(`${count} items — say a number (1–${count}), a name, or "hide clickable"`);
+    this._showToast('Show Clickable', `${count} interactive elements — say a number to click`, 'success');
 
-    // Auto-clear after 8 seconds
-    setTimeout(() => this._hideClickableOverlays(), 8000);
+    // Auto-clear after 12 seconds (longer to allow number selection)
+    this._overlayTimeout = setTimeout(() => this._hideClickableOverlays(), 12000);
   }
 
   _hideClickableOverlays() {
+    clearTimeout(this._overlayTimeout);
     this._clickableOverlays.forEach(el => el.remove());
     this._clickableOverlays = [];
+    this._numberMap = {};
     // Restore element outlines
     this.navList.elements.forEach(entry => {
       if ('_vnRingOrig' in entry.el) {
@@ -971,6 +1020,103 @@ class VoiceNavigationController {
     });
     if (this.enabled && !this._paused) {
       this._setStatus('Listening…', '#00d4ff');
+    }
+  }
+
+  /* ── PHASE 3: Number-to-element click handler ── */
+  _tryNumberClick(lower) {
+    // Only active when overlays are showing
+    if (!this._clickableOverlays.length) return false;
+
+    // Match patterns: "3", "click 3", "press 3", "select 3", "number 3"
+    const m = lower.match(/(?:(?:click|press|select|tap|number|item)\s+)?(\d+)$/) ||
+               lower.match(/^(\d+)$/);
+    if (!m) return false;
+
+    const num = parseInt(m[1], 10);
+    if (isNaN(num) || num < 1) return false;
+
+    const elIdx = this._numberMap[num];
+    if (elIdx === undefined) {
+      this._setStatus(`No element #${num}`, '#f59e0b');
+      this._showToast('Number Click', `No element numbered ${num}`, 'warn');
+      setTimeout(() => { if (this.enabled) this._setStatus('Listening…', '#00d4ff'); }, 1500);
+      return true;
+    }
+
+    const entry = this.navList.elements[elIdx];
+    if (!entry) return true;
+
+    this._highlightElement(entry.el);
+    this._setStatus(`▶ Click #${num}: ${entry.text}`, '#00ff88');
+    this._setTranscript(`Clicked #${num}: ${entry.text}`);
+    this._log(`Voice: Click #${num} → ${entry.text}`);
+
+    setTimeout(() => {
+      entry.el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      this._unhighlightElement(entry.el);
+      this._hideClickableOverlays();
+      setTimeout(() => { if (this.enabled) this._setStatus('Listening…', '#00d4ff'); }, 1200);
+    }, 250);
+
+    return true;
+  }
+
+  /* ── PHASE 2: Reliable scroll — finds best scrollable container ── */
+  _scrollPageReliable(delta) {
+    // Priority order:
+    // 1. The currently focused element's scrollable ancestor
+    // 2. The demo-main pane (primary content scroll area)
+    // 3. document.documentElement
+    // 4. document.body
+    // 5. window
+    const candidates = [
+      document.activeElement,
+      document.querySelector('.demo-main'),
+      document.querySelector('.demo-content'),
+      document.querySelector('main'),
+      document.querySelector('.page.active'),
+    ].filter(Boolean);
+
+    for (const start of candidates) {
+      let el = start;
+      while (el && el !== document.documentElement) {
+        const st = getComputedStyle(el);
+        if (/auto|scroll/.test(st.overflowY + st.overflow) && el.scrollHeight > el.clientHeight + 2) {
+          el.scrollBy({ top: delta, behavior: 'smooth' });
+          return;
+        }
+        el = el.parentElement;
+      }
+    }
+
+    // Try document.documentElement (most SPAs use this)
+    if (document.documentElement.scrollHeight > document.documentElement.clientHeight + 2) {
+      document.documentElement.scrollBy({ top: delta, behavior: 'smooth' });
+      return;
+    }
+
+    // Absolute fallback
+    window.scrollBy({ top: delta, behavior: 'smooth' });
+  }
+
+  /* ── PHASE 2: Scroll to top / bottom — finds best container ── */
+  _scrollToEdge(edge) {
+    const containers = [
+      document.querySelector('.demo-main'),
+      document.querySelector('.demo-content'),
+      document.querySelector('main'),
+      document.querySelector('.page.active'),
+      document.documentElement,
+    ].filter(c => c && c.scrollHeight > c.clientHeight + 2);
+
+    const target = containers[0] || document.documentElement;
+    const top = edge === 'top' ? 0 : target.scrollHeight;
+    target.scrollTo({ top, behavior: 'smooth' });
+
+    // Also scroll window for good measure
+    if (target !== document.documentElement) {
+      window.scrollTo({ top: edge === 'top' ? 0 : document.body.scrollHeight, behavior: 'smooth' });
     }
   }
 
