@@ -442,9 +442,15 @@ class VoiceNavigationController {
         this._setStatus('Mic blocked', '#e53e3e');
         this._showToast('Microphone Blocked', 'Allow mic access to use voice navigation.', 'warn');
         this.disable();
+        document.dispatchEvent(new CustomEvent('ae:voicenav:error', {
+          bubbles: false, detail: { error: e.error }
+        }));
       } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
         console.warn('[VoiceNav] recognition error:', e.error);
         this._setStatus(`Error: ${e.error}`, '#e53e3e');
+        document.dispatchEvent(new CustomEvent('ae:voicenav:error', {
+          bubbles: false, detail: { error: e.error }
+        }));
       }
     };
 
@@ -504,6 +510,10 @@ class VoiceNavigationController {
       }
       this._setStatus(`▶ ${text}`, '#00ff88');
       this._performAction({ el: null, text }, multiAction);
+      // Fire voice match event for reliability layer
+      document.dispatchEvent(new CustomEvent('ae:voicenav:match', {
+        bubbles: false, detail: { text, intent: multiAction }
+      }));
       return;
     }
 
@@ -515,6 +525,9 @@ class VoiceNavigationController {
       if (NO_TARGET_ACTIONS.has(action)) {
         this._setStatus(`▶ ${text}`, '#00ff88');
         this._performAction({ el: null, text }, action);
+        document.dispatchEvent(new CustomEvent('ae:voicenav:match', {
+          bubbles: false, detail: { text, intent: action }
+        }));
         return;
       }
       // FIX VOICE-1: Nav/mode/camera commands fire directly — no gaze target needed
@@ -548,10 +561,17 @@ class VoiceNavigationController {
     const match = this.navList.findBest(words);
     if (match) {
       this._executeOnElement(match.entry, 'click', text);
+      // Fire voice match event for reliability layer monitoring
+      document.dispatchEvent(new CustomEvent('ae:voicenav:match', {
+        bubbles: false, detail: { text, match: match.entry.text }
+      }));
       return;
     }
 
-    // 4. No match
+    // 4. No match — fire no-match event for reliability layer monitoring
+    document.dispatchEvent(new CustomEvent('ae:voicenav:nomatch', {
+      bubbles: false, detail: { text }
+    }));
     this._setStatus('No match', '#f59e0b');
     setTimeout(() => {
       if (this.enabled) this._setStatus('Listening…', '#00d4ff');
