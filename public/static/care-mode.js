@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- *  AccessEye — care-mode.js  v2.1
+ *  AccessEye — care-mode.js  v2.2
  *  Patient Interface — Care Mode
  *
  *  ARCHITECTURE RULES (strictly followed):
@@ -41,6 +41,7 @@
   const DWELL_MS     = 1600;   // ms gaze must hold to activate
   const DWELL_TICK   = 40;     // progress-arc refresh interval (ms)
   const CIRC         = 276.5;  // SVG arc circumference for r=44
+  const CM_VERSION   = '3.0';  // Phase 3+: camera permission, gaze alignment, larger buttons
 
   /* ════════════════════════════════════════════════════════════════
      LOCAL STATE  — never touches window.app or any global
@@ -52,6 +53,8 @@
     dwellTimer:   null,
     dwellStart:   0,
     nurseAlerted: false,
+    // Phase 3: camera permission state
+    camPermission: null,  // null | 'granted' | 'denied' | 'prompt'
   };
 
   /* ════════════════════════════════════════════════════════════════
@@ -70,11 +73,85 @@
   ════════════════════════════════════════════════════════════════ */
 
   /**
+   * Phase 3: Request camera permission FIRST, then trigger the camera.
+   * Uses the Permissions API where available, falls back to getUserMedia probe.
+   * On denial, shows an informative in-overlay message.
+   */
+  async function _requestCameraPermission () {
+    LC.step('P3-1', 'Checking/requesting camera permission…');
+
+    // Check existing permission status without requesting
+    if (navigator.permissions) {
+      try {
+        const status = await navigator.permissions.query({ name: 'camera' });
+        LC.step('P3-1', `Permissions API: camera state = ${status.state}`);
+        state.camPermission = status.state;
+
+        if (status.state === 'denied') {
+          _showPermissionDenied();
+          return;
+        }
+        // 'granted' or 'prompt' → proceed to camera start
+        _ensureCameraRunning();
+        return;
+      } catch (_) {
+        // Permissions API not available for 'camera' on this browser — probe directly
+        LC.warn('P3-1: Permissions API unavailable, probing getUserMedia');
+      }
+    }
+
+    // Fallback: probe getUserMedia (shows browser permission dialog if needed)
+    try {
+      _updateStatusBar('waiting');
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      // Permission granted — stop the probe stream immediately (app.js will open its own)
+      stream.getTracks().forEach(t => t.stop());
+      LC.ok('P3-1: Camera permission granted via getUserMedia probe');
+      state.camPermission = 'granted';
+      _ensureCameraRunning();
+    } catch (err) {
+      LC.err(`P3-1: Camera permission denied/error: ${err.name}`);
+      state.camPermission = 'denied';
+      _showPermissionDenied();
+    }
+  }
+
+  function _showPermissionDenied () {
+    _updateStatusBar('denied');
+    const bar = document.getElementById('cm-status-bar');
+    if (bar) bar.querySelector('.cm-status-txt').textContent =
+      '🚫 Camera permission denied — eye tracking unavailable';
+    LC.warn('Camera permission denied — showing in-overlay fallback guidance');
+    // Show a dismissable hint inside the content area
+    const root = document.getElementById(CM_ROOT_ID);
+    if (!root) return;
+    const existing = root.querySelector('.cm-cam-denied');
+    if (existing) return;
+    const hint = document.createElement('div');
+    hint.className = 'cm-cam-denied';
+    hint.innerHTML = `
+      <div class="cm-cam-denied-icon">📷</div>
+      <div class="cm-cam-denied-title">Camera Access Required</div>
+      <div class="cm-cam-denied-body">
+        Eye tracking needs camera access.<br>
+        Please allow camera permission in your browser settings,
+        then reload the page.
+      </div>
+      <div class="cm-cam-denied-hint">
+        <strong>You can still use Care Mode</strong> — touch or click the buttons below.
+      </div>`;
+    // Insert above content
+    const header = root.querySelector('.cm-header');
+    if (header) header.insertAdjacentElement('afterend', hint);
+    else root.querySelector('.cm-overlay')?.prepend(hint);
+  }
+
+  /**
    * Checks whether the camera is already running via the authoritative
    * flag window.app.cameraOn (read-only access — no mutation).
-   * If not running, triggers the start via #start-camera-btn.click()
-   * — the identical path that a gaze-activate on that button takes
-   * through uiRegistry (line ~2418 in app.js: el.click()).
+   * If not running:
+   *   1. Request camera permission directly (graceful fallback if denied)
+   *   2. Trigger start via #start-camera-btn.click() — the interaction-layer path
    */
   function _ensureCameraRunning () {
     LC.step(1, 'Checking camera state via window.app.cameraOn…');
@@ -85,10 +162,67 @@
 
     if (alreadyOn) {
       LC.step(2, 'Camera already running — skipping init, running lifecycle audit');
+      _updateStatusBar('tracking');
       _lifecycleAudit();
       return;
     }
 
+    /* ── Phase 3: Request camera permission proactively ─────────── */
+    _updateStatusBar('waiting');
+    LC.step('1b', 'Requesting camera permission via getUserMedia (Phase 3)…');
+
+    if (navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        .then(stream => {
+          /* Permission granted — release the test stream immediately, let
+             app.js own the real camera; just trigger the start button.    */
+          stream.getTracks().forEach(t => t.stop());
+          LC.ok('LC-1b: camera permission GRANTED — proceeding to start button');
+          _triggerCameraStartBtn();
+        })
+        .catch(err => {
+          /* Permission denied or hardware error */
+          const denied = (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+          LC.warn(`LC-1b: camera permission ${denied ? 'DENIED' : 'ERROR'} — ${err.name}`);
+          if (denied) {
+            _updateStatusBar('hint');
+            _showCameraHint('Camera permission denied. Allow camera access in browser settings.');
+            _showPermissionBanner();
+          } else {
+            // Hardware or constraint error — still try the start button
+            _triggerCameraStartBtn();
+          }
+        });
+    } else {
+      // Browser doesn't support getUserMedia — attempt direct trigger
+      LC.warn('LC-1b: navigator.mediaDevices.getUserMedia not available — trying button');
+      _triggerCameraStartBtn();
+    }
+  }
+
+  function _showPermissionBanner () {
+    const bar = document.getElementById('cm-status-bar');
+    if (!bar) return;
+    const txt = bar.querySelector('.cm-status-txt');
+    if (txt) txt.textContent = '📷 Camera access denied — touch buttons work normally';
+    // Insert a visible denied banner above the content
+    const existing = document.getElementById('cm-cam-denied-banner');
+    if (existing) return;
+    const banner = document.createElement('div');
+    banner.id = 'cm-cam-denied-banner';
+    banner.className = 'cm-cam-denied';
+    banner.innerHTML = `
+      <span class="cm-cam-denied-icon">📷</span>
+      <span class="cm-cam-denied-title">Camera Access Denied</span>
+      <span class="cm-cam-denied-body">Allow camera in browser settings to enable eye tracking.<br>You can still use Care Mode by tapping/clicking buttons.</span>
+      <span class="cm-cam-denied-hint">🔒 All data is processed locally. Nothing is stored or transmitted.</span>`;
+    const content = document.getElementById('cm-content');
+    if (content?.parentElement) {
+      content.parentElement.insertBefore(banner, content);
+    }
+  }
+
+  function _triggerCameraStartBtn () {
     /* ── LC-2: locate #start-camera-btn ─────────────────────────── */
     const startBtn = document.getElementById('start-camera-btn');
     if (!startBtn) {
@@ -113,13 +247,13 @@
       } else {
         LC.warn('LC-2a: demo nav button not found');
       }
-      setTimeout(_triggerCameraStart, 450);   // wait for page transition
+      setTimeout(_doTriggerStart, 450);   // wait for page transition
     } else {
-      _triggerCameraStart();
+      _doTriggerStart();
     }
   }
 
-  function _triggerCameraStart () {
+  function _doTriggerStart () {
     const startBtn = document.getElementById('start-camera-btn');
     if (!startBtn) {
       LC.err('LC-3: #start-camera-btn still not found after navigation');
@@ -247,17 +381,23 @@
 
       /*
        * gaze → cancel dwell when gaze leaves the button.
-       * gaze.screen is normalized [0, 1] — convert to pixels before
-       * comparing with getBoundingClientRect().
+       * Phase 3: Increased tolerance for screen corners (40px) where
+       * gaze accuracy degrades. Also uses visualViewport for correct
+       * pixel mapping on high-DPR/zoomed displays.
        */
       window.AccessEye.on('gaze', ({ screen }) => {
         if (!state.active || !state.focusedBtn || !screen) return;
         const el = document.getElementById(state.focusedBtn);
         if (!el) return;
-        const r   = el.getBoundingClientRect();
-        const px  = screen.x * window.innerWidth;
-        const py  = screen.y * window.innerHeight;
-        const pad = 28; // generous tolerance for gaze jitter
+        const r    = el.getBoundingClientRect();
+        // Use visualViewport dimensions for correct mapping on zoomed/mobile
+        const vw   = window.visualViewport?.width  ?? window.innerWidth;
+        const vh   = window.visualViewport?.height ?? window.innerHeight;
+        const px   = screen.x * vw;
+        const py   = screen.y * vh;
+        // Phase 3: larger tolerance near screen edges (corners have worst accuracy)
+        const isCorner = (px < 120 || px > vw - 120) && (py < 120 || py > vh - 120);
+        const pad  = isCorner ? 52 : 40; // 40px general, 52px in corners
         const inBounds = px >= r.left - pad && px <= r.right  + pad &&
                          py >= r.top  - pad && py <= r.bottom + pad;
         if (!inBounds) _stopDwell();
@@ -543,9 +683,11 @@
     const bar = document.getElementById('cm-status-bar');
     if (!bar) return;
     const map = {
-      tracking: { dot: '#22c55e', text: '👁 Eye tracking active'                         },
-      waiting:  { dot: '#f59e0b', text: '⏳ Starting camera…'                            },
-      hint:     { dot: '#ef4444', text: '📷 Go to Live Demo → Start Camera to track'     },
+      tracking: { dot: '#22c55e', text: '👁 Eye tracking active'                            },
+      waiting:  { dot: '#f59e0b', text: '⏳ Starting camera…'                               },
+      hint:     { dot: '#ef4444', text: '📷 Go to Live Demo → Start Camera to track'        },
+      denied:   { dot: '#ef4444', text: '🚫 Camera permission denied — touch to select'    },
+      permission: { dot: '#f59e0b', text: '📷 Requesting camera permission…'                },
     };
     const s = map[st] || map.waiting;
     const dot = bar.querySelector('.cm-status-dot');
@@ -632,8 +774,16 @@
     _updateStatusBar('waiting');
     _goScreen('main');
 
-    /* Part 1: ensure camera is running (via interaction layer) */
-    setTimeout(_ensureCameraRunning, 300);
+    /* Phase 3: request permission first, then ensure camera running */
+    setTimeout(() => {
+      // Check if already running
+      if (window.app?.cameraOn === true) {
+        _ensureCameraRunning();
+      } else {
+        _updateStatusBar('permission');
+        _requestCameraPermission();
+      }
+    }, 300);
 
     LC.ok('Care Mode mounted ✅');
   }
@@ -783,41 +933,42 @@
   display: grid; gap: 18px;
   width: 100%; max-width: 920px;
 }
-/* 2×2  main screen — buttons ~35-40 % viewport height */
+/* 2×2 main screen — Phase 3: buttons ~40-45% viewport height */
 #care-mode-root .cm-2x2 {
   grid-template-columns: repeat(2, 1fr);
   grid-template-rows: repeat(2, minmax(0, 1fr));
-  height: min(82vh, 700px);
-  max-width: 840px;
+  height: min(84vh, 760px);
+  max-width: 880px;
 }
-/* 2×3  pain / needs / comm */
+/* 2×3 pain / needs / comm — Phase 3: slightly taller */
 #care-mode-root .cm-2x3 {
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(2, minmax(0, 1fr));
-  height: min(74vh, 600px);
+  height: min(76vh, 650px);
 }
 /* confirm — 2 wide buttons */
 #care-mode-root .cm-confirm {
   grid-template-columns: repeat(2, 1fr);
   grid-template-rows: 1fr;
-  height: min(40vh, 300px);
-  max-width: 740px;
+  height: min(44vh, 340px);
+  max-width: 780px;
 }
 
-/* ═══ BUTTONS — Part 3: large, high-contrast, tablet-optimised ═══
-   • Each main-menu button ≈ 35-40 % viewport height
-   • Large padding: 40-44 px vertical / 28 px horizontal
-   • Font: clamp(20px … 30px) — ≥20 px on all screens
-   • Gap inside flex: 16px icon-to-label                          */
+/* ═══ BUTTONS — Phase 3: +15-20% larger from v2.1 for better eye-targeting ═══
+   v2.1 baseline: padding 44px/28px, icon clamp(40,6vw,68), label clamp(20,2.6vw,30)
+   v2.2 target:   padding 52px/32px, icon clamp(46,7vw,78), label clamp(22,3vw,34)
+   • Each main-menu button ≈ 38-45% viewport height
+   • Hit area expanded: min-height enforced per grid cell
+   • High contrast: border 3px → 3.5px, radius 22 → 24px             */
 #care-mode-root .cm-btn {
   position: relative;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
-  gap: 16px;
-  /* ↓ Part 3: 40 px vertical, 28 px horizontal padding */
-  padding: 44px 28px 40px;
-  border-radius: 22px;
-  border: 3px solid #1a2540;
+  gap: 18px;
+  /* Phase 3: +18% vertical padding, +14% horizontal */
+  padding: 52px 32px 48px;
+  border-radius: 24px;
+  border: 3.5px solid #1a2540;
   background: #0d1220;
   color: #e8edf8;
   cursor: pointer;
@@ -827,29 +978,31 @@
   overflow: hidden;
   -webkit-tap-highlight-color: transparent;
   font-family: inherit;
+  /* Ensure minimum hit area for eye tracking */
+  min-height: 120px;
 }
 #care-mode-root .cm-btn:hover,
 #care-mode-root .cm-btn.cm-focused {
   transform: scale(1.04);
-  box-shadow: 0 0 0 4px #3b82f644, 0 8px 32px #00000060;
+  box-shadow: 0 0 0 5px #3b82f644, 0 10px 36px #00000060;
 }
 
-/* ↓ Part 3: icon — clamp from 40 px (small) → 68 px (wide) */
+/* Phase 3: icon — clamp from 46px (small) → 78px (wide) — ~15% increase */
 #care-mode-root .cm-btn-icon {
-  font-size: clamp(40px, 6vw, 68px);
+  font-size: clamp(46px, 7vw, 78px);
   line-height: 1; pointer-events: none;
   filter: drop-shadow(0 2px 6px #00000066);
 }
-/* ↓ Part 3: label — clamp from 20 px → 30 px */
+/* Phase 3: label — clamp from 22px → 34px — ~15% increase */
 #care-mode-root .cm-btn-label {
-  font-size: clamp(20px, 2.6vw, 30px);
+  font-size: clamp(22px, 3vw, 34px);
   font-weight: 800; text-align: center;
   pointer-events: none; line-height: 1.2;
   letter-spacing: 0.2px;
 }
 /* YES / NO / Confirm — even larger */
 #care-mode-root .cm-btn.cm-large-txt .cm-btn-label {
-  font-size: clamp(24px, 3.2vw, 36px);
+  font-size: clamp(26px, 3.6vw, 40px);
 }
 
 /* ───── Colour variants ─────────────────────────────────────── */
@@ -995,17 +1148,35 @@
 @media (max-width: 700px) {
   #care-mode-root .cm-2x3 {
     grid-template-columns: repeat(2, 1fr);
-    height: min(74vh, 540px);
+    height: min(76vh, 580px);
   }
   #care-mode-root .cm-confirm { grid-template-columns: 1fr; height: auto; }
-  #care-mode-root .cm-confirm .cm-btn { min-height: 110px; height: auto; }
-  #care-mode-root .cm-btn-icon { font-size: clamp(32px, 8vw, 52px); }
+  #care-mode-root .cm-confirm .cm-btn { min-height: 120px; height: auto; }
+  #care-mode-root .cm-btn-icon { font-size: clamp(36px, 9vw, 58px); }
+  #care-mode-root .cm-btn { padding: 36px 20px 32px; }
 }
 @media (max-height: 640px) {
-  #care-mode-root .cm-2x2 { height: min(80vh, 480px); }
-  #care-mode-root .cm-2x3 { height: min(72vh, 420px); }
-  #care-mode-root .cm-btn { padding: 24px 16px 20px; gap: 10px; }
-  #care-mode-root .cm-title { font-size: 18px; margin-bottom: 12px; }
+  #care-mode-root .cm-2x2 { height: min(82vh, 520px); }
+  #care-mode-root .cm-2x3 { height: min(74vh, 460px); }
+  #care-mode-root .cm-btn { padding: 28px 18px 24px; gap: 12px; }
+  #care-mode-root .cm-title { font-size: 19px; margin-bottom: 12px; }
+}
+
+/* ───── Camera permission denied banner ─────────────────────── */
+#care-mode-root .cm-cam-denied {
+  display: flex; flex-direction: column;
+  align-items: center; gap: 8px;
+  background: #1a0808; border: 1.5px solid #7f1d1d;
+  border-radius: 12px; padding: 14px 24px;
+  margin: 0 28px; text-align: center; flex-shrink: 0;
+}
+#care-mode-root .cm-cam-denied-icon  { font-size: 28px; }
+#care-mode-root .cm-cam-denied-title {
+  font-size: 16px; font-weight: 800; color: #f87171;
+}
+#care-mode-root .cm-cam-denied-body  { font-size: 13px; color: #9ca3af; line-height: 1.5; }
+#care-mode-root .cm-cam-denied-hint  {
+  font-size: 13px; color: #60a5fa; font-style: italic;
 }
 
     `;
@@ -1020,7 +1191,7 @@
     _attachBridge();
     document.addEventListener('caremode:signal', e =>
       LC.ok('Signal dispatched: ' + JSON.stringify(e.detail)));
-    LC.ok('Care Mode v2.1 initialised 👁🏥');
+    LC.ok(`Care Mode v${CM_VERSION} initialised 👁🏥`);
   }
 
   if (document.readyState === 'loading') {
@@ -1039,6 +1210,7 @@
     isActive:  () => state.active,
     onSignal:  cb => document.addEventListener('caremode:signal', e => cb(e.detail)),
     runAudit:  _lifecycleAudit,  // expose for manual testing in console
+    version:   CM_VERSION,
   };
 
 })();

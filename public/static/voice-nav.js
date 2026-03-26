@@ -24,7 +24,7 @@
 /* ─────────────────────────────────────────────────────────────────────────
    CONSTANTS
 ───────────────────────────────────────────────────────────────────────── */
-const VN_VERSION = '2.0.0';
+const VN_VERSION = '3.0.0';
 
 /* ─────────────────────────────────────────────────────────────────────────
    INTENT CONSTANTS (Phase 7 — Intent Layer Enforcement)
@@ -50,6 +50,12 @@ const INTENT_PAUSE_VOICE    = 'pauseVoice';
 const INTENT_RESUME_VOICE   = 'resumeVoice';
 const INTENT_PAUSE_CONTROL  = 'pauseControl';
 const INTENT_RESUME_CONTROL = 'resumeControl';
+const INTENT_NEXT_SECTION   = 'nextSection';
+const INTENT_PREV_SECTION   = 'prevSection';
+const INTENT_FOCUS_TOP      = 'focusTop';
+const INTENT_FOCUS_BOTTOM   = 'focusBottom';
+const INTENT_GO_BACK        = 'navBack';
+const INTENT_GO_FORWARD     = 'navForward';
 
 // Words to strip before matching
 const FILLER_WORDS = new Set([
@@ -74,6 +80,15 @@ const ACTION_COMMANDS = {
   'scroll to bottom'        : INTENT_SCROLL_BOTTOM,
   'go back'                 : INTENT_NAV_BACK,
   'go forward'              : INTENT_NAV_FORWARD,
+  'next section'            : INTENT_NEXT_SECTION,
+  'next page'               : INTENT_NEXT_SECTION,
+  'previous section'        : INTENT_PREV_SECTION,
+  'prev section'            : INTENT_PREV_SECTION,
+  'previous page'           : INTENT_PREV_SECTION,
+  'focus top'               : INTENT_FOCUS_TOP,
+  'top of page'             : INTENT_FOCUS_TOP,
+  'focus bottom'            : INTENT_FOCUS_BOTTOM,
+  'bottom of page'          : INTENT_FOCUS_BOTTOM,
   'reload page'             : INTENT_RELOAD,
   'open new tab'            : 'newTab',
   'close tab'               : 'closeTab',
@@ -89,19 +104,19 @@ const ACTION_COMMANDS = {
   'reset cursor'            : 'resetCursor',
   'clear selection'         : 'clearSelection',
   'exit mode'               : 'exitMode',
-  // Discovery commands
+  // Discovery commands — all multi-word, handled in _extractAction multiWord list
+  'show clickable elements' : INTENT_SHOW_CLICKABLE,
+  'show all clickable'      : INTENT_SHOW_CLICKABLE,
   'show clickable items'    : INTENT_SHOW_CLICKABLE,
   'show clickable'          : INTENT_SHOW_CLICKABLE,
-  'show clickable elements' : INTENT_SHOW_CLICKABLE,
   'show all elements'       : INTENT_SHOW_CLICKABLE,
-  'hide clickable items'    : INTENT_HIDE_CLICKABLE,
-  'hide clickable'          : INTENT_HIDE_CLICKABLE,
-  'hide clickable elements' : INTENT_HIDE_CLICKABLE,
-  'what can i click'        : INTENT_SHOW_CLICKABLE,
   'show interactive'        : INTENT_SHOW_CLICKABLE,
-  'show all clickable'      : INTENT_SHOW_CLICKABLE,
   'highlight clickable'     : INTENT_SHOW_CLICKABLE,
   'list clickable'          : INTENT_SHOW_CLICKABLE,
+  'what can i click'        : INTENT_SHOW_CLICKABLE,
+  'hide clickable elements' : INTENT_HIDE_CLICKABLE,
+  'hide clickable items'    : INTENT_HIDE_CLICKABLE,
+  'hide clickable'          : INTENT_HIDE_CLICKABLE,
   'focus on'                : 'focusOn',
   // Editing commands
   'select all'              : 'selectAll',
@@ -143,10 +158,11 @@ const NO_TARGET_ACTIONS = new Set([
   'pauseControl','resumeControl','stopControl',
   'resetCursor','clearSelection','exitMode',
   'play','pause',
-  // FIX VOICE-4: Discovery + editing commands need no gaze target
   'showClickable','hideClickable','focusOn',
   'selectAll','copyText','pasteText','cutText','openSettings','focusSearch',
   'pauseVoice','resumeVoice',
+  // Phase 2 new commands
+  'nextSection','prevSection','focusTop','focusBottom',
 ]);
 
 /* FIX VOICE-1: Nav/mode/camera commands must fire directly — they target a
@@ -565,14 +581,28 @@ class VoiceNavigationController {
     const joined = words.join(' ');
     // Check multi-word commands first (longest match wins)
     const multiWord = [
+      // Discovery — must appear before single-word fallback
+      'show clickable elements','show all clickable','show clickable items',
+      'show all elements','show clickable','show interactive',
+      'highlight clickable','list clickable','what can i click',
+      'hide clickable elements','hide clickable items','hide clickable',
+      // Scroll
       'stop scrolling','scroll to top','scroll to bottom',
       'scroll up','scroll down',
+      // Navigation
       'go back','go forward',
+      'next section','previous section','prev section','next page','previous page',
+      'focus top','focus bottom','top of page','bottom of page',
       'reload page','open new tab','close tab',
+      // Zoom
       'zoom in','zoom out','reset zoom',
+      // Click types
       'double click','right click',
+      // Focus
       'next item','previous item',
+      // Control
       'pause control','resume control',
+      'pause voice','resume voice',
       'reset cursor','clear selection','exit mode',
     ];
     for (const phrase of multiWord) {
@@ -925,7 +955,41 @@ class VoiceNavigationController {
         this._showToast('Exit Mode', 'Returned to mouse mode', 'info');
         break;
       }
+
+      /* ── Phase 2: Section navigation — DOM-only, no extension APIs ── */
+      case 'nextSection': {
+        this._navigateSection(1);
+        this._log('Voice: Next Section');
+        break;
+      }
+      case 'prevSection': {
+        this._navigateSection(-1);
+        this._log('Voice: Previous Section');
+        break;
+      }
+      case 'focusTop': {
+        this._focusEdgeElement('top');
+        this._log('Voice: Focus Top');
+        break;
+      }
+      case 'focusBottom': {
+        this._focusEdgeElement('bottom');
+        this._log('Voice: Focus Bottom');
+        break;
+      }
+
       default: {
+        // Handle nav-* commands via window.app._navigateTo for reliability
+        if (action.startsWith('nav-')) {
+          const page = action.replace('nav-', '');
+          if (window.app?._navigateTo) {
+            window.app._navigateTo(page);
+            this._log(`Voice nav: ${page}`);
+            this._showToast('Navigation', `Going to ${page}`, 'success');
+            setTimeout(() => { if (this.enabled) this.navList.scan(); }, 400);
+            break;
+          }
+        }
         // Treat special action IDs as direct element IDs (nav-*, mode-*)
         const directEl = document.getElementById(action) || document.querySelector(`[data-id="${action}"]`);
         if (directEl) {
@@ -1064,25 +1128,38 @@ class VoiceNavigationController {
 
   /* ── PHASE 2: Reliable scroll — finds best scrollable container ── */
   _scrollPageReliable(delta) {
-    // Priority order:
-    // 1. The currently focused element's scrollable ancestor
-    // 2. The demo-main pane (primary content scroll area)
-    // 3. document.documentElement
-    // 4. document.body
-    // 5. window
-    const candidates = [
-      document.activeElement,
-      document.querySelector('.demo-main'),
-      document.querySelector('.demo-content'),
-      document.querySelector('main'),
-      document.querySelector('.page.active'),
-    ].filter(Boolean);
+    // AccessEye SPA layout:
+    //   body → .demo-layout (overflow:hidden) → .demo-main (overflow-y:auto)
+    // We must target the ACTUAL scrollable inner container, not the body.
 
-    for (const start of candidates) {
-      let el = start;
+    // Priority: named containers → focused element's ancestor → documentElement → window
+    const namedContainers = [
+      '.demo-main',
+      '.demo-content',
+      '#page-home.active',
+      '#page-architecture.active',
+      '#page-docs.active',
+      '#page-studio.active',
+      '.page.active',
+      'main',
+      '[role="main"]',
+    ];
+
+    // Try named containers first (fastest path for this app)
+    for (const sel of namedContainers) {
+      const el = document.querySelector(sel);
+      if (el && this._isScrollable(el)) {
+        el.scrollBy({ top: delta, behavior: 'smooth' });
+        console.log(`[VoiceNav] Scroll ${delta > 0 ? '↓' : '↑'} on ${sel}`);
+        return;
+      }
+    }
+
+    // Try focused element's scrollable ancestor
+    if (document.activeElement && document.activeElement !== document.body) {
+      let el = document.activeElement.parentElement;
       while (el && el !== document.documentElement) {
-        const st = getComputedStyle(el);
-        if (/auto|scroll/.test(st.overflowY + st.overflow) && el.scrollHeight > el.clientHeight + 2) {
+        if (this._isScrollable(el)) {
           el.scrollBy({ top: delta, behavior: 'smooth' });
           return;
         }
@@ -1090,8 +1167,8 @@ class VoiceNavigationController {
       }
     }
 
-    // Try document.documentElement (most SPAs use this)
-    if (document.documentElement.scrollHeight > document.documentElement.clientHeight + 2) {
+    // documentElement (handles most SPAs)
+    if (this._isScrollable(document.documentElement)) {
       document.documentElement.scrollBy({ top: delta, behavior: 'smooth' });
       return;
     }
@@ -1100,21 +1177,41 @@ class VoiceNavigationController {
     window.scrollBy({ top: delta, behavior: 'smooth' });
   }
 
+  /** Returns true if element has scrollable overflow and content to scroll */
+  _isScrollable(el) {
+    if (!el) return false;
+    const st = getComputedStyle(el);
+    const hasScroll = /auto|scroll/.test(st.overflowY + st.overflow);
+    const hasContent = el.scrollHeight > el.clientHeight + 2;
+    return hasScroll && hasContent;
+  }
+
   /* ── PHASE 2: Scroll to top / bottom — finds best container ── */
   _scrollToEdge(edge) {
-    const containers = [
-      document.querySelector('.demo-main'),
-      document.querySelector('.demo-content'),
-      document.querySelector('main'),
-      document.querySelector('.page.active'),
+    const namedContainers = [
+      '.demo-main',
+      '.demo-content',
+      '#page-home.active',
+      '#page-architecture.active',
+      '#page-docs.active',
+      '#page-studio.active',
+      '.page.active',
+      'main',
+      '[role="main"]',
       document.documentElement,
-    ].filter(c => c && c.scrollHeight > c.clientHeight + 2);
+    ];
 
-    const target = containers[0] || document.documentElement;
+    let target = null;
+    for (const sel of namedContainers) {
+      const el = typeof sel === 'string' ? document.querySelector(sel) : sel;
+      if (el && this._isScrollable(el)) { target = el; break; }
+    }
+
+    target = target || document.documentElement;
     const top = edge === 'top' ? 0 : target.scrollHeight;
     target.scrollTo({ top, behavior: 'smooth' });
 
-    // Also scroll window for good measure
+    // Also scroll window for multi-container layouts
     if (target !== document.documentElement) {
       window.scrollTo({ top: edge === 'top' ? 0 : document.body.scrollHeight, behavior: 'smooth' });
     }
@@ -1138,6 +1235,93 @@ class VoiceNavigationController {
     this._log(`Voice: Focus On — ${match.entry.text}`);
     setTimeout(() => this._unhighlightElement(el), 2000);
     setTimeout(() => { if (this.enabled) this._setStatus('Listening…', '#00d4ff'); }, 2200);
+  }
+
+  /* ── Phase 2: Navigate between page sections ── */
+  _navigateSection(direction) {
+    // AccessEye is a SPA with pages — direction: +1 = next, -1 = prev
+    const pageOrder = ['home', 'architecture', 'demo', 'studio', 'docs'];
+    const pages = pageOrder.map(id => document.getElementById(`page-${id}`)).filter(Boolean);
+    const activePage = pages.find(p => p.classList.contains('active'));
+
+    if (activePage) {
+      // Try navigating between app pages first
+      const app = window.app;
+      if (app?._navigateTo) {
+        const curIdx = pages.indexOf(activePage);
+        const nextIdx = curIdx + direction;
+        if (nextIdx >= 0 && nextIdx < pages.length) {
+          const nextPage = pages[nextIdx];
+          const pageId = nextPage.id.replace('page-', '');
+          app._navigateTo(pageId);
+          this._setStatus(`▶ Navigate to ${pageId}`, '#00ff88');
+          this._showToast('Navigation', `Going to ${pageId} page`, 'success');
+          setTimeout(() => { this.navList.scan(); }, 400);
+          return;
+        }
+      }
+    }
+
+    // Fallback: scroll to next/prev heading within current page
+    const headings = [...document.querySelectorAll('h1, h2, h3, h4, [class*="section"]')]
+      .filter(h => {
+        const r = h.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+
+    if (!headings.length) {
+      this._showToast('Navigation', 'No sections found', 'warn');
+      return;
+    }
+
+    const vh = window.innerHeight;
+    const midY = vh / 2;
+
+    if (direction > 0) {
+      // Next: first heading below the fold
+      const next = headings.find(h => h.getBoundingClientRect().top > midY + 20);
+      if (next) {
+        next.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        this._showToast('Next Section', next.textContent.trim().slice(0, 40), 'success');
+      } else {
+        this._scrollToEdge('bottom');
+        this._showToast('Navigation', 'Already at last section', 'info');
+      }
+    } else {
+      // Prev: last heading above the fold
+      const prev = [...headings].reverse().find(h => h.getBoundingClientRect().top < midY - 20);
+      if (prev) {
+        prev.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        this._showToast('Prev Section', prev.textContent.trim().slice(0, 40), 'success');
+      } else {
+        this._scrollToEdge('top');
+        this._showToast('Navigation', 'Already at first section', 'info');
+      }
+    }
+  }
+
+  /* ── Phase 2: Focus first/last interactive element on screen ── */
+  _focusEdgeElement(edge) {
+    const focusables = [...document.querySelectorAll(
+      'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+    )].filter(e => {
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight + 100;
+    });
+
+    if (!focusables.length) {
+      this._showToast('Focus', 'No focusable elements found', 'warn');
+      return;
+    }
+
+    const target = edge === 'top' ? focusables[0] : focusables[focusables.length - 1];
+    target.focus();
+    this._highlightElement(target);
+    target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    setTimeout(() => this._unhighlightElement(target), 1500);
+    this._showToast(`Focus ${edge === 'top' ? 'Top' : 'Bottom'}`,
+      (target.textContent || target.getAttribute('aria-label') || target.tagName).trim().slice(0, 40),
+      'success');
   }
 
   _findScrollable(startEl) {
