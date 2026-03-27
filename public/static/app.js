@@ -718,6 +718,12 @@ class GestureEngine {
   getGestureIcon(g) {
     return { pinch: 'fas fa-hand-scissors', airTap: 'fas fa-hand-point-up', openPalm: 'fas fa-hand-paper' }[g] || 'fas fa-hand';
   }
+
+  /** Reset transient state — call on camera stop/restart */
+  reset() {
+    this.indexZHistory = [];
+    this._lastFire = {};
+  }
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1872,8 +1878,17 @@ class MediaPipeController {
 
     if (this.handDetected) {
       const gesture = this.gestureEngine.processLandmarks(results.multiHandLandmarks);
+      // FIX-GESTURE-DOUBLE-FIRE: Only emit 'gesture' from mpController if processLandmarks
+      // returned a gesture. The gestureEngine._emit path is intentionally NOT wired in
+      // _setupGestureSystem (removed). This mpController emission is the single source of truth.
       if (gesture) this._emit('gesture', { type: gesture });
       this._drawHands(results);
+    } else {
+      // FIX-GESTURE-STALE-Z: Reset airTap Z-history when hand leaves frame.
+      // Without this, stale Z values from the previous hand session remain in the buffer.
+      // When a new hand enters frame, the oldest Z in history is from before the hand
+      // disappeared, creating a large artificial zDelta that fires a phantom airTap.
+      this.gestureEngine.indexZHistory = [];
     }
   }
 
@@ -2171,6 +2186,8 @@ class AccessEyeApp {
     this.gazeEngine._callbacks = {};
     // Reset Phase 1 gaze engine state
     this.gazeEngine.reset();
+    // FIX-GESTURE-STALE: Reset gesture engine Z-history and debounce on camera restart.
+    this.gestureEngine.reset();
     this.cameraOn = false;
 
     // Initialize MediaPipe
@@ -2236,6 +2253,12 @@ class AccessEyeApp {
     this.gazeEngine._callbacks = {};
     // Reset gaze engine state
     this.gazeEngine.reset();
+
+    // FIX-GESTURE-STALE: Reset gestureEngine state on camera stop so stale
+    // indexZHistory and _lastFire timestamps don't pollute the next session.
+    // indexZHistory: prevents phantom airTap when hand re-enters frame.
+    // _lastFire: prevents debounce from blocking the first real gesture.
+    this.gestureEngine.reset();
 
     // Reset Gesture Studio state (clears lip-tap/blow baseline so it re-calibrates on restart)
     if (this.gestureStudio) this.gestureStudio.reset();
@@ -2542,9 +2565,17 @@ class AccessEyeApp {
       // handled in _onElementActivated
     });
 
-    this.gestureEngine.on('gesture', ({ type }) => {
-      this._handleGesture(type);
-    });
+    // FIX-GESTURE-DOUBLE-FIRE: Removed the gestureEngine.on('gesture', ...) listener
+    // that was here previously. It was a legacy path that fired _handleGesture a second
+    // time for every gesture. The correct path is:
+    //   MediaPipeController._onHandResults
+    //     → gestureEngine.processLandmarks() [internal _emit fires gestureEngine callbacks]
+    //     → mpController._emit('gesture') [fires _wireMediaPipeEvents listener]
+    //     → _handleGesture() [SINGLE fire, correct path]
+    // The gestureEngine._emit path was firing an extra _handleGesture on the same gesture
+    // before the debounce had a chance to suppress it (they arrive in the same call stack).
+    // Net effect: every pinch, airTap, openPalm was firing twice — including triggering
+    // two activation events on the focused element (double-click behavior).
   }
 
   _handleGesture(type) {
