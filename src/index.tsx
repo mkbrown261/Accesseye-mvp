@@ -628,13 +628,13 @@ app.get('/', (c) => {
             <div class="mode-selector">
               <h4>Active Mode</h4>
               <div class="mode-tabs">
-                <button class="mode-tab gaze-target active" data-mode="mouse" data-id="mode-mouse" data-label="Mouse Sim">
+                <button class="mode-tab active" data-mode="mouse" data-id="mode-mouse" data-label="Mouse Sim">
                   <i class="fas fa-mouse-pointer"></i> Mouse Sim
                 </button>
-                <button class="mode-tab gaze-target" data-mode="gaze" data-id="mode-gaze" data-label="Gaze Mode">
+                <button class="mode-tab" data-mode="gaze" data-id="mode-gaze" data-label="Gaze Mode">
                   <i class="fas fa-eye"></i> Gaze
                 </button>
-                <button class="mode-tab gaze-target" data-mode="calibrate" data-id="mode-calibrate" data-label="Calibrate">
+                <button class="mode-tab" data-mode="calibrate" data-id="mode-calibrate" data-label="Calibrate">
                   <i class="fas fa-sliders-h"></i> Calibrate
                 </button>
               </div>
