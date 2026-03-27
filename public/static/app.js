@@ -712,6 +712,16 @@ class GestureEngine {
   getGestureIcon(g) {
     return { pinch: 'fas fa-hand-scissors', airTap: 'fas fa-hand-point-up', openPalm: 'fas fa-hand-paper' }[g] || 'fas fa-hand';
   }
+
+  /**
+   * Full reset — called when camera stops or restarts.
+   * Clears stale Z-history (prevents phantom airTap on next hand entry)
+   * and resets debounce timestamps (first real gesture after restart fires immediately).
+   */
+  reset() {
+    this.indexZHistory = [];
+    this._lastFire     = {};
+  }
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -879,8 +889,9 @@ class GazeEngine {
       const headX = lm[1].x;  // nose tip (camera space, NOT mirrored)
       const headY = lm[1].y;
       screenCoords = {
-        sx: clamp(0.5 + smoothResult.x * 7.0 - (headX - 0.5) * 1.2, 0, 1),
-        sy: clamp(0.5 + smoothResult.y * 7.0 + (headY - 0.5) * 1.3, 0, 1)
+        // FIX-RIGHT-EDGE: Raised gain 7.0 → 8.5 (mirrors phase2-engine.js fix)
+        sx: clamp(0.5 + smoothResult.x * 8.5 - (headX - 0.5) * 1.2, 0, 1),
+        sy: clamp(0.5 + smoothResult.y * 8.5 + (headY - 0.5) * 1.3, 0, 1)
       };
     }
 
@@ -1859,13 +1870,40 @@ class MediaPipeController {
   }
 
   _onHandResults(results) {
-    this.handDetected = !!(results.multiHandLandmarks && results.multiHandLandmarks.length > 0);
+    // FIX-GHOST-GESTURE: MediaPipe can return a hand detection with low confidence
+    // when no real hand is present (e.g. high-contrast background, partial arm in
+    // frame, or model warm-up artefacts).  Gate on BOTH presence AND confidence.
+    //
+    // results.multiHandedness is an array of { label, score } objects — one per
+    // detected hand.  We require the best-hand score to exceed MIN_HAND_SCORE
+    // before treating the detection as real.  This is an intent-layer decision:
+    // we're deciding whether the user's intent (to gesture) is present.
+    //
+    // Intent-layer only — the action layer (_handleGesture and downstream) is
+    // called with exactly the same arguments as before; we simply gate entry.
+    const MIN_HAND_SCORE = 0.80; // below this = ignore as false-positive
+    const handLandmarks  = results.multiHandLandmarks;
+    const handedness     = results.multiHandedness;
+
+    // Require at least one hand AND its confidence >= threshold
+    const hasHighConfHand = !!(
+      handLandmarks && handLandmarks.length > 0 &&
+      handedness    && handedness.length > 0 &&
+      handedness[0]?.score >= MIN_HAND_SCORE
+    );
+
+    this.handDetected = hasHighConfHand;
     this._emit('hand', { detected: this.handDetected, results });
 
     if (this.handDetected) {
-      const gesture = this.gestureEngine.processLandmarks(results.multiHandLandmarks);
+      const gesture = this.gestureEngine.processLandmarks(handLandmarks);
       if (gesture) this._emit('gesture', { type: gesture });
       this._drawHands(results);
+    } else {
+      // FIX-PHANTOM-GESTURE: Reset stale Z-history when the hand leaves the frame.
+      // Without this, old index-finger Z values accumulated before the hand disappeared
+      // can produce a spurious airTap on the next hand entry.
+      this.gestureEngine.indexZHistory = [];
     }
   }
 
@@ -2052,6 +2090,11 @@ class AccessEyeApp {
         if (target) target.classList.add('active');
         if (page === 'demo') this._onEnterDemo();
         if (page === 'architecture') this._animateGauges();
+        // Re-render Gesture Studio on navigation so cards always reflect live state
+        if (page === 'studio') {
+          this._updateGsCameraNotice();
+          if (this.gestureStudioUI) this.gestureStudioUI.refresh();
+        }
       });
     });
   }
@@ -2061,6 +2104,13 @@ class AccessEyeApp {
     $$('.page').forEach(p => p.classList.toggle('active', p.id === `page-${page}`));
     if (page === 'demo') this._onEnterDemo();
     if (page === 'architecture') this._animateGauges();
+    // Re-render Gesture Studio whenever the user navigates to it, so the
+    // built-in gesture cards always reflect the latest state (camera on/off,
+    // any gesture assignments changed while on another page, etc.)
+    if (page === 'studio') {
+      this._updateGsCameraNotice();
+      if (this.gestureStudioUI) this.gestureStudioUI.refresh();
+    }
     // Re-register gaze targets after page switch (new page may have .gaze-target elements)
     setTimeout(() => this._registerGazeTargets(), 100);
   }
@@ -2163,6 +2213,9 @@ class AccessEyeApp {
     this.gazeEngine._callbacks = {};
     // Reset Phase 1 gaze engine state
     this.gazeEngine.reset();
+    // FIX-PHANTOM-GESTURE: Reset gesture engine on camera restart to clear
+    // stale Z-history and debounce timestamps from the previous session.
+    if (this.gestureEngine) this.gestureEngine.reset();
     this.cameraOn = false;
 
     // Initialize MediaPipe
@@ -2228,6 +2281,9 @@ class AccessEyeApp {
     this.gazeEngine._callbacks = {};
     // Reset gaze engine state
     this.gazeEngine.reset();
+    // FIX-PHANTOM-GESTURE: Reset gesture engine stale state on camera stop.
+    // Clears indexZHistory (prevents phantom airTap) and _lastFire timestamps.
+    if (this.gestureEngine) this.gestureEngine.reset();
 
     // Reset Gesture Studio state (clears lip-tap/blow baseline so it re-calibrates on restart)
     if (this.gestureStudio) this.gestureStudio.reset();
@@ -2337,14 +2393,22 @@ class AccessEyeApp {
       }
     });
 
-    // Click = gesture in mouse mode
+    // FIX-PINCH-NO-HANDS: Click = simulated pinch gesture ONLY when:
+    //   1. mode is 'mouse' (simulation, not real gaze)
+    //   2. camera is OFF (camera-on path uses real MediaPipe hand results)
+    //   3. The click is directly ON a .gaze-target element
+    //      (prevents spurious pinches on nav bars, empty space, panels, etc.)
+    // When the camera is running, real hand gestures drive _handleGesture via
+    // MediaPipe → _wireMediaPipeEvents; we must never duplicate that here.
     document.addEventListener('click', (e) => {
-      if (this.mode === 'mouse') {
-        // Don't intercept button/nav clicks — only trigger gesture if on gaze target
-        const target = e.target.closest('.gaze-target');
-        if (target) return; // Let normal click handle it
-        this._handleGesture('pinch');
-      }
+      if (this.mode !== 'mouse' || this.cameraOn) return;
+      // Only fire simulated pinch when clicking directly on a registered gaze target.
+      // Clicks on nav buttons, panels, empty space, or other UI are NOT pinches.
+      const target = e.target.closest('.gaze-target');
+      if (!target) return;
+      // Let the element's own click handler run normally; also simulate the
+      // gaze-gesture path so the UIElementRegistry activateFocused() path fires.
+      this._handleGesture('pinch');
     });
   }
 
@@ -2534,9 +2598,13 @@ class AccessEyeApp {
       // handled in _onElementActivated
     });
 
-    this.gestureEngine.on('gesture', ({ type }) => {
-      this._handleGesture(type);
-    });
+    // FIX-DOUBLE-FIRE: The correct gesture path is:
+    //   MediaPipe hands → gestureEngine.processLandmarks() → gestureEngine._emit('gesture')
+    //   → MediaPipeController._emit('gesture') → _wireMediaPipeEvents listener (line ~2290)
+    //   → _handleGesture()
+    // The legacy gestureEngine.on('gesture') listener below was a SECOND path that
+    // caused every gesture to call _handleGesture() twice. Removed.
+    // (mpController.on('gesture') in _wireMediaPipeEvents is the canonical path.)
   }
 
   _handleGesture(type) {
@@ -2547,6 +2615,10 @@ class AccessEyeApp {
     this._showGestureIndicator(label);
     this.log.add(`Gesture: ${label}`, 'gesture');
     this._updateStatusItem('status-gesture', true, label, 'gesture');
+
+    // FIX-GESTURE-STUDIO-INDICATORS: Flash the Gesture Studio hand-card when a
+    // gesture fires so the user can see real-time feedback on the Studio page.
+    if (typeof this._gsFlashCard === 'function') this._gsFlashCard(type);
 
     if (type === 'openPalm') {
       this.toast.show('Open Palm', 'Cancel / Go Back', 'gesture', 'fas fa-hand-paper', 2000);
@@ -2915,10 +2987,13 @@ class AccessEyeApp {
     console.log('[AccessEye] Gesture Studio initialised');
   }
 
-  /** Show/hide the "start camera" notice on the Gesture Studio page */
+  /** Show/hide the "start camera" notice on the Gesture Studio page.
+   *  Also refreshes the Gesture Studio UI so the LIVE/Camera-Off badge updates. */
   _updateGsCameraNotice() {
     const notice = document.getElementById('gs-camera-notice');
     if (notice) notice.style.display = this.cameraOn ? 'none' : 'flex';
+    // Re-render studio cards so camera-status badge reflects current state
+    if (this.gestureStudioUI) this.gestureStudioUI.refresh();
   }
 
   _setupDebugPanel() {

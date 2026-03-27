@@ -414,10 +414,18 @@ class HybridGazeEngine {
       const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
       const hPit  = (headPoseResult?.pitch || 0) / 35;
       screen = {
-        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
+        // FIX-RIGHT-EDGE: Raise gain 7.0 → 8.5 so the iris-only path can reach
+        // the far-right/far-bottom screen edges without a head-turn assist.
+        // With wIris≈0.80 and irisSignal.x_max≈0.06:
+        //   fusedX_max ≈ 0.80×0.06 = 0.048 → screen.x = 0.5 + 0.048×8.5 ≈ 0.908
+        // Combined with head-pose and the bias-correction headroom (±0.02)
+        // the cursor can now reach exactly 1.0 (right edge).
+        // Output clamped to [0.0, 1.0] here; applyBiasCorrection widens to [-0.02,1.02].
+        // Intent-layer only — action layer unchanged.
+        x: p2.clamp(0.5 + fusedX * 8.5 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
         // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
         // reach the full bottom of the screen before calibration remaps it.
-        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
+        y: p2.clamp(0.5 + fusedY * 8.5 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
       };
     }
 
@@ -1260,13 +1268,18 @@ class DynamicCalibrationEngine {
    * Returns { x, y } so callers can use .x / .y directly.
    */
   applyBiasCorrection(sx, sy) {
-    // Hard-clamp live bias to ±0.12 to prevent extreme cursor drift
-    const MAX_BIAS = 0.12;
+    // Hard-clamp live bias to ±0.07 (tightened from ±0.12) to prevent extreme
+    // cursor drift while still allowing useful edge-reach correction.
+    // FIX-RIGHT-EDGE: Output clamped to [-0.02, 1.02] so a rightward bias can
+    // push screen.x past 1.0 by up to 2%, giving the cursor access to the far
+    // right pixel. _updateGazeCursor clamps to [0, VW] so nothing overflows
+    // the visible area. Intent-layer only.
+    const MAX_BIAS = 0.07;
     const bx = p2.clamp(this._biasX, -MAX_BIAS, MAX_BIAS);
     const by = p2.clamp(this._biasY, -MAX_BIAS, MAX_BIAS);
     return {
-      x: p2.clamp(sx + bx * 0.7, 0, 1),
-      y: p2.clamp(sy + by * 0.7, 0, 1)
+      x: p2.clamp(sx + bx * 0.7, -0.02, 1.02),
+      y: p2.clamp(sy + by * 0.7, -0.02, 1.02)
     };
   }
 
