@@ -70,6 +70,11 @@
     gazeTimeoutTimer: null,
   };
 
+  // FIX-TRACKING-LOST: don't show "Tracking lost" until at least one
+  // gaze event has arrived in this camera session. Camera warm-up
+  // takes 2-4 s; showing the indicator immediately is a false alarm.
+  let _gazeEverReceived = false;
+
   /* ════════════════════════════════════════════════════════════════════
      CONSTANTS
   ════════════════════════════════════════════════════════════════════ */
@@ -349,6 +354,7 @@
    */
   function _onGazeEvent () {
     state.lastGazeMs = Date.now();
+    _gazeEverReceived = true;  // FIX-TRACKING-LOST: mark first real gaze frame
     if (!state.trackingOk) {
       state.trackingOk = true;
       RL.ok('Eye tracking: resumed');
@@ -423,7 +429,7 @@
       _updateIndicator('error', '❌ Camera error');
     } else if (!cameraOn && _cameraWasOn) {
       _updateIndicator('degraded', '⚠️ Reconnecting…');
-    } else if (!state.trackingOk && cameraOn) {
+    } else if (!state.trackingOk && cameraOn && _gazeEverReceived) {
       _updateIndicator('degraded', '⚠️ Tracking lost');
     } else if (!state.voiceOk) {
       _updateIndicator('degraded', '⚠️ Voice degraded');

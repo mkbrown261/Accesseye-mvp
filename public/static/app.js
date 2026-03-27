@@ -906,8 +906,8 @@ class GazeEngine {
   _fallbackGaze(lm, w, h) {
     // Use nose tip position as rough gaze proxy
     const nose = lm[1];
-    const sx = clamp(1 - nose.x, 0.05, 0.95);
-    const sy = clamp(nose.y * 1.2 - 0.1, 0.05, 0.95);
+    const sx = clamp(1 - nose.x, 0.0, 1.0);
+    const sy = clamp(nose.y * 1.2 - 0.1, 0.0, 1.0);
     this.smoothGaze = { x: sx, y: sy };
     this.confidence = 0.6;
     this._emit('gaze', { raw: { x: sx, y: sy }, screen: this.smoothGaze, confidence: 0.6 });

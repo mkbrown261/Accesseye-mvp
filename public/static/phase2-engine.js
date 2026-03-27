@@ -414,10 +414,10 @@ class HybridGazeEngine {
       const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
       const hPit  = (headPoseResult?.pitch || 0) / 35;
       screen = {
-        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.01, 0.99),
+        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
         // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
         // reach the full bottom of the screen before calibration remaps it.
-        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.01, 1.00)
+        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
       };
     }
 
@@ -637,8 +637,8 @@ class HybridGazeEngine {
   _fallback(lm, W, H) {
     // Phase 1 compatible fallback
     const nose = lm[1];
-    const sx = p2.clamp(1 - nose.x, 0.05, 0.95);
-    const sy = p2.clamp(nose.y * 1.2 - 0.1, 0.05, 0.95);
+    const sx = p2.clamp(1 - nose.x, 0.0, 1.0);
+    const sy = p2.clamp(nose.y * 1.2 - 0.1, 0.0, 1.0);
     this.rawGaze = { x: sx, y: sy };
     this.smoothGaze = { x: sx, y: sy };
     this.confidence = 0.4;
