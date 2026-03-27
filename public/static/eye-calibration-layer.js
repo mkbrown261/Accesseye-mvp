@@ -1,7 +1,7 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  *  AccessEye — Eye Tracking Calibration Layer
- *  eye-calibration-layer.js   v1.1.0
+ *  eye-calibration-layer.js   v1.2.0
  * ───────────────────────────────────────────────────────────────────────────
  *  ARCHITECTURE RULES (STRICT):
  *
@@ -52,7 +52,7 @@
     return;
   }
 
-  const ECL_VERSION = '1.1.0';
+  const ECL_VERSION = '1.2.0';
 
   /* ──────────────────────────────────────────────────────────────────
      CONFIGURATION
@@ -182,16 +182,23 @@
     /* Phase 4b: EMA Smoothing — bypassed when Snap-To is active */
     const snapActive = !!(window.app?.snapEngine?.enabled);
     if (cfg.enableSmoothing && !snapActive) {
-      if (!state.emaInitialized) {
-        state.emaX = x; state.emaY = y;
-        state.emaInitialized = true;
-      } else {
-        const α = cfg.smoothingAlpha;
-        state.emaX = α * x + (1 - α) * state.emaX;
-        state.emaY = α * y + (1 - α) * state.emaY;
+      // FIX-CURSOR-Y: Skip EMA init/update when both coords are near 0
+      // (camera warming up, before first real frame). Without this guard,
+      // the first zero-valued call seeds emaY=0.0 which then decays the
+      // cursor to the top-left corner over ~20 frames and stays there.
+      const isZeroFrame = (x < 0.02 && y < 0.02);
+      if (!isZeroFrame) {
+        if (!state.emaInitialized) {
+          state.emaX = x; state.emaY = y;
+          state.emaInitialized = true;
+        } else {
+          const α = cfg.smoothingAlpha;
+          state.emaX = α * x + (1 - α) * state.emaX;
+          state.emaY = α * y + (1 - α) * state.emaY;
+        }
+        x = state.emaX;
+        y = state.emaY;
       }
-      x = state.emaX;
-      y = state.emaY;
     }
 
     /* Phase 5: Edge Clamp */
@@ -228,6 +235,15 @@
       const W = window.visualViewport?.width  || window.innerWidth;
       const H = window.visualViewport?.height || window.innerHeight;
       if (!W || !H) { state._origFn(px, py); return; }
+
+      // FIX-CURSOR-Y: If both px and py are near 0 (camera warming up or
+      // no gaze detected yet), pass through unchanged — don't let the
+      // calibration pipeline seed EMA with zeros and drag the cursor to
+      // the top-left corner.
+      if (px < 1 && py < 1) {
+        state._origFn(px, py);
+        return;
+      }
 
       const nx = px / W;
       const ny = py / H;
