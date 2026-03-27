@@ -882,16 +882,16 @@ class GazeEngine {
     if (this.calibration.isCalibrated) {
       screenCoords = this.calibration.mapGaze(smoothResult.x, smoothResult.y);
     } else {
-      // FIX D-2 + SCOPE-3: Uncalibrated fallback mapping.
-      // rawGX is already negated (camera-space corrected). The nose tip x is in
-      // camera space; (headX - 0.5) = positive when face is camera-right = user-left,
-      // so we negate it to push screen coords toward user's right when face is there.
-      const headX = lm[1].x;  // nose tip (camera space, NOT mirrored)
-      const headY = lm[1].y;
+      // FIX-RIGHTWARD-OFFSET: Uncalibrated fallback.
+      // ROOT CAUSE: old formula used -(headX-0.5)*1.2 where headX = lm[1].x
+      // (nose tip, raw camera space). If user's face is off-center (e.g.
+      // headX=0.25) this adds a constant +0.30 rightward offset to EVERY frame.
+      // FIX: remove absolute face-position terms. Head-turn is handled by
+      // hYaw/hPit (angle-based, position-independent). Intent layer only.
       screenCoords = {
-        // FIX-RIGHT-EDGE: Raised gain 7.0 → 8.5 (mirrors phase2-engine.js fix)
-        sx: clamp(0.5 + smoothResult.x * 8.5 - (headX - 0.5) * 1.2, 0, 1),
-        sy: clamp(0.5 + smoothResult.y * 8.5 + (headY - 0.5) * 1.3, 0, 1)
+        // FIX-RIGHT-EDGE: gain 8.5 (mirrors phase2-engine.js)
+        sx: clamp(0.5 + smoothResult.x * 8.5, 0, 1),
+        sy: clamp(0.5 + smoothResult.y * 8.5, 0, 1)
       };
     }
 

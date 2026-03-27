@@ -402,30 +402,26 @@ class HybridGazeEngine {
       const mapped = this.calibration.mapGaze(irisSignal.x, irisSignal.y);
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
-      // FIX D-2 + SCOPE-4: Phase 2 uncalibrated fallback.
-      // fusedX is already negated (D-1 fix in _computeIrisSignal).
-      // nose tip headX is in camera space (0=camera-left=user-right).
-      // Use -(headX - 0.5) so face displaced camera-right → cursor left (correct).
-      // FIX D-9: hYaw sign must be NEGATIVE to match _computeHeadPoseSignal convention.
-      //   HeadPoseEstimator yaw: positive = nose turned camera-right = user turned LEFT.
-      //   Looking left (positive yaw) → cursor should move LEFT → subtract from screen.x.
-      const headX = lm[1].x;  // nose tip X (camera space)
-      const headY = lm[1].y;  // nose tip Y
-      const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
-      const hPit  = (headPoseResult?.pitch || 0) / 35;
+      // FIX-RIGHTWARD-OFFSET: Phase 2 uncalibrated fallback.
+      // ROOT CAUSE of ~30% systematic rightward drift:
+      //   The old formula included -(headX - 0.5) * 1.2 where headX = lm[1].x
+      //   (nose tip in raw camera space). This assumed the face is always
+      //   centered at x=0.5 in the camera frame. In practice users sit
+      //   off-center; if headX = 0.25, the term adds +0.30 — shifting the
+      //   cursor 30% right on EVERY frame regardless of where the user looks.
+      //
+      // FIX (intent layer only):
+      //   Remove the absolute face-position terms (headX-0.5) and (headY-0.5).
+      //   Head-TURN is already handled correctly by hYaw/hPit derived from the
+      //   HeadPoseEstimator (angle-based, face-position-independent).
+      //   fusedX is already negated (D-1 fix in _computeIrisSignal).
+      // FIX D-9: hYaw sign NEGATIVE — positive yaw = user turned left → cursor left.
+      const hYaw = (headPoseResult?.yaw   || 0) / 45;
+      const hPit = (headPoseResult?.pitch || 0) / 35;
       screen = {
-        // FIX-RIGHT-EDGE: Raise gain 7.0 → 8.5 so the iris-only path can reach
-        // the far-right/far-bottom screen edges without a head-turn assist.
-        // With wIris≈0.80 and irisSignal.x_max≈0.06:
-        //   fusedX_max ≈ 0.80×0.06 = 0.048 → screen.x = 0.5 + 0.048×8.5 ≈ 0.908
-        // Combined with head-pose and the bias-correction headroom (±0.02)
-        // the cursor can now reach exactly 1.0 (right edge).
-        // Output clamped to [0.0, 1.0] here; applyBiasCorrection widens to [-0.02,1.02].
-        // Intent-layer only — action layer unchanged.
-        x: p2.clamp(0.5 + fusedX * 8.5 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
-        // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
-        // reach the full bottom of the screen before calibration remaps it.
-        y: p2.clamp(0.5 + fusedY * 8.5 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
+        // gain 8.5: iris-only max ≈ 0.5 + 0.048×8.5 = 0.908; head-turn + bias → 1.0
+        x: p2.clamp(0.5 + fusedX * 8.5 - hYaw * 0.2, 0.0, 1.0),
+        y: p2.clamp(0.5 + fusedY * 8.5 + hPit * 0.2, 0.0, 1.0)
       };
     }
 
