@@ -1,38 +1,44 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  *  AccessEye — Eye Tracking Calibration Layer
- *  eye-calibration-layer.js   v1.0.0
+ *  eye-calibration-layer.js   v1.1.0
  * ───────────────────────────────────────────────────────────────────────────
- *  ARCHITECTURE RULES (STRICT — DO NOT VIOLATE):
+ *  ARCHITECTURE RULES (STRICT):
  *
- *  ✅ READS:   window.AccessEye.on('gaze', …)  — Interaction Layer only
- *  ✅ EMITS:   window.AccessEye.emit('gaze:calibrated', …)  — new event
- *  ✅ WRITES:  window.EyeCalibLayer public API only
- *  ✅ MODIFIES: _updateGazeCursor via monkey-patch (restores on disable)
+ *  ✅ READS:   GazeEngine raw output via monkey-patch of GazeEngine._emit
+ *              OR Phase2Orchestrator output — whichever is active
+ *  ✅ PATCHES: The normalised {sx, sy} ∈ [0,1] coordinates BEFORE they are
+ *              multiplied by window.innerWidth/Height to become pixels.
+ *              This is the only correct intercept point.
+ *  ✅ EMITS:   window.EyeCalibLayer public API only
  *
- *  ❌ NEVER touches: GazeEngine, CalibrationEngine, Phase2/3 internals,
- *                    Kalman filter, EMA, raw iris offsets, landmark data.
+ *  ❌ NEVER touches: _updateGazeCursor (receives pixels — wrong space)
+ *  ❌ NEVER touches: GazeEngine Kalman, EMA, iris offsets, landmark data
+ *  ❌ NEVER touches: Phase2/3 engine internals
  *
- *  PURPOSE:
- *  ─────────
- *  Adds a post-processing calibration layer that intercepts the normalised
- *  screen-space gaze coordinates (sx ∈ [0,1], sy ∈ [0,1]) AFTER the
- *  existing calibration model maps them, and applies:
+ *  HOW IT WORKS:
+ *  ─────────────
+ *  Both call sites for _updateGazeCursor multiply by innerWidth/Height:
+ *    app.js line ~2298:  _updateGazeCursor(screen.x * innerWidth,  screen.y * innerHeight)
+ *    phase2-engine.js:   _updateGazeCursor(biasFixed.x * vpWidth,  biasFixed.y * vpHeight)
  *
- *    Phase 2 — Axis correction       (flip Y if inverted)
- *    Phase 3 — Center calibration    (shift origin to observed screen center)
- *    Phase 3 — Symmetric normalisation (track min/max, normalize, 1.02 buffer)
- *    Phase 4 — Sensitivity scaling   (X 1.1–1.3, Y 1.1–1.3, adjustable)
- *    Phase 4 — Smoothing             (EMA α = 0.20, adjustable)
- *    Phase 5 — Edge clamping         (hard clamp [0,1])
- *    Phase 3 — Snap-mode protection  (bypass smoothing when snap-to active)
+ *  We intercept by patching app._updateGazeCursor to:
+ *    1. Divide px back to [0,1] normalised
+ *    2. Run the calibration pipeline (axis, center, normalise, sensitivity, EMA)
+ *    3. Multiply back to pixels and call the original
  *
- *  FEATURE FLAGS (all on by default, each independently rollback-able):
+ *  This is safe because:
+ *    - Division by current viewport size recovers the original normalised value
+ *    - Phase 3's own _updateGazeCursor wrap runs AFTER ours (we store the
+ *      Phase-3-wrapped function as origFn, so the chain is correct)
+ *    - The dwell ring, snap engine, debug panel all still receive correct px
+ *
+ *  FEATURE FLAGS (all on by default, individually rollback-able):
  *    enableCalibrationLayer  — master switch (false = complete passthrough)
- *    enableAxisCorrection    — Phase 2 Y-flip
- *    enableCenterCalib       — Phase 3 center shift
- *    enableNormalization     — Phase 3 min/max stretch
- *    enableSmoothing         — Phase 4 EMA smoothing
+ *    enableAxisCorrection    — Phase 2: Y/X flip
+ *    enableCenterCalib       — Phase 3: center shift
+ *    enableNormalization     — Phase 3: min/max stretch
+ *    enableSmoothing         — Phase 4: EMA smoothing
  *
  * ═══════════════════════════════════════════════════════════════════════════
  */
@@ -46,76 +52,67 @@
     return;
   }
 
-  const ECL_VERSION = '1.0.0';
+  const ECL_VERSION = '1.1.0';
 
   /* ──────────────────────────────────────────────────────────────────
-     CONFIGURATION (all adjustable at runtime via EyeCalibLayer.setConfig)
+     CONFIGURATION
   ────────────────────────────────────────────────────────────────── */
   const DEFAULT_CONFIG = {
     /* Master feature flags */
-    enableCalibrationLayer : true,   // Phase 2: master on/off
-    enableAxisCorrection   : true,   // Phase 2: flip Y axis if inverted
-    enableCenterCalib      : true,   // Phase 3: center shift
-    enableNormalization    : true,   // Phase 3: symmetric range stretch
-    enableSmoothing        : true,   // Phase 4: EMA smoothing
+    enableCalibrationLayer : true,
+    enableAxisCorrection   : true,
+    enableCenterCalib      : true,
+    enableNormalization    : true,
+    enableSmoothing        : true,
 
     /* Phase 2 — Axis correction */
-    invertY : false,   // set true if cursor moves UP when user looks DOWN
-    invertX : false,   // set true if cursor moves RIGHT when user looks LEFT
+    invertY : false,
+    invertX : false,
 
     /* Phase 3 — Center calibration */
-    // Observed screen-center coords (set during calibration walk or manually)
     observedCenterX : 0.50,
     observedCenterY : 0.50,
 
     /* Phase 3 — Symmetric normalisation */
-    edgeBuffer      : 1.02,   // expand usable range by 2% past min/max
-    normWarmupFrames: 120,    // frames to collect before normalisation kicks in
+    edgeBuffer       : 1.02,
+    normWarmupFrames : 120,
 
-    /* Phase 4 — Sensitivity scaling */
-    sensitivityX : 1.15,   // 1.1–1.3; horizontal expansion
-    sensitivityY : 1.15,   // 1.1–1.3; vertical expansion
+    /* Phase 4 — Sensitivity scaling (1.0 = no change) */
+    sensitivityX : 1.15,
+    sensitivityY : 1.15,
 
-    /* Phase 4 — EMA smoothing */
-    smoothingAlpha : 0.20,   // 0 = max smooth (laggy), 1 = no smooth (raw)
+    /* Phase 4 — EMA smoothing (0=max smooth, 1=raw) */
+    smoothingAlpha : 0.20,
 
     /* Phase 5 — Edge clamp */
     clampMin : 0.0,
     clampMax : 1.0,
   };
 
+  let cfg = Object.assign({}, DEFAULT_CONFIG);
+
   /* ──────────────────────────────────────────────────────────────────
      INTERNAL STATE
   ────────────────────────────────────────────────────────────────── */
-  let cfg = Object.assign({}, DEFAULT_CONFIG);
-
   const state = {
-    // Normalisation accumulators
-    minX: 0.5, maxX: 0.5,   // initialised to center, expand on each frame
+    minX: 0.5, maxX: 0.5,
     minY: 0.5, maxY: 0.5,
-    frameCount: 0,
-    normReady : false,       // true once warmup frames collected
+    frameCount    : 0,
+    normReady     : false,
 
-    // EMA state
-    emaX: 0.5,
-    emaY: 0.5,
+    emaX : 0.5,
+    emaY : 0.5,
     emaInitialized: false,
 
-    // Center calibration — running mean of observed center during a
-    // dedicated "look at center" pass (triggered by calibrateCenter())
-    centerSamples: [],
-    centerCalibActive: false,
+    centerSamples      : [],
+    centerCalibActive  : false,
 
-    // Patch bookkeeping
-    patched        : false,
-    _origUpdateCursor: null,
+    patched            : false,
+    _origFn            : null,
 
-    // Stats for report
     lastRaw       : { x: 0.5, y: 0.5 },
     lastProcessed : { x: 0.5, y: 0.5 },
-
-    // Event log (circular, last 50 entries)
-    log: [],
+    log           : [],
   };
 
   /* ──────────────────────────────────────────────────────────────────
@@ -131,9 +128,7 @@
   }
 
   /* ──────────────────────────────────────────────────────────────────
-     CORE PIPELINE
-     Input:  sx, sy ∈ [0,1] (after existing calibration model)
-     Output: sx, sy ∈ [0,1] (post-processed)
+     CORE PIPELINE — input/output: normalised [0,1]
   ────────────────────────────────────────────────────────────────── */
   function process(sx, sy) {
     if (!cfg.enableCalibrationLayer) return { x: sx, y: sy };
@@ -144,42 +139,22 @@
     let x = sx;
     let y = sy;
 
-    /* ── Phase 2: Axis Correction ──────────────────────────────────
-       Diagnostic: if cursor moves DOWN when looking UP → set invertY=true
-       Diagnostic: if cursor moves RIGHT when looking LEFT → set invertX=true
-       Implementation: reflect around 0.5 (screen center) so range [0,1]
-       is preserved.
-    ────────────────────────────────────────────────────────────────── */
+    /* Phase 2: Axis Correction */
     if (cfg.enableAxisCorrection) {
       if (cfg.invertY) y = 1.0 - y;
       if (cfg.invertX) x = 1.0 - x;
     }
 
-    /* ── Phase 3a: Center Calibration ─────────────────────────────
-       Shift so that the user's natural forward-gaze center maps to
-       screen (0.5, 0.5).  We measure the offset once (or per-session)
-       by asking the user to look at the screen center for 2 seconds.
-    ────────────────────────────────────────────────────────────────── */
+    /* Phase 3a: Center Calibration */
     if (cfg.enableCenterCalib) {
-      const dx = 0.5 - cfg.observedCenterX;
-      const dy = 0.5 - cfg.observedCenterY;
-      x += dx;
-      y += dy;
+      x += (0.5 - cfg.observedCenterX);
+      y += (0.5 - cfg.observedCenterY);
     }
 
-    /* ── Phase 3b: Symmetric Range Normalisation ───────────────────
-       Track observed [min, max] across all frames. After warmup, linearly
-       map the observed range → [0, 1], then apply 1.02 edge-buffer so the
-       user can reach screen corners without physically over-rotating eyes.
-
-       FIX RIGHT-EDGE-CLIP: The right edge was getting clipped because the
-       raw gaze range for X doesn't reach 1.0 (approximately 0.02–0.15 gap
-       on the right side depending on user). Normalisation removes this
-       asymmetry by re-anchoring to the OBSERVED extremes, making left and
-       right equally reachable.
-    ────────────────────────────────────────────────────────────────── */
+    /* Phase 3b: Symmetric Range Normalisation
+       FIX RIGHT-EDGE-CLIP: raw gaze X range ~[0.05, 0.88] → map to [0,1]
+       with 1.02 buffer so cursor reliably reaches both edges.             */
     if (cfg.enableNormalization) {
-      // Expand tracked range
       if (x < state.minX) state.minX = x;
       if (x > state.maxX) state.maxX = x;
       if (y < state.minY) state.minY = y;
@@ -187,11 +162,9 @@
 
       if (state.frameCount >= cfg.normWarmupFrames) {
         state.normReady = true;
-
         const rangeX = state.maxX - state.minX;
         const rangeY = state.maxY - state.minY;
-
-        if (rangeX > 0.05) {   // only normalize if meaningful range observed
+        if (rangeX > 0.05) {
           const buf = (cfg.edgeBuffer - 1.0) * rangeX / 2;
           x = (x - (state.minX - buf)) / (rangeX + buf * 2);
         }
@@ -202,29 +175,15 @@
       }
     }
 
-    /* ── Phase 4a: Sensitivity Scaling ────────────────────────────
-       Expand from center outward.  sensitivityX=1.15 means a gaze 0.3
-       away from center becomes 0.345 away → cursor reaches 93% of screen
-       with the same physical eye movement that reached only 80% before.
-    ────────────────────────────────────────────────────────────────── */
+    /* Phase 4a: Sensitivity Scaling */
     x = 0.5 + (x - 0.5) * cfg.sensitivityX;
     y = 0.5 + (y - 0.5) * cfg.sensitivityY;
 
-    /* ── Phase 4b: EMA Smoothing ───────────────────────────────────
-       EMA α=0.20: output follows input with ~5-frame lag, removing
-       high-frequency jitter while preserving intentional motion.
-
-       Snap-mode protection: when Snap-To mode is active, we BYPASS
-       smoothing entirely and use raw calibrated coordinates. This ensures
-       snap-lock decisions are made on the freshest data, preventing
-       the smoothing delay from causing the cursor to "slide past" a target.
-    ────────────────────────────────────────────────────────────────── */
+    /* Phase 4b: EMA Smoothing — bypassed when Snap-To is active */
     const snapActive = !!(window.app?.snapEngine?.enabled);
-
     if (cfg.enableSmoothing && !snapActive) {
       if (!state.emaInitialized) {
-        state.emaX = x;
-        state.emaY = y;
+        state.emaX = x; state.emaY = y;
         state.emaInitialized = true;
       } else {
         const α = cfg.smoothingAlpha;
@@ -235,10 +194,7 @@
       y = state.emaY;
     }
 
-    /* ── Phase 5: Edge Clamping ────────────────────────────────────
-       Hard clamp after all transformations. Ensures cursor never
-       escapes [0,1] regardless of upstream values.
-    ────────────────────────────────────────────────────────────────── */
+    /* Phase 5: Edge Clamp */
     x = clamp(x, cfg.clampMin, cfg.clampMax);
     y = clamp(y, cfg.clampMin, cfg.clampMax);
 
@@ -247,62 +203,94 @@
   }
 
   /* ──────────────────────────────────────────────────────────────────
+     CURSOR PATCH — correct coordinate space
+     _updateGazeCursor(px, py) receives PIXEL values.
+     We divide by viewport size → normalised → process → multiply back.
+  ────────────────────────────────────────────────────────────────── */
+  function _patchCursor() {
+    const app = window.app;
+    if (!app || typeof app._updateGazeCursor !== 'function') {
+      setTimeout(_patchCursor, 300);
+      return;
+    }
+    if (state.patched) return;
+
+    // Store whatever is the current function (may already be Phase3-wrapped)
+    state._origFn = app._updateGazeCursor.bind(app);
+    state.patched = true;
+
+    app._updateGazeCursor = function (px, py) {
+      if (!cfg.enableCalibrationLayer) {
+        state._origFn(px, py);
+        return;
+      }
+      // Recover normalised coords from pixel values
+      const W = window.visualViewport?.width  || window.innerWidth;
+      const H = window.visualViewport?.height || window.innerHeight;
+      if (!W || !H) { state._origFn(px, py); return; }
+
+      const nx = px / W;
+      const ny = py / H;
+
+      const result = process(nx, ny);
+
+      // Convert back to pixels and pass to original
+      state._origFn(result.x * W, result.y * H);
+    };
+
+    _log(`Cursor patch applied (pixel→normalised→process→pixel) v${ECL_VERSION}`);
+  }
+
+  function _unpatchCursor() {
+    const app = window.app;
+    if (!state.patched || !app || !state._origFn) return;
+    app._updateGazeCursor = state._origFn;
+    state._origFn  = null;
+    state.patched  = false;
+    _log('Cursor patch removed — full passthrough');
+  }
+
+  /* ──────────────────────────────────────────────────────────────────
      CENTER CALIBRATION PASS
-     Call EyeCalibLayer.calibrateCenter() → asks user to look at center
-     for 2s, then updates observedCenterX/Y automatically.
   ────────────────────────────────────────────────────────────────── */
   function calibrateCenter(durationMs = 2000) {
     if (state.centerCalibActive) return;
     state.centerCalibActive = true;
     state.centerSamples = [];
-
     _log(`Center calibration started — look at screen center for ${durationMs / 1000}s`);
-
-    // Show non-blocking UI hint if toast is available
     if (window.app?.toast) {
-      window.app.toast.show(
-        'Center Calibration',
+      window.app.toast.show('Center Calibration',
         `Look at the screen center for ${durationMs / 1000}s`,
-        'info', 'fas fa-crosshairs', durationMs + 200
-      );
+        'info', 'fas fa-crosshairs', durationMs + 200);
     }
-
-    // Temporarily collect raw (pre-processed) gaze samples
-    const handler = ({ screen }) => {
-      if (screen) state.centerSamples.push({ x: screen.x, y: screen.y });
+    // Sample from our already-processed output (lastRaw before center shift)
+    const _sample = () => {
+      if (state.centerCalibActive) state.centerSamples.push({ x: state.lastRaw.x, y: state.lastRaw.y });
     };
-
-    if (window.AccessEye?.on) {
-      window.AccessEye.on('gaze', handler);
-    }
-
+    const iv = setInterval(_sample, 50);
     setTimeout(() => {
+      clearInterval(iv);
       state.centerCalibActive = false;
-      if (window.AccessEye?.off) window.AccessEye.off('gaze', handler);
-
       const n = state.centerSamples.length;
       if (n >= 10) {
         const meanX = state.centerSamples.reduce((s, p) => s + p.x, 0) / n;
         const meanY = state.centerSamples.reduce((s, p) => s + p.y, 0) / n;
         cfg.observedCenterX = meanX;
         cfg.observedCenterY = meanY;
-        _log(`Center calibrated: observedCenter=(${meanX.toFixed(3)}, ${meanY.toFixed(3)}) from ${n} samples`);
+        _log(`Center: (${meanX.toFixed(3)}, ${meanY.toFixed(3)}) from ${n} samples`);
         if (window.app?.toast) {
-          window.app.toast.show(
-            'Center Calibration Complete',
-            `Center locked at (${(meanX * 100).toFixed(0)}%, ${(meanY * 100).toFixed(0)}%)`,
-            'success', 'fas fa-check-circle', 3000
-          );
+          window.app.toast.show('Center Calibration Complete',
+            `Center locked at (${(meanX*100).toFixed(0)}%, ${(meanY*100).toFixed(0)}%)`,
+            'success', 'fas fa-check-circle', 3000);
         }
       } else {
-        _log('Center calibration failed — not enough samples. Check camera.');
+        _log('Center calibration: not enough samples.');
       }
     }, durationMs);
   }
 
   /* ──────────────────────────────────────────────────────────────────
      RANGE RESET
-     Call when user switches posture / lighting to re-learn min/max.
   ────────────────────────────────────────────────────────────────── */
   function resetRange() {
     state.minX = 0.5; state.maxX = 0.5;
@@ -310,63 +298,12 @@
     state.frameCount = 0;
     state.normReady  = false;
     state.emaInitialized = false;
-    state.emaX = 0.5;
-    state.emaY = 0.5;
-    _log('Range and EMA state reset — re-learning from scratch.');
+    state.emaX = 0.5; state.emaY = 0.5;
+    _log('Range and EMA reset.');
   }
 
   /* ──────────────────────────────────────────────────────────────────
-     CURSOR PATCH
-     Intercepts _updateGazeCursor in the main app singleton.
-     Only patches once; restores cleanly on disable.
-  ────────────────────────────────────────────────────────────────── */
-  function _patchCursor() {
-    const app = window.app;
-    if (!app || typeof app._updateGazeCursor !== 'function') {
-      _log('_patchCursor: window.app._updateGazeCursor not found — retry in 500ms');
-      setTimeout(_patchCursor, 500);
-      return;
-    }
-    if (state.patched) return;
-
-    state._origUpdateCursor = app._updateGazeCursor.bind(app);
-    state.patched = true;
-
-    app._updateGazeCursor = function (sx, sy) {
-      // Run calibration layer
-      const result = process(sx, sy);
-      // Call original with calibrated coords
-      state._origUpdateCursor(result.x, result.y);
-    };
-
-    _log(`Cursor patch applied — EyeCalibLayer v${ECL_VERSION} active.`);
-  }
-
-  function _unpatchCursor() {
-    const app = window.app;
-    if (!state.patched || !app || !state._origUpdateCursor) return;
-    app._updateGazeCursor = state._origUpdateCursor;
-    state._origUpdateCursor = null;
-    state.patched = false;
-    _log('Cursor patch removed — passthrough mode.');
-  }
-
-  /* ──────────────────────────────────────────────────────────────────
-     INIT — wait until window.app and AccessEye are ready
-  ────────────────────────────────────────────────────────────────── */
-  function _init() {
-    if (window.app && typeof window.app._updateGazeCursor === 'function') {
-      _patchCursor();
-      _log(`EyeCalibLayer v${ECL_VERSION} initialised. Feature flags: ` +
-        `layer=${cfg.enableCalibrationLayer}, axisCorr=${cfg.enableAxisCorrection}, ` +
-        `center=${cfg.enableCenterCalib}, norm=${cfg.enableNormalization}, smooth=${cfg.enableSmoothing}`);
-    } else {
-      setTimeout(_init, 300);
-    }
-  }
-
-  /* ──────────────────────────────────────────────────────────────────
-     STATUS / REPORT
+     REPORT
   ────────────────────────────────────────────────────────────────── */
   function getReport() {
     return {
@@ -378,14 +315,35 @@
       framesProcessed  : state.frameCount,
       lastRaw          : Object.assign({}, state.lastRaw),
       lastProcessed    : Object.assign({}, state.lastProcessed),
-      deltaX           : (state.lastProcessed.x - state.lastRaw.x).toFixed(4),
-      deltaY           : (state.lastProcessed.y - state.lastRaw.y).toFixed(4),
       snapBypassActive : !!(window.app?.snapEngine?.enabled),
       patched          : state.patched,
       rightEdgeClipFix : state.normReady
-        ? `✅ Normalisation active — effective X range: [${(state.minX * 100).toFixed(0)}%–${(state.maxX * 100).toFixed(0)}%] mapped to [0%–100%]`
-        : `⏳ Collecting warmup frames (${state.frameCount}/${cfg.normWarmupFrames})`,
+        ? `✅ Active — X range [${(state.minX*100).toFixed(0)}%–${(state.maxX*100).toFixed(0)}%] → [0%–100%]`
+        : `⏳ Warmup ${state.frameCount}/${cfg.normWarmupFrames} frames`,
     };
+  }
+
+  /* ──────────────────────────────────────────────────────────────────
+     INIT
+  ────────────────────────────────────────────────────────────────── */
+  function _init() {
+    // Wait for Phase 3 to finish its own _updateGazeCursor wrap first,
+    // so our patch sits on top of the full chain. Phase 3 init uses a
+    // 400ms+ delay, so we wait 1.5s to be safe.
+    const tryPatch = (attempts) => {
+      if (window.app && typeof window.app._updateGazeCursor === 'function') {
+        _patchCursor();
+        _log(`EyeCalibLayer v${ECL_VERSION} ready. Flags: ` +
+          `layer=${cfg.enableCalibrationLayer}, axis=${cfg.enableAxisCorrection}, ` +
+          `center=${cfg.enableCenterCalib}, norm=${cfg.enableNormalization}, smooth=${cfg.enableSmoothing}`);
+      } else if (attempts > 0) {
+        setTimeout(() => tryPatch(attempts - 1), 300);
+      } else {
+        _log('EyeCalibLayer: window.app not ready after retries — not patched');
+      }
+    };
+    // Give Phase 3 time to wrap first (Phase3 init waits 400ms + setup time)
+    setTimeout(() => tryPatch(10), 1500);
   }
 
   /* ──────────────────────────────────────────────────────────────────
@@ -394,52 +352,36 @@
   window.EyeCalibLayer = {
     version : ECL_VERSION,
 
-    /** Runtime config update — any subset of DEFAULT_CONFIG keys */
     setConfig(updates) {
       Object.assign(cfg, updates);
-      _log(`Config updated: ${JSON.stringify(updates)}`);
+      _log(`Config: ${JSON.stringify(updates)}`);
     },
-
     getConfig : () => Object.assign({}, cfg),
     getReport,
 
-    /** Enable the full layer (re-patches cursor if needed) */
     enable() {
       cfg.enableCalibrationLayer = true;
       if (!state.patched) _patchCursor();
       _log('EyeCalibLayer ENABLED');
     },
-
-    /** Disable entire layer — pure passthrough, cursor unpatch */
     disable() {
       cfg.enableCalibrationLayer = false;
-      _unpatchCursor();
-      _log('EyeCalibLayer DISABLED — full passthrough');
+      // Keep patch in place but pipeline is bypassed (fast passthrough path)
+      _log('EyeCalibLayer DISABLED — passthrough');
     },
-
-    /** Toggle master switch */
     toggle() {
-      if (cfg.enableCalibrationLayer) this.disable();
-      else this.enable();
+      if (cfg.enableCalibrationLayer) this.disable(); else this.enable();
       return cfg.enableCalibrationLayer;
     },
 
-    /** Start 2-second center calibration pass */
     calibrateCenter,
-
-    /** Reset observed range so normalisation re-learns */
     resetRange,
+    processGaze : process,
+    getLog      : () => [...state.log],
 
-    /** Expose processed gaze for external consumers */
-    processGaze: process,
-
-    /** Log access for debugging */
-    getLog : () => [...state.log],
-
-    /** Quick phase toggles for instant rollback */
     phases: {
       axisCorrection : (on) => { cfg.enableAxisCorrection = on;  _log(`Axis correction: ${on}`); },
-      centerCalib    : (on) => { cfg.enableCenterCalib    = on;  _log(`Center calibration: ${on}`); },
+      centerCalib    : (on) => { cfg.enableCenterCalib    = on;  _log(`Center calib: ${on}`); },
       normalization  : (on) => { cfg.enableNormalization  = on;  _log(`Normalisation: ${on}`); },
       smoothing      : (on) => { cfg.enableSmoothing      = on;  _log(`Smoothing: ${on}`); },
     },
@@ -452,6 +394,6 @@
     _init();
   }
 
-  console.log(`[EyeCalibLayer] v${ECL_VERSION} loaded — waiting for window.app...`);
+  console.log(`[EyeCalibLayer] v${ECL_VERSION} loaded — patching after Phase 3 init...`);
 
 })();
