@@ -414,17 +414,18 @@ class HybridGazeEngine {
       const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
       const hPit  = (headPoseResult?.pitch || 0) / 35;
       screen = {
-        // FIX-RIGHT-EDGE: Raised gain 7.0 → 8.5.
-        // With gain=7.0 the maximum reachable screen X was ~0.92–0.94 because the
-        // iris physically only deviates ~0.035 unit from center at the extreme
-        // right gaze position (irisSignal.x ≈ ±0.05–0.07, wIris ≈ 0.80).
-        // 0.5 + 0.06 * 0.80 * 7.0 = 0.836 (central view) to max ~0.92 total.
-        // With gain=8.5: 0.5 + 0.06 * 0.80 * 8.5 = ~0.908, total can reach 1.0
-        // when combined with head-pose component at extreme right gaze.
-        x: p2.clamp(0.5 + fusedX * 8.5 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
+        // FIX-RIGHT-EDGE v2: Raised gain 8.5 → 10.0.
+        // With gain=8.5 the maximum reachable screen X was ~0.91 in pure
+        // iris-only gaze (no head movement): 0.5 + 0.048 * 8.5 = 0.908.
+        // (irisSignal.x ≈ ±0.06, wIris ≈ 0.80, fusedX_max ≈ 0.048 when
+        //  headGate ≈ 0 so wIris ≈ 0.80 and wHead ≈ 0).
+        // With gain=10.0: 0.5 + 0.048 * 10.0 = 0.98, reaching the edge.
+        // Output clamp widened to [-0.02, 1.02] so downstream bias correction
+        // (applyBiasCorrection, output clamp [-0.02,1.02]) can push to full 1.0.
+        x: p2.clamp(0.5 + fusedX * 10.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, -0.02, 1.02),
         // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
         // reach the full bottom of the screen before calibration remaps it.
-        y: p2.clamp(0.5 + fusedY * 8.5 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
+        y: p2.clamp(0.5 + fusedY * 10.0 + (headY - 0.5) * 1.3 + hPit * 0.2, -0.02, 1.02)
       };
     }
 

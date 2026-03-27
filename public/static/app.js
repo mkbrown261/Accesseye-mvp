@@ -891,10 +891,12 @@ class GazeEngine {
       const headX = lm[1].x;  // nose tip (camera space, NOT mirrored)
       const headY = lm[1].y;
       screenCoords = {
-        // FIX-RIGHT-EDGE: Raised gain 7.0 \u2192 8.5 (mirrors phase2-engine.js fix).
-        // See phase2-engine.js line ~417 for full explanation.
-        sx: clamp(0.5 + smoothResult.x * 8.5 - (headX - 0.5) * 1.2, 0, 1),
-        sy: clamp(0.5 + smoothResult.y * 8.5 + (headY - 0.5) * 1.3, 0, 1)
+        // FIX-RIGHT-EDGE v2: Raised gain 8.5 \u2192 10.0 (mirrors phase2-engine.js fix v2).
+        // With 8.5 the iris-only max was ~0.91 (0.5 + 0.048*8.5=0.908).
+        // With 10.0: 0.5 + 0.048*10.0 = 0.98, reliably reaching the right edge.
+        // Output clamp widened to [-0.02, 1.02] to allow bias correction headroom.
+        sx: clamp(0.5 + smoothResult.x * 10.0 - (headX - 0.5) * 1.2, -0.02, 1.02),
+        sy: clamp(0.5 + smoothResult.y * 10.0 + (headY - 0.5) * 1.3, -0.02, 1.02)
       };
     }
 
