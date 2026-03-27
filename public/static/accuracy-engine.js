@@ -507,7 +507,12 @@ class _AccGazeGainRemapper {
 class _AccCenterGravity {
   constructor() {
     this.CENTER_PULL_RATE = 0.008;  // 0.8% per frame toward center
-    this.CENTER_DEADBAND  = 0.30;   // fraction from center to activate (|sx-0.5| > 0.30)
+    // FIX-RIGHT-EDGE: Raised deadband from 0.30 → 0.48 so center gravity
+    // only fires when cursor is >48% from center (nearly stuck at edge).
+    // At 0.30 it was firing as soon as the cursor reached 80% across the
+    // screen, pulling it back and preventing the last 10–15 px from being
+    // reached on every edge — right, left, top, and bottom.
+    this.CENTER_DEADBAND  = 0.48;   // fraction from center to activate (|sx-0.5| > 0.48)
     this.MIN_CONF         = 0.50;
 
     this.enabled = true;
