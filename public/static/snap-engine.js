@@ -497,7 +497,21 @@ class SnapToEngine {
     this._prevX = rawPx;
     this._prevY = rawPy;
 
-    const alpha = _clamp(this._cfg.cursorSmoothing, 0.05, 1.0);
+    // FIX-RIGHT-EDGE: Edge-adaptive alpha. When the raw gaze is within 8% of
+    // any screen edge, raise alpha toward 1.0 (instant) so the EMA lag does
+    // not create a perceptual soft wall stopping the cursor ~15 px short.
+    // Outside the edge zone the normal learner alpha applies unchanged.
+    const baseAlpha = _clamp(this._cfg.cursorSmoothing, 0.05, 1.0);
+    const W = (window.visualViewport?.width  || window.innerWidth)  || 1920;
+    const H = (window.visualViewport?.height || window.innerHeight) || 1080;
+    const edgeZone = 0.08;  // 8% of screen
+    const edgeFraction = Math.max(
+      rawPx / W < edgeZone       ? (edgeZone - rawPx / W) / edgeZone : 0,
+      rawPx / W > 1 - edgeZone   ? (rawPx / W - (1 - edgeZone)) / edgeZone : 0,
+      rawPy / H < edgeZone       ? (edgeZone - rawPy / H) / edgeZone : 0,
+      rawPy / H > 1 - edgeZone   ? (rawPy / H - (1 - edgeZone)) / edgeZone : 0
+    );
+    const alpha = baseAlpha + (1.0 - baseAlpha) * edgeFraction;
 
     let targetX = rawPx;
     let targetY = rawPy;

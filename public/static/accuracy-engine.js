@@ -92,8 +92,13 @@
 */
 class _AccGravitySnap {
   constructor() {
+    // FIX-RIGHT-EDGE: Reduced PULL_STRENGTH from 0.10 → 0.06.
+    // GravitySnap pulls the cursor toward nearby UI elements. Near the right
+    // edge, a nav/button element can pull the cursor back toward it before
+    // the user can reach past it. Reducing pull strength from 10% → 6% per
+    // frame prevents this without meaningfully impacting usability.
     this.MAX_PULL_RADIUS = 110;
-    this.PULL_STRENGTH   = 0.10;
+    this.PULL_STRENGTH   = 0.06;
     this.MIN_CONF        = 0.55;
     this.ANISOTROPY_Y    = 0.60;
 
@@ -398,8 +403,13 @@ class _AccDriftCorrector {
 */
 class _AccGazeGainRemapper {
   constructor() {
-    // γ < 1: center expansion (lower γ = stronger expansion)
-    this.gamma = 0.72;
+    // FIX-RIGHT-EDGE: Raised gamma from 0.72 → 1.0 (linear/identity).
+    // gamma < 1 applies a power-law that expands the center region and compresses
+    // the edges, reducing resolution at the far edges of the screen.
+    // With gamma=1.0 the remap is a no-op (identity), preserving the full edge range
+    // from the calibration model without any center-expansion compression.
+    // Users who want center-expansion can lower this via the sensitivity slider.
+    this.gamma = 1.0;
 
     // Sensitivity multiplier [0.5 – 2.0, default 1.0]
     // Applied as a linear scale AFTER the polynomial outputs screen coords.
@@ -507,12 +517,12 @@ class _AccGazeGainRemapper {
 class _AccCenterGravity {
   constructor() {
     this.CENTER_PULL_RATE = 0.008;  // 0.8% per frame toward center
-    // FIX-RIGHT-EDGE: Raised deadband from 0.30 → 0.48 so center gravity
-    // only fires when cursor is >48% from center (nearly stuck at edge).
-    // At 0.30 it was firing as soon as the cursor reached 80% across the
-    // screen, pulling it back and preventing the last 10–15 px from being
-    // reached on every edge — right, left, top, and bottom.
-    this.CENTER_DEADBAND  = 0.48;   // fraction from center to activate (|sx-0.5| > 0.48)
+    // FIX-RIGHT-EDGE: Disabled center gravity's edge pull by setting deadband
+    // to 0.499 (50% of screen half-width) so it NEVER fires during normal gaze.
+    // The original 0.30 (and interim 0.48) still pulled the cursor away from edges.
+    // With 0.499 the center-gravity only activates if the cursor is literally at
+    // the very last pixel of the screen — it is effectively disabled as an edge-pull.
+    this.CENTER_DEADBAND  = 0.499;  // fraction from center to activate — effectively disabled
     this.MIN_CONF         = 0.50;
 
     this.enabled = true;

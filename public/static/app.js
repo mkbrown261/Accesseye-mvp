@@ -153,13 +153,17 @@ class CalibrationEngine {
     // The extra 4 points are fast because they're easy to fixate (near center).
     this.CALIB_POINTS = [
       // ── 4 corners — close enough to reach with eyes alone ──
+      // FIX-RIGHT-EDGE: Raised right-side corners from sx:0.92 → sx:0.95 so the
+      // calibration model is trained with targets that reach further right.
+      // The polynomial extrapolation beyond 0.92 was unreliable — pushing to
+      // 0.95 gives the model better right-edge data while still being reachable.
       { sx: 0.08, sy: 0.08, label: 'Top-Left'     },
-      { sx: 0.92, sy: 0.08, label: 'Top-Right'    },
+      { sx: 0.95, sy: 0.08, label: 'Top-Right'    },
       // FIX BOTTOM-1: moved bottom corners from sy:0.92 → sy:0.96 so the
       // calibration model is trained closer to the true screen edge, allowing
       // the cursor to reach the bottom without changing any gaze math.
       { sx: 0.08, sy: 0.96, label: 'Bottom-Left'  },
-      { sx: 0.92, sy: 0.96, label: 'Bottom-Right' },
+      { sx: 0.95, sy: 0.96, label: 'Bottom-Right' },
       // ── 4 inner-ring points (0.25/0.75 diagonal) ──
       { sx: 0.25, sy: 0.25, label: 'Inner-TL'     },
       { sx: 0.75, sy: 0.25, label: 'Inner-TR'     },
@@ -172,7 +176,9 @@ class CalibrationEngine {
       { sx: 0.50, sy: 0.25, label: 'Mid-Top'      },
       { sx: 0.50, sy: 0.78, label: 'Mid-Bottom'   },  // FIX BOTTOM-1
       { sx: 0.25, sy: 0.50, label: 'Mid-Left'     },
-      { sx: 0.75, sy: 0.50, label: 'Mid-Right'    },
+      // FIX-RIGHT-EDGE: raised Mid-Right from 0.75 → 0.85 so the polynomial
+      // has a constraint point further right, improving accuracy near the right edge.
+      { sx: 0.85, sy: 0.50, label: 'Mid-Right'    },
       // ── Center ──
       { sx: 0.50, sy: 0.50, label: 'Center'       }
     ];
@@ -879,8 +885,10 @@ class GazeEngine {
       const headX = lm[1].x;  // nose tip (camera space, NOT mirrored)
       const headY = lm[1].y;
       screenCoords = {
-        sx: clamp(0.5 + smoothResult.x * 7.0 - (headX - 0.5) * 1.2, 0, 1),
-        sy: clamp(0.5 + smoothResult.y * 7.0 + (headY - 0.5) * 1.3, 0, 1)
+        // FIX-RIGHT-EDGE: Raised gain 7.0 \u2192 8.5 (mirrors phase2-engine.js fix).
+        // See phase2-engine.js line ~417 for full explanation.
+        sx: clamp(0.5 + smoothResult.x * 8.5 - (headX - 0.5) * 1.2, 0, 1),
+        sy: clamp(0.5 + smoothResult.y * 8.5 + (headY - 0.5) * 1.3, 0, 1)
       };
     }
 
