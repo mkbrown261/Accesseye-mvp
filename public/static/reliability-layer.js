@@ -318,15 +318,9 @@
       RL.ok('Camera: connected');
       _updateIndicator('ready', 'Ready');
     } else if (!isOn && _cameraWasOn) {
-      // Camera just disconnected — reset per-session gaze tracking so
-      // the next camera start doesn't immediately show "Tracking lost"
-      // during the 2–4 s warm-up before the first gaze event arrives.
+      // Camera just disconnected
       _cameraWasOn = false;
       state.cameraOk = false;
-      state.trackingOk = false;
-      _gazeEverReceived = false;          // FIX-TRACKING-LOST-RESTART: reset per session
-      clearTimeout(state.gazeTimeoutTimer); // cancel any stale gaze-loss timer
-      state.gazeTimeoutTimer = null;
       RL.critical('Camera disconnected unexpectedly', { retryCount: _cameraRetryCount });
       _updateIndicator('error', '❌ Camera lost');
 

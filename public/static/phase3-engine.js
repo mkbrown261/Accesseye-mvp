@@ -1685,13 +1685,6 @@ class Phase3Orchestrator {
     if (this.app?.uiRegistry) {
       this.app.uiRegistry._p3DwellHooked = false;
     }
-    // FIX-RESTART-P3HOOK: Clear _p3GazeCursorHooked so the cursor wrapper
-    // is re-applied on the next activate(). Without this, after camera restart
-    // the Phase 3 wrapper is not re-installed because the flag stays true,
-    // causing the _lastScreenX/Y guard to stop working until page reload.
-    if (this.app) {
-      this.app._p3GazeCursorHooked = false;
-    }
   }
 }
 

@@ -153,17 +153,13 @@ class CalibrationEngine {
     // The extra 4 points are fast because they're easy to fixate (near center).
     this.CALIB_POINTS = [
       // ── 4 corners — close enough to reach with eyes alone ──
-      // FIX-RIGHT-EDGE: Raised right-side corners from sx:0.92 → sx:0.95 so the
-      // calibration model is trained with targets that reach further right.
-      // The polynomial extrapolation beyond 0.92 was unreliable — pushing to
-      // 0.95 gives the model better right-edge data while still being reachable.
       { sx: 0.08, sy: 0.08, label: 'Top-Left'     },
-      { sx: 0.95, sy: 0.08, label: 'Top-Right'    },
+      { sx: 0.92, sy: 0.08, label: 'Top-Right'    },
       // FIX BOTTOM-1: moved bottom corners from sy:0.92 → sy:0.96 so the
       // calibration model is trained closer to the true screen edge, allowing
       // the cursor to reach the bottom without changing any gaze math.
       { sx: 0.08, sy: 0.96, label: 'Bottom-Left'  },
-      { sx: 0.95, sy: 0.96, label: 'Bottom-Right' },
+      { sx: 0.92, sy: 0.96, label: 'Bottom-Right' },
       // ── 4 inner-ring points (0.25/0.75 diagonal) ──
       { sx: 0.25, sy: 0.25, label: 'Inner-TL'     },
       { sx: 0.75, sy: 0.25, label: 'Inner-TR'     },
@@ -176,9 +172,7 @@ class CalibrationEngine {
       { sx: 0.50, sy: 0.25, label: 'Mid-Top'      },
       { sx: 0.50, sy: 0.78, label: 'Mid-Bottom'   },  // FIX BOTTOM-1
       { sx: 0.25, sy: 0.50, label: 'Mid-Left'     },
-      // FIX-RIGHT-EDGE: raised Mid-Right from 0.75 → 0.85 so the polynomial
-      // has a constraint point further right, improving accuracy near the right edge.
-      { sx: 0.85, sy: 0.50, label: 'Mid-Right'    },
+      { sx: 0.75, sy: 0.50, label: 'Mid-Right'    },
       // ── Center ──
       { sx: 0.50, sy: 0.50, label: 'Center'       }
     ];
@@ -718,12 +712,6 @@ class GestureEngine {
   getGestureIcon(g) {
     return { pinch: 'fas fa-hand-scissors', airTap: 'fas fa-hand-point-up', openPalm: 'fas fa-hand-paper' }[g] || 'fas fa-hand';
   }
-
-  /** Reset transient state — call on camera stop/restart */
-  reset() {
-    this.indexZHistory = [];
-    this._lastFire = {};
-  }
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -891,12 +879,8 @@ class GazeEngine {
       const headX = lm[1].x;  // nose tip (camera space, NOT mirrored)
       const headY = lm[1].y;
       screenCoords = {
-        // FIX-RIGHT-EDGE v2: Raised gain 8.5 \u2192 10.0 (mirrors phase2-engine.js fix v2).
-        // With 8.5 the iris-only max was ~0.91 (0.5 + 0.048*8.5=0.908).
-        // With 10.0: 0.5 + 0.048*10.0 = 0.98, reliably reaching the right edge.
-        // Output clamp widened to [-0.02, 1.02] to allow bias correction headroom.
-        sx: clamp(0.5 + smoothResult.x * 10.0 - (headX - 0.5) * 1.2, -0.02, 1.02),
-        sy: clamp(0.5 + smoothResult.y * 10.0 + (headY - 0.5) * 1.3, -0.02, 1.02)
+        sx: clamp(0.5 + smoothResult.x * 7.0 - (headX - 0.5) * 1.2, 0, 1),
+        sy: clamp(0.5 + smoothResult.y * 7.0 + (headY - 0.5) * 1.3, 0, 1)
       };
     }
 
@@ -1880,17 +1864,8 @@ class MediaPipeController {
 
     if (this.handDetected) {
       const gesture = this.gestureEngine.processLandmarks(results.multiHandLandmarks);
-      // FIX-GESTURE-DOUBLE-FIRE: Only emit 'gesture' from mpController if processLandmarks
-      // returned a gesture. The gestureEngine._emit path is intentionally NOT wired in
-      // _setupGestureSystem (removed). This mpController emission is the single source of truth.
       if (gesture) this._emit('gesture', { type: gesture });
       this._drawHands(results);
-    } else {
-      // FIX-GESTURE-STALE-Z: Reset airTap Z-history when hand leaves frame.
-      // Without this, stale Z values from the previous hand session remain in the buffer.
-      // When a new hand enters frame, the oldest Z in history is from before the hand
-      // disappeared, creating a large artificial zDelta that fires a phantom airTap.
-      this.gestureEngine.indexZHistory = [];
     }
   }
 
@@ -2188,8 +2163,6 @@ class AccessEyeApp {
     this.gazeEngine._callbacks = {};
     // Reset Phase 1 gaze engine state
     this.gazeEngine.reset();
-    // FIX-GESTURE-STALE: Reset gesture engine Z-history and debounce on camera restart.
-    this.gestureEngine.reset();
     this.cameraOn = false;
 
     // Initialize MediaPipe
@@ -2255,12 +2228,6 @@ class AccessEyeApp {
     this.gazeEngine._callbacks = {};
     // Reset gaze engine state
     this.gazeEngine.reset();
-
-    // FIX-GESTURE-STALE: Reset gestureEngine state on camera stop so stale
-    // indexZHistory and _lastFire timestamps don't pollute the next session.
-    // indexZHistory: prevents phantom airTap when hand re-enters frame.
-    // _lastFire: prevents debounce from blocking the first real gesture.
-    this.gestureEngine.reset();
 
     // Reset Gesture Studio state (clears lip-tap/blow baseline so it re-calibrates on restart)
     if (this.gestureStudio) this.gestureStudio.reset();
@@ -2567,17 +2534,9 @@ class AccessEyeApp {
       // handled in _onElementActivated
     });
 
-    // FIX-GESTURE-DOUBLE-FIRE: Removed the gestureEngine.on('gesture', ...) listener
-    // that was here previously. It was a legacy path that fired _handleGesture a second
-    // time for every gesture. The correct path is:
-    //   MediaPipeController._onHandResults
-    //     → gestureEngine.processLandmarks() [internal _emit fires gestureEngine callbacks]
-    //     → mpController._emit('gesture') [fires _wireMediaPipeEvents listener]
-    //     → _handleGesture() [SINGLE fire, correct path]
-    // The gestureEngine._emit path was firing an extra _handleGesture on the same gesture
-    // before the debounce had a chance to suppress it (they arrive in the same call stack).
-    // Net effect: every pinch, airTap, openPalm was firing twice — including triggering
-    // two activation events on the focused element (double-click behavior).
+    this.gestureEngine.on('gesture', ({ type }) => {
+      this._handleGesture(type);
+    });
   }
 
   _handleGesture(type) {

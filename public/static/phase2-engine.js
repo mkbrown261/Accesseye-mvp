@@ -414,18 +414,10 @@ class HybridGazeEngine {
       const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
       const hPit  = (headPoseResult?.pitch || 0) / 35;
       screen = {
-        // FIX-RIGHT-EDGE v2: Raised gain 8.5 → 10.0.
-        // With gain=8.5 the maximum reachable screen X was ~0.91 in pure
-        // iris-only gaze (no head movement): 0.5 + 0.048 * 8.5 = 0.908.
-        // (irisSignal.x ≈ ±0.06, wIris ≈ 0.80, fusedX_max ≈ 0.048 when
-        //  headGate ≈ 0 so wIris ≈ 0.80 and wHead ≈ 0).
-        // With gain=10.0: 0.5 + 0.048 * 10.0 = 0.98, reaching the edge.
-        // Output clamp widened to [-0.02, 1.02] so downstream bias correction
-        // (applyBiasCorrection, output clamp [-0.02,1.02]) can push to full 1.0.
-        x: p2.clamp(0.5 + fusedX * 10.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, -0.02, 1.02),
+        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
         // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
         // reach the full bottom of the screen before calibration remaps it.
-        y: p2.clamp(0.5 + fusedY * 10.0 + (headY - 0.5) * 1.3 + hPit * 0.2, -0.02, 1.02)
+        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
       };
     }
 
@@ -1065,14 +1057,9 @@ class GazeConfidenceScorer {
   _measureOcclusion(lm, irisData) {
     if (!lm || lm.length < 478) return 0.5;
     const confidence = irisData?.confidence ?? 0.5;
-    // FIX-RIGHT-EDGE: Widened iris landmark check from (0.01, 0.99) to (0.005, 0.995).
-    // When the user looks far right, the right iris landmark x-coordinate in
-    // camera space approaches 0.98+, which was being flagged as "not ok" by
-    // the x < 0.99 gate, reducing bothEyes to 0.5 and halving the occlusion
-    // score. This in turn reduced confidence and caused the cursor to stall
-    // before reaching the right edge of the screen.
-    const lIrisOk = lm[468] && (lm[468].x > 0.005) && (lm[468].x < 0.995);
-    const rIrisOk = lm[473] && (lm[473].x > 0.005) && (lm[473].x < 0.995);
+    // Also check: are eye landmarks present and not at 0,0?
+    const lIrisOk = lm[468] && (lm[468].x > 0.01) && (lm[468].x < 0.99);
+    const rIrisOk = lm[473] && (lm[473].x > 0.01) && (lm[473].x < 0.99);
     const bothEyes = (lIrisOk ? 0.5 : 0) + (rIrisOk ? 0.5 : 0);
     return p2.clamp(confidence * bothEyes, 0, 1);
   }
@@ -1273,20 +1260,13 @@ class DynamicCalibrationEngine {
    * Returns { x, y } so callers can use .x / .y directly.
    */
   applyBiasCorrection(sx, sy) {
-    // FIX-RIGHT-EDGE: Tightened MAX_BIAS from 0.12 → 0.07.
-    // With the original ±0.12 range the negative-bias path could subtract
-    // up to 0.084 from sx, pulling a right-edge coordinate (sx~0.95) down
-    // to ~0.866 and blocking the far-right 13% of the screen.
-    // At ±0.07 the maximum shift is ±0.049, preventing over-correction
-    // while still fixing genuine slow drift.
-    // Also raised output clamp from [0,1] → [-0.02, 1.02] to match
-    // CalibrationEngine.mapGaze and avoid clipping at the far edges.
-    const MAX_BIAS = 0.07;
+    // Hard-clamp live bias to ±0.12 to prevent extreme cursor drift
+    const MAX_BIAS = 0.12;
     const bx = p2.clamp(this._biasX, -MAX_BIAS, MAX_BIAS);
     const by = p2.clamp(this._biasY, -MAX_BIAS, MAX_BIAS);
     return {
-      x: p2.clamp(sx + bx * 0.7, -0.02, 1.02),
-      y: p2.clamp(sy + by * 0.7, -0.02, 1.02)
+      x: p2.clamp(sx + bx * 0.7, 0, 1),
+      y: p2.clamp(sy + by * 0.7, 0, 1)
     };
   }
 
