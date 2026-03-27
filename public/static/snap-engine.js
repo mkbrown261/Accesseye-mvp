@@ -544,8 +544,13 @@ class SnapToEngine {
         this._dwellProgress = _clamp(elapsed / this._cfg.dwellClickTime, 0, 1);
         this._updateDwellRing(candidate.el, this._dwellProgress);
 
-        // Auto-click on dwell completion
-        if (this.autoDwellClick && this._dwellProgress >= 1) {
+        // Auto-click on dwell completion.
+        // DWELL-GUARD: autoDwellClick is OFF by default and can ONLY be
+        // enabled by the user through the Settings panel (#snap-autodwell-btn).
+        // There is no code path that sets it to true automatically.
+        // The dwell ring animation above is VISUAL ONLY and never triggers
+        // a click unless this flag is explicitly set to true by the user.
+        if (this.autoDwellClick === true && this._dwellProgress >= 1) {
           this._activateTarget(candidate.el, candidate.dist, vel);
         }
       } else {

@@ -603,7 +603,11 @@ class CalibrationEngine {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 class GestureEngine {
   constructor() {
-    this.DEBOUNCE_MS = { pinch: 600, airTap: 700, openPalm: 800 };
+    // GESTURE-DEBOUNCE v2: Increased from 600/700ms to 900/1000ms to prevent
+    // accidental double-fires from involuntary hand tremor or rapid gesture
+    // repetition. Range 800–1200ms per spec; defaults set to midpoint 900ms.
+    // All values are runtime-configurable via gestureEngine.setDebounce({…}).
+    this.DEBOUNCE_MS = { pinch: 900, airTap: 1000, openPalm: 1000 };
     this._lastFire = {};
     this.indexZHistory = [];    // for air-tap Z-delta detection
     this.MAX_Z_HISTORY = 8;
@@ -620,6 +624,18 @@ class GestureEngine {
   }
 
   /**
+   * Update debounce timings at runtime.
+   * @param {{ pinch?: number, airTap?: number, openPalm?: number }} values
+   *   Values should be 800–1200 ms per spec; any value is accepted.
+   */
+  setDebounce(values) {
+    if (values.pinch    !== undefined) this.DEBOUNCE_MS.pinch    = values.pinch;
+    if (values.airTap   !== undefined) this.DEBOUNCE_MS.airTap   = values.airTap;
+    if (values.openPalm !== undefined) this.DEBOUNCE_MS.openPalm = values.openPalm;
+    console.log('[GestureEngine] Debounce updated:', JSON.stringify(this.DEBOUNCE_MS));
+  }
+
+  /**
    * Process MediaPipe Hands results
    * Landmarks are normalized [0,1] in x,y, z ~depth
    */
@@ -630,7 +646,7 @@ class GestureEngine {
     const gesture = this._classify(lm);
     if (gesture) {
       const now_ = now();
-      const debounce = this.DEBOUNCE_MS[gesture] || 500;
+      const debounce = this.DEBOUNCE_MS[gesture] || 900;
       if (!this._lastFire[gesture] || now_ - this._lastFire[gesture] > debounce) {
         this._lastFire[gesture] = now_;
         this._emit('gesture', { type: gesture, landmarks: lm });
@@ -2799,6 +2815,12 @@ class AccessEyeApp {
 
     this._updateSnapSettingsPanel();
     console.log('[AccessEye] Snap-To Engine initialised');
+
+    // ── Gesture debounce sliders (settings panel) ────────────────────
+    // Allows users to tune spam-control debounce between 800–1200ms
+    this._bindGestureDebounceSlider('gesture-pinch-debounce-slider',   'gesture-pinch-debounce-val',   'pinch');
+    this._bindGestureDebounceSlider('gesture-airtap-debounce-slider',  'gesture-airtap-debounce-val',  'airTap');
+    this._updateGestureDebouncePanel();
   }
 
   _bindSnapSlider(sliderId, valId, onChange) {
@@ -2827,6 +2849,40 @@ class AccessEyeApp {
     if (actEl && this.snapEngine.learner) {
       actEl.textContent = this.snapEngine.learner.profile.totalActivations;
     }
+  }
+
+  /**
+   * Bind a settings-panel range slider to a gesture debounce value.
+   * @param {string} sliderId   HTML element id of the <input type="range">
+   * @param {string} valId      HTML element id of the display span
+   * @param {string} gesture    'pinch' | 'airTap' | 'openPalm'
+   */
+  _bindGestureDebounceSlider(sliderId, valId, gesture) {
+    const slider = $(`#${sliderId}`);
+    const valEl  = $(`#${valId}`);
+    if (!slider) return;
+    if (this.gestureEngine) {
+      slider.value = this.gestureEngine.DEBOUNCE_MS[gesture] ?? 900;
+      if (valEl) valEl.textContent = `${slider.value}ms`;
+    }
+    slider.addEventListener('input', () => {
+      const ms = parseInt(slider.value, 10);
+      if (this.gestureEngine) this.gestureEngine.setDebounce({ [gesture]: ms });
+      if (valEl) valEl.textContent = `${ms}ms`;
+    });
+  }
+
+  /** Refresh gesture debounce panel display values from live engine state */
+  _updateGestureDebouncePanel() {
+    if (!this.gestureEngine) return;
+    const db = this.gestureEngine.DEBOUNCE_MS;
+    const setSl = (id, valId, val) => {
+      const s = $(`#${id}`), v = $(`#${valId}`);
+      if (s) s.value = val;
+      if (v) v.textContent = `${val}ms`;
+    };
+    setSl('gesture-pinch-debounce-slider',  'gesture-pinch-debounce-val',  db.pinch  ?? 900);
+    setSl('gesture-airtap-debounce-slider', 'gesture-airtap-debounce-val', db.airTap ?? 1000);
   }
 
   /* ── GESTURE STUDIO ─────────────────────────────────────── */
@@ -3078,7 +3134,17 @@ document.addEventListener('DOMContentLoaded', () => {
     /**
      * Get current gaze position (normalized 0-1)
      */
-    getGaze() { return app.gazeEngine.smoothGaze; }
+    getGaze() { return app.gazeEngine.smoothGaze; },
+
+    /**
+     * Adjust gesture spam-control debounce timings at runtime.
+     * Values should be 800–1200ms (default: pinch=900, airTap=1000).
+     * @example AccessEye.setGestureDebounce({ pinch: 1000, airTap: 1200 })
+     */
+    setGestureDebounce(values) {
+      app.gestureEngine.setDebounce(values);
+      app._updateGestureDebouncePanel?.();
+    }
   }); // end Object.assign
 
   // ── ACM live stat counters (update per-modality displays on each log event) ──

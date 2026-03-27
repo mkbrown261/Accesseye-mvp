@@ -1022,7 +1022,38 @@ app.get('/', (c) => {
                   <div class="benchmark-report" id="p3-val-report" style="display:none;font-size:0.68rem;margin-top:6px;"></div>
                 </div>
 
-              </div><!-- /RIGHT col -->
+                <!-- Eye Tracking Calibration Layer -->
+                <div class="p2-settings-group" style="margin-top:12px;">
+                  <div class="p2-section-title"><i class="fas fa-sliders-h"></i> Gaze Calibration Layer</div>
+                  <div style="font-size:0.68rem;color:#888;margin:0 0 6px;">Post-processing layer — fixes axis, center drift, and edge clipping. No change to core tracking.</div>
+                  <button class="p2-toggle-btn active" id="ecl-master-toggle" style="width:100%;font-size:0.7rem;padding:4px 8px;margin-bottom:4px;">
+                    <i class="fas fa-layer-group"></i> Calib Layer: <span id="ecl-master-label">ON</span>
+                  </button>
+                  <button class="p2-toggle-btn" id="ecl-invert-y-toggle" style="width:100%;font-size:0.7rem;padding:4px 8px;margin-bottom:4px;">
+                    <i class="fas fa-arrows-alt-v"></i> Invert Y axis: <span id="ecl-invert-y-label">OFF</span>
+                  </button>
+                  <button class="p2-toggle-btn" id="ecl-center-calib-btn" style="width:100%;font-size:0.7rem;padding:4px 8px;margin-bottom:4px;">
+                    <i class="fas fa-crosshairs"></i> Calibrate Center (2s)
+                  </button>
+                  <div class="p2-slider-row">
+                    <label class="p2-slider-lbl">Sensitivity X</label>
+                    <input type="range" id="ecl-sensitivity-x" min="90" max="150" step="5" value="115" class="snap-slider">
+                    <span class="snap-slider-val" id="ecl-sensitivity-x-val">1.15×</span>
+                  </div>
+                  <div class="p2-slider-row">
+                    <label class="p2-slider-lbl">Sensitivity Y</label>
+                    <input type="range" id="ecl-sensitivity-y" min="90" max="150" step="5" value="115" class="snap-slider">
+                    <span class="snap-slider-val" id="ecl-sensitivity-y-val">1.15×</span>
+                  </div>
+                  <div class="p2-slider-row">
+                    <label class="p2-slider-lbl">Smoothing α</label>
+                    <input type="range" id="ecl-smooth-alpha" min="5" max="60" step="5" value="20" class="snap-slider">
+                    <span class="snap-slider-val" id="ecl-smooth-alpha-val">0.20</span>
+                  </div>
+                  <button class="p2-toggle-btn" id="ecl-reset-range-btn" style="width:100%;font-size:0.7rem;padding:4px 8px;margin-top:4px;">
+                    <i class="fas fa-undo"></i> Reset Range Learning
+                  </button>
+                </div>
 
               <!-- THIRD col: Voice Nav + Snap-To -->
               <div class="p2-grid-col">
@@ -1189,6 +1220,22 @@ app.get('/', (c) => {
                   <button class="p2-toggle-btn" id="snap-profile-reset" style="width:100%;font-size:0.7rem;padding:4px 8px;">
                     <i class="fas fa-undo"></i> Reset Adaptive Profile
                   </button>
+                </div>
+
+                <!-- Gesture Spam Control -->
+                <div class="p2-settings-group" style="margin-top:12px;">
+                  <div class="p2-section-title"><i class="fas fa-hand-paper"></i> Gesture Spam Control</div>
+                  <div style="font-size:0.68rem;color:#888;margin:0 0 6px;">Debounce time between gesture fires (800–1200 ms). Higher = fewer accidental repeats.</div>
+                  <div class="p2-slider-row">
+                    <label class="p2-slider-lbl">Pinch debounce</label>
+                    <input type="range" id="gesture-pinch-debounce-slider" min="800" max="1200" step="50" value="900" class="snap-slider">
+                    <span class="snap-slider-val" id="gesture-pinch-debounce-val">900ms</span>
+                  </div>
+                  <div class="p2-slider-row">
+                    <label class="p2-slider-lbl">Air-tap debounce</label>
+                    <input type="range" id="gesture-airtap-debounce-slider" min="800" max="1200" step="50" value="1000" class="snap-slider">
+                    <span class="snap-slider-val" id="gesture-airtap-debounce-val">1000ms</span>
+                  </div>
                 </div>
 
               </div><!-- /THIRD col -->
@@ -1662,6 +1709,7 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="/static/a11y-mode.js"></script>
   <script src="/static/care-mode.js"></script>
   <script src="/static/reliability.js"></script>
+  <script src="/static/eye-calibration-layer.js"></script>
 </body>
 </html>`)
 })

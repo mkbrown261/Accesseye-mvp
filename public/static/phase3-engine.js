@@ -1583,13 +1583,15 @@ class Phase3Orchestrator {
     registry.updateGaze = function(screenX, screenY) {
       origUpdateGaze(screenX, screenY);
 
-      // Apply adaptive dwell on top of existing dwell — only if auto-dwell is enabled
+      // DWELL-GUARD: Apply adaptive dwell ONLY if autoDwellEnabled === true.
+      // This flag is OFF by default and is exclusively set by the user via
+      // the Settings panel (#snap-autodwell-btn). No automatic activation exists.
       const isFixating = self.ivt.isFixating;
-      const result = self.autoDwellEnabled
+      const result = self.autoDwellEnabled === true
         ? self.dwell.update(registry.focusedId, isFixating)
         : { completed: false };
 
-      if (result.completed && registry.focusedId && self.autoDwellEnabled) {
+      if (result.completed && registry.focusedId && self.autoDwellEnabled === true) {
         // Dwell-activate element
         const entry = registry.elements.get(registry.focusedId);
         if (entry) {

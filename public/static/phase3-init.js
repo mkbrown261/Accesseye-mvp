@@ -299,3 +299,97 @@ if (document.readyState === 'loading') {
 }
 
 console.log('%c Phase 3 Init Script Loaded ✅', 'color:#00d4ff;font-weight:bold;font-size:12px;');
+
+/* ─────────────────────────────────────────────────────────────────────────
+   EYE CALIBRATION LAYER — Settings Panel UI Wiring
+   Runs after DOMContentLoaded; retries until EyeCalibLayer is ready.
+───────────────────────────────────────────────────────────────────────── */
+function _wireEyeCalibLayerUI() {
+  const ecl = window.EyeCalibLayer;
+  if (!ecl) { setTimeout(_wireEyeCalibLayerUI, 300); return; }
+
+  const $ = id => document.getElementById(id);
+
+  // ── Master toggle ───────────────────────────────────────────────
+  const masterBtn = $('ecl-master-toggle');
+  const masterLbl = $('ecl-master-label');
+  if (masterBtn) {
+    masterBtn.addEventListener('click', () => {
+      const on = ecl.toggle();
+      masterLbl.textContent = on ? 'ON' : 'OFF';
+      masterBtn.classList.toggle('active', on);
+    });
+  }
+
+  // ── Invert Y toggle ─────────────────────────────────────────────
+  const invertYBtn = $('ecl-invert-y-toggle');
+  const invertYLbl = $('ecl-invert-y-label');
+  if (invertYBtn) {
+    invertYBtn.addEventListener('click', () => {
+      const current = ecl.getConfig().invertY;
+      ecl.setConfig({ invertY: !current });
+      invertYLbl.textContent = !current ? 'ON' : 'OFF';
+      invertYBtn.classList.toggle('active', !current);
+    });
+  }
+
+  // ── Calibrate center button ─────────────────────────────────────
+  const centerBtn = $('ecl-center-calib-btn');
+  if (centerBtn) {
+    centerBtn.addEventListener('click', () => {
+      ecl.calibrateCenter(2000);
+    });
+  }
+
+  // ── Sensitivity X slider ────────────────────────────────────────
+  const sensXSlider = $('ecl-sensitivity-x');
+  const sensXVal    = $('ecl-sensitivity-x-val');
+  if (sensXSlider) {
+    sensXSlider.addEventListener('input', () => {
+      const v = parseFloat(sensXSlider.value) / 100;
+      ecl.setConfig({ sensitivityX: v });
+      if (sensXVal) sensXVal.textContent = `${v.toFixed(2)}×`;
+    });
+  }
+
+  // ── Sensitivity Y slider ────────────────────────────────────────
+  const sensYSlider = $('ecl-sensitivity-y');
+  const sensYVal    = $('ecl-sensitivity-y-val');
+  if (sensYSlider) {
+    sensYSlider.addEventListener('input', () => {
+      const v = parseFloat(sensYSlider.value) / 100;
+      ecl.setConfig({ sensitivityY: v });
+      if (sensYVal) sensYVal.textContent = `${v.toFixed(2)}×`;
+    });
+  }
+
+  // ── Smoothing alpha slider ──────────────────────────────────────
+  const alphaSlider = $('ecl-smooth-alpha');
+  const alphaVal    = $('ecl-smooth-alpha-val');
+  if (alphaSlider) {
+    alphaSlider.addEventListener('input', () => {
+      const v = parseFloat(alphaSlider.value) / 100;
+      ecl.setConfig({ smoothingAlpha: v });
+      if (alphaVal) alphaVal.textContent = v.toFixed(2);
+    });
+  }
+
+  // ── Reset range button ──────────────────────────────────────────
+  const resetRangeBtn = $('ecl-reset-range-btn');
+  if (resetRangeBtn) {
+    resetRangeBtn.addEventListener('click', () => {
+      ecl.resetRange();
+      if (window.app?.toast) {
+        window.app.toast.show('Calib Layer', 'Range learning reset — re-observing...', 'info', 'fas fa-undo', 2000);
+      }
+    });
+  }
+
+  console.log('[ECL UI] Settings panel wired ✅');
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _wireEyeCalibLayerUI);
+} else {
+  _wireEyeCalibLayerUI();
+}
