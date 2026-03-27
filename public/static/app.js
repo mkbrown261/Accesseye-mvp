@@ -2352,6 +2352,16 @@ class AccessEyeApp {
   _updateGazeCursor(px, py) {
     if (!this.gazeCursor) return;
 
+    // FIX-AIRTAP: When px AND py are both near-zero it means tracking dropped
+    // to origin (face briefly occluded by raised hand during air-tap).
+    // Keep the cursor visible at its last good position instead of snapping to (0,0).
+    const hasLastGood = this._lastScreenX > 0 || this._lastScreenY > 0;
+    if (px < 1 && py < 1 && hasLastGood) {
+      // Just ensure cursor stays visible at its current position — don't move it
+      this.gazeCursor.style.display = 'block';
+      return;
+    }
+
     // ── Snap-To processing ───────────────────────────────────────────
     let cpx = px, cpy = py;
     if (this.snapEngine?.enabled) {
@@ -2360,7 +2370,7 @@ class AccessEyeApp {
       cpy = result.y;
     }
 
-    // PRECISION-8: Clamp cursor pixels to screen bounds
+    // PRECISION-8: Clamp cursor pixels to screen bounds (full viewport, no nav exclusion)
     const W = getVW(), H = getVH();
     cpx = clamp(cpx, 0, W);
     cpy = clamp(cpy, 0, H);

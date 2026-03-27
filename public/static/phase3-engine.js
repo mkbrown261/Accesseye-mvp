@@ -1554,8 +1554,12 @@ class Phase3Orchestrator {
     if (origUpdateGazeCursor && !orch.app._p3GazeCursorHooked) {
       orch.app._p3GazeCursorHooked = true;
       orch.app._updateGazeCursor = function(x, y) {
-        orch.app._lastScreenX = x;
-        orch.app._lastScreenY = y;
+        // FIX-AIRTAP-P3: Only update lastScreen coords when valid (non-zero)
+        // so the hold-last-position guard in _updateGazeCursor works correctly.
+        if (x > 1 || y > 1) {
+          orch.app._lastScreenX = x;
+          orch.app._lastScreenY = y;
+        }
         origUpdateGazeCursor(x, y);
       };
     }

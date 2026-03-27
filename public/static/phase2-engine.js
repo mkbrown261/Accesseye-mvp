@@ -2084,6 +2084,15 @@ class Phase2Orchestrator {
     const screenX = biasFixed.x * (window.visualViewport?.width  || window.innerWidth);
     const screenY = biasFixed.y * (window.visualViewport?.height || window.innerHeight);
 
+    // FIX-AIRTAP-P2: Guard against origin-lock. If biasFixed is (0,0) the
+    // Kalman/stabilizer lost tracking (hand raised during air-tap).
+    // Skip the cursor update so cursor holds its last good position.
+    if (biasFixed.x < 0.005 && biasFixed.y < 0.005) {
+      // Ensure cursor stays visible but don't move it to (0,0)
+      if (this.app.gazeCursor) this.app.gazeCursor.style.display = 'block';
+      return;
+    }
+
     // FIX INTENT-5: Store final screen coords so the intent timer can read them
     this.app._lastScreenX = screenX;
     this.app._lastScreenY = screenY;
