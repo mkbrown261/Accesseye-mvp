@@ -402,26 +402,22 @@ class HybridGazeEngine {
       const mapped = this.calibration.mapGaze(irisSignal.x, irisSignal.y);
       screen = { x: mapped.sx, y: mapped.sy };
     } else {
-      // FIX-RIGHTWARD-OFFSET: Phase 2 uncalibrated fallback.
-      // ROOT CAUSE of ~30% systematic rightward drift:
-      //   The old formula included -(headX - 0.5) * 1.2 where headX = lm[1].x
-      //   (nose tip in raw camera space). This assumed the face is always
-      //   centered at x=0.5 in the camera frame. In practice users sit
-      //   off-center; if headX = 0.25, the term adds +0.30 — shifting the
-      //   cursor 30% right on EVERY frame regardless of where the user looks.
-      //
-      // FIX (intent layer only):
-      //   Remove the absolute face-position terms (headX-0.5) and (headY-0.5).
-      //   Head-TURN is already handled correctly by hYaw/hPit derived from the
-      //   HeadPoseEstimator (angle-based, face-position-independent).
-      //   fusedX is already negated (D-1 fix in _computeIrisSignal).
-      // FIX D-9: hYaw sign NEGATIVE — positive yaw = user turned left → cursor left.
-      const hYaw = (headPoseResult?.yaw   || 0) / 45;
-      const hPit = (headPoseResult?.pitch || 0) / 35;
+      // FIX D-2 + SCOPE-4: Phase 2 uncalibrated fallback.
+      // fusedX is already negated (D-1 fix in _computeIrisSignal).
+      // nose tip headX is in camera space (0=camera-left=user-right).
+      // Use -(headX - 0.5) so face displaced camera-right → cursor left (correct).
+      // FIX D-9: hYaw sign must be NEGATIVE to match _computeHeadPoseSignal convention.
+      //   HeadPoseEstimator yaw: positive = nose turned camera-right = user turned LEFT.
+      //   Looking left (positive yaw) → cursor should move LEFT → subtract from screen.x.
+      const headX = lm[1].x;  // nose tip X (camera space)
+      const headY = lm[1].y;  // nose tip Y
+      const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
+      const hPit  = (headPoseResult?.pitch || 0) / 35;
       screen = {
-        // gain 8.5: iris-only max ≈ 0.5 + 0.048×8.5 = 0.908; head-turn + bias → 1.0
-        x: p2.clamp(0.5 + fusedX * 8.5 - hYaw * 0.2, 0.0, 1.0),
-        y: p2.clamp(0.5 + fusedY * 8.5 + hPit * 0.2, 0.0, 1.0)
+        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
+        // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
+        // reach the full bottom of the screen before calibration remaps it.
+        y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
       };
     }
 
@@ -1264,18 +1260,13 @@ class DynamicCalibrationEngine {
    * Returns { x, y } so callers can use .x / .y directly.
    */
   applyBiasCorrection(sx, sy) {
-    // Hard-clamp live bias to ±0.07 (tightened from ±0.12) to prevent extreme
-    // cursor drift while still allowing useful edge-reach correction.
-    // FIX-RIGHT-EDGE: Output clamped to [-0.02, 1.02] so a rightward bias can
-    // push screen.x past 1.0 by up to 2%, giving the cursor access to the far
-    // right pixel. _updateGazeCursor clamps to [0, VW] so nothing overflows
-    // the visible area. Intent-layer only.
-    const MAX_BIAS = 0.07;
+    // Hard-clamp live bias to ±0.12 to prevent extreme cursor drift
+    const MAX_BIAS = 0.12;
     const bx = p2.clamp(this._biasX, -MAX_BIAS, MAX_BIAS);
     const by = p2.clamp(this._biasY, -MAX_BIAS, MAX_BIAS);
     return {
-      x: p2.clamp(sx + bx * 0.7, -0.02, 1.02),
-      y: p2.clamp(sy + by * 0.7, -0.02, 1.02)
+      x: p2.clamp(sx + bx * 0.7, 0, 1),
+      y: p2.clamp(sy + by * 0.7, 0, 1)
     };
   }
 

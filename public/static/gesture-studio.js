@@ -806,100 +806,37 @@ class GestureStudioUI {
     this._render();
   }
 
-  /**
-   * Public refresh — safe to call at any time (e.g. on page navigation).
-   * Re-queries the root element (in case it was swapped) then re-renders.
-   */
-  refresh() {
-    if (!this._root) this._root = document.getElementById(this._rootId);
-    this._render();
-  }
-
   _render() {
     if (!this._root) return;
     const gestures = this._studio.getGestures();
     const actions  = GestureStudio.getAvailableActions();
 
-    // Detect camera state from global app reference (safe – undefined-checks throughout)
-    const cameraOn = !!(window.app?.cameraOn);
-    const camStatus = cameraOn
-      ? '<span class="gs-live-badge"><i class="fas fa-circle"></i> LIVE</span>'
-      : '<span class="gs-offline-badge"><i class="fas fa-circle"></i> Camera Off</span>';
-
     this._root.innerHTML = `
 <div class="gs-panel">
-
-  <!-- ── Hand gesture status cards (built-in, always shown) ── -->
+  <!-- Built-in gestures info -->
   <div class="gs-section">
-    <div class="gs-section-header">
-      <div class="gs-section-title"><i class="fas fa-hand-paper"></i> Hand Gestures ${camStatus}</div>
-    </div>
-    <div class="gs-hand-grid">
-
-      <div class="gs-hand-card" id="gs-hc-pinch">
-        <div class="gs-hand-icon">🤌</div>
-        <div class="gs-hand-body">
-          <div class="gs-hand-name">Pinch</div>
-          <div class="gs-hand-desc">Thumb &amp; index fingertips touch</div>
-          <div class="gs-hand-trigger"><i class="fas fa-bolt"></i> Activates focused element</div>
-        </div>
-        <div class="gs-hand-indicator" id="gs-ind-pinch" title="Pinch status"></div>
-      </div>
-
-      <div class="gs-hand-card" id="gs-hc-airtap">
-        <div class="gs-hand-icon">👆</div>
-        <div class="gs-hand-body">
-          <div class="gs-hand-name">Air Tap</div>
-          <div class="gs-hand-desc">Index finger quick forward jab</div>
-          <div class="gs-hand-trigger"><i class="fas fa-bolt"></i> Activates focused element</div>
-        </div>
-        <div class="gs-hand-indicator" id="gs-ind-airtap" title="Air Tap status"></div>
-      </div>
-
-      <div class="gs-hand-card" id="gs-hc-openpalm">
-        <div class="gs-hand-icon">✋</div>
-        <div class="gs-hand-body">
-          <div class="gs-hand-name">Open Palm</div>
-          <div class="gs-hand-desc">All fingers spread wide</div>
-          <div class="gs-hand-trigger"><i class="fas fa-arrow-left"></i> Cancel / Go Back</div>
-        </div>
-        <div class="gs-hand-indicator" id="gs-ind-openpalm" title="Open Palm status"></div>
-      </div>
-
-    </div>
-    <div class="gs-hand-note">
-      <i class="fas fa-info-circle"></i>
-      Hand gestures require the camera to be running on the <strong>Live Demo</strong> page.
-      Debounce timing can be tuned in the Settings panel.
-    </div>
-  </div>
-
-  <!-- ── Head movement / facial gesture info ── -->
-  <div class="gs-section">
-    <div class="gs-section-header">
-      <div class="gs-section-title"><i class="fas fa-arrows-alt"></i> Head &amp; Face Gestures ${camStatus}</div>
-    </div>
+    <div class="gs-section-title"><i class="fas fa-bolt"></i> Built-In Gestures</div>
     <div class="gs-builtin-row">
+      <div class="gs-builtin-card">
+        <div class="gs-builtin-icon">✋</div>
+        <div class="gs-builtin-info">
+          <div class="gs-builtin-name">Hand Gestures</div>
+          <div class="gs-builtin-desc">Detected via MediaPipe Hands</div>
+          <div class="gs-builtin-action"><i class="fas fa-magic"></i> Assigned via Custom Gestures</div>
+        </div>
+      </div>
       <div class="gs-builtin-card">
         <div class="gs-builtin-icon">🗣</div>
         <div class="gs-builtin-info">
-          <div class="gs-builtin-name">Head Tilt / Nod</div>
-          <div class="gs-builtin-desc">Detected via head-pose estimation</div>
-          <div class="gs-builtin-action"><i class="fas fa-magic"></i> Assign via Custom Gestures below</div>
-        </div>
-      </div>
-      <div class="gs-builtin-card">
-        <div class="gs-builtin-icon">😮</div>
-        <div class="gs-builtin-info">
-          <div class="gs-builtin-name">Mouth Actions</div>
-          <div class="gs-builtin-desc">Lip-bite scroll, custom expressions</div>
-          <div class="gs-builtin-action"><i class="fas fa-magic"></i> Assign via Custom Gestures below</div>
+          <div class="gs-builtin-name">Head Movements</div>
+          <div class="gs-builtin-desc">Detected via head pose estimation</div>
+          <div class="gs-builtin-action"><i class="fas fa-arrows-alt"></i> Assigned via Custom Gestures</div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ── Custom (recorded) gestures ── -->
+  <!-- Custom gestures list -->
   <div class="gs-section">
     <div class="gs-section-header">
       <div class="gs-section-title"><i class="fas fa-magic"></i> Custom Gestures <span class="gs-count">${gestures.length}</span></div>
@@ -909,9 +846,7 @@ class GestureStudioUI {
     ${gestures.length === 0 ? `
       <div class="gs-empty">
         <i class="fas fa-hand-paper"></i>
-        <p>No custom gestures yet.<br/>
-           Click <strong>New Gesture</strong> to record a face expression or head movement<br/>
-           and assign it to any system action.</p>
+        <p>No custom gestures yet.<br/>Click <strong>New Gesture</strong> to create one.</p>
       </div>
     ` : `
       <div class="gs-list">
@@ -923,20 +858,6 @@ class GestureStudioUI {
   <!-- Feedback area -->
   <div id="gs-feedback" class="gs-feedback" style="display:none"></div>
 </div>`;
-
-    // Flash hand-gesture indicator cards when a gesture fires
-    const flashCard = (gestureType) => {
-      const idMap = { pinch: 'gs-ind-pinch', airTap: 'gs-ind-airtap', openPalm: 'gs-ind-openpalm' };
-      const cardMap = { pinch: 'gs-hc-pinch', airTap: 'gs-hc-airtap', openPalm: 'gs-hc-openpalm' };
-      const indEl  = this._root?.querySelector(`#${idMap[gestureType]}`);
-      const cardEl = this._root?.querySelector(`#${cardMap[gestureType]}`);
-      if (indEl)  { indEl.classList.add('gs-ind-active');   setTimeout(() => indEl.classList.remove('gs-ind-active'),  600); }
-      if (cardEl) { cardEl.classList.add('gs-hand-card-active'); setTimeout(() => cardEl.classList.remove('gs-hand-card-active'), 600); }
-    };
-    // Wire into the global app gesture handler (safe no-op if app not ready)
-    if (window.app) {
-      window.app._gsFlashCard = flashCard;
-    }
 
     // Create button
     this._root.querySelector('#gs-create-btn')?.addEventListener('click', () => {

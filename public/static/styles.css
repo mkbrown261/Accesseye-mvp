@@ -2217,65 +2217,6 @@ body {
 .gs-builtin-desc { font-size: 11px; color: #78909c; }
 .gs-builtin-action { font-size: 11px; color: #7c4dff; margin-top: 3px; font-weight: 600; }
 
-/* ── Hand gesture status cards ────────────────────────────────── */
-.gs-live-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  color: #00c853; background: rgba(0,200,83,0.12);
-  border: 1px solid rgba(0,200,83,0.30);
-  border-radius: 8px; padding: 2px 7px; margin-left: 8px;
-}
-.gs-live-badge i { font-size: 7px; animation: gs-blink 1.2s infinite; }
-.gs-offline-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  color: #78909c; background: rgba(120,144,156,0.10);
-  border: 1px solid rgba(120,144,156,0.25);
-  border-radius: 8px; padding: 2px 7px; margin-left: 8px;
-}
-.gs-offline-badge i { font-size: 7px; }
-@keyframes gs-blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
-
-.gs-hand-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
-}
-@media (max-width: 620px) { .gs-hand-grid { grid-template-columns: 1fr; } }
-
-.gs-hand-card {
-  position: relative;
-  display: flex; align-items: flex-start; gap: 10px;
-  background: rgba(0,212,255,0.04);
-  border: 1px solid rgba(0,212,255,0.14);
-  border-radius: 10px; padding: 12px 14px;
-  transition: border-color 0.2s, background 0.2s;
-}
-.gs-hand-card:hover { border-color: rgba(0,212,255,0.30); }
-.gs-hand-card-active {
-  border-color: #00d4ff !important;
-  background: rgba(0,212,255,0.12) !important;
-  transition: none;
-}
-.gs-hand-icon { font-size: 22px; line-height: 1; flex-shrink: 0; }
-.gs-hand-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.gs-hand-name { font-size: 13px; font-weight: 700; color: #e0e0e0; }
-.gs-hand-desc { font-size: 11px; color: #78909c; }
-.gs-hand-trigger { font-size: 11px; color: #00bcd4; margin-top: 3px; font-weight: 600; }
-.gs-hand-trigger i { margin-right: 3px; }
-
-.gs-hand-indicator {
-  position: absolute; top: 10px; right: 10px;
-  width: 8px; height: 8px; border-radius: 50%;
-  background: rgba(120,144,156,0.3);
-  transition: background 0.15s;
-}
-.gs-ind-active { background: #00d4ff !important; box-shadow: 0 0 6px #00d4ff; }
-
-.gs-hand-note {
-  margin-top: 10px; font-size: 11px; color: #546e7a;
-  display: flex; align-items: flex-start; gap: 6px; line-height: 1.5;
-}
-.gs-hand-note i { margin-top: 1px; flex-shrink: 0; color: #37474f; }
-
 .gs-list { display: flex; flex-direction: column; gap: 10px; }
 .gs-empty {
   text-align: center; padding: 32px 16px;
