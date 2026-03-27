@@ -1570,17 +1570,6 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
       </div>
     </div>
 
-    <!-- Global Gaze Cursor (full viewport) -->
-    <div class="global-gaze-cursor" id="global-gaze-cursor" style="display:none">
-      <div class="gc-ring"></div>
-      <div class="gc-dot"></div>
-      <svg class="gc-dwell-svg" viewBox="0 0 60 60">
-        <circle cx="30" cy="30" r="26" fill="none" stroke="#00d4ff" stroke-width="3"
-                stroke-dasharray="0 163.36" id="dwell-circle" stroke-linecap="round"
-                transform="rotate(-90 30 30)"/>
-      </svg>
-    </div>
-
     <!-- Toast Notification -->
     <div class="toast-container" id="toast-container"></div>
 
@@ -1690,6 +1679,17 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
     ">⚙ Debug</button>
 
   </div><!-- end #app-root -->
+
+  <!-- Global Gaze Cursor — OUTSIDE all page divs so page navigation never hides it -->
+  <div class="global-gaze-cursor" id="global-gaze-cursor" style="display:none">
+    <div class="gc-ring"></div>
+    <div class="gc-dot"></div>
+    <svg class="gc-dwell-svg" viewBox="0 0 60 60">
+      <circle cx="30" cy="30" r="26" fill="none" stroke="#00d4ff" stroke-width="3"
+              stroke-dasharray="0 163.36" id="dwell-circle" stroke-linecap="round"
+              transform="rotate(-90 30 30)"/>
+    </svg>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
