@@ -1,7 +1,7 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  *  AccessEye — Eye Tracking Calibration Layer
- *  eye-calibration-layer.js   v1.2.0
+ *  eye-calibration-layer.js   v1.3.0
  * ───────────────────────────────────────────────────────────────────────────
  *  ARCHITECTURE RULES (STRICT):
  *
@@ -52,18 +52,25 @@
     return;
   }
 
-  const ECL_VERSION = '1.2.0';
+  const ECL_VERSION = '1.3.0';
 
   /* ──────────────────────────────────────────────────────────────────
      CONFIGURATION
   ────────────────────────────────────────────────────────────────── */
   const DEFAULT_CONFIG = {
-    /* Master feature flags */
-    enableCalibrationLayer : true,
+    /* Master feature flags
+     * FIX-OFFSET-1: Disabled by default. Phase 2 already has its own dynamic
+     * micro-calibration (bias correction, TemporalStabilizer, Kalman). Adding
+     * ECL on top double-corrects and pushes cursor consistently to the right.
+     * User can enable via Settings → Gaze Calibration Layer toggle or:
+     *   EyeCalibLayer.enable()  — enables full pipeline
+     *   EyeCalibLayer.disable() — passthrough (default)
+     */
+    enableCalibrationLayer : false,   // OFF by default — Phase 2 handles calibration
     enableAxisCorrection   : true,
-    enableCenterCalib      : true,
-    enableNormalization    : true,
-    enableSmoothing        : true,
+    enableCenterCalib      : false,   // OFF — Phase 2 handles center bias
+    enableNormalization    : false,   // OFF — Phase 2 handles range normalisation
+    enableSmoothing        : true,    // smoothing still useful when layer is on
 
     /* Phase 2 — Axis correction */
     invertY : false,

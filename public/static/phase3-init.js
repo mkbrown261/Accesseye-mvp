@@ -310,10 +310,13 @@ function _wireEyeCalibLayerUI() {
 
   const $ = id => document.getElementById(id);
 
-  // ── Master toggle ───────────────────────────────────────────────
+  // ── Sync initial UI state with ECL config (OFF by default) ─────
+  const initOn = ecl.getConfig().enableCalibrationLayer;
   const masterBtn = $('ecl-master-toggle');
   const masterLbl = $('ecl-master-label');
   if (masterBtn) {
+    masterBtn.classList.toggle('active', initOn);
+    if (masterLbl) masterLbl.textContent = initOn ? 'ON' : 'OFF';
     masterBtn.addEventListener('click', () => {
       const on = ecl.toggle();
       masterLbl.textContent = on ? 'ON' : 'OFF';

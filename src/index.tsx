@@ -1025,9 +1025,9 @@ app.get('/', (c) => {
                 <!-- Eye Tracking Calibration Layer -->
                 <div class="p2-settings-group" style="margin-top:12px;">
                   <div class="p2-section-title"><i class="fas fa-sliders-h"></i> Gaze Calibration Layer</div>
-                  <div style="font-size:0.68rem;color:#888;margin:0 0 6px;">Post-processing layer — fixes axis, center drift, and edge clipping. No change to core tracking.</div>
-                  <button class="p2-toggle-btn active" id="ecl-master-toggle" style="width:100%;font-size:0.7rem;padding:4px 8px;margin-bottom:4px;">
-                    <i class="fas fa-layer-group"></i> Calib Layer: <span id="ecl-master-label">ON</span>
+                  <div style="font-size:0.68rem;color:#888;margin:0 0 6px;">Optional post-processing layer. <strong style="color:#ffd32a;">OFF by default</strong> — Phase 2 handles all calibration. Enable only if cursor drifts after Phase 2 calibration.</div>
+                  <button class="p2-toggle-btn" id="ecl-master-toggle" style="width:100%;font-size:0.7rem;padding:4px 8px;margin-bottom:4px;">
+                    <i class="fas fa-layer-group"></i> Calib Layer: <span id="ecl-master-label">OFF</span>
                   </button>
                   <button class="p2-toggle-btn" id="ecl-invert-y-toggle" style="width:100%;font-size:0.7rem;padding:4px 8px;margin-bottom:4px;">
                     <i class="fas fa-arrows-alt-v"></i> Invert Y axis: <span id="ecl-invert-y-label">OFF</span>

@@ -2352,6 +2352,20 @@ class AccessEyeApp {
   _updateGazeCursor(px, py) {
     if (!this.gazeCursor) return;
 
+    // FIX-CURSOR-DISAPPEAR-1: Guard against (0,0) / near-origin coordinates.
+    // These arrive when the hand briefly occludes the face during an air-tap,
+    // causing MediaPipe to lose tracking for 1-3 frames and emit (0,0).
+    // Without this guard the cursor snaps to the top-left corner, goes behind
+    // the nav header (64px), and appears to "disappear" entirely.
+    // Rule: if BOTH px and py are < 2px treat as "no valid gaze" and freeze
+    // the cursor at the last known good position instead of moving to (0,0).
+    if (px < 2 && py < 2) {
+      // Freeze cursor at last known position — do NOT return early so display
+      // stays 'block' (avoids a separate hide path leaving cursor invisible)
+      px = this._lastScreenX || (getVW() / 2);
+      py = this._lastScreenY || (getVH() / 2);
+    }
+
     // ── Snap-To processing ───────────────────────────────────────────
     // Only intercept the cursor when Snap-To is explicitly enabled.
     // When disabled the raw gaze coordinates pass through unchanged so
@@ -2365,8 +2379,11 @@ class AccessEyeApp {
 
     // PRECISION-8: Clamp cursor pixels to screen bounds (even with relaxed mapGaze clamp)
     const W = getVW(), H = getVH();
+    // FIX-CURSOR-DISAPPEAR-2: Enforce minimum Y of 68px so cursor never slides
+    // behind the 64px navigation header and disappears from view.
+    const NAV_H = 68;
     cpx = clamp(cpx, 0, W);
-    cpy = clamp(cpy, 0, H);
+    cpy = clamp(cpy, NAV_H, H);
     this.gazeCursor.style.display = 'block';
     this.gazeCursor.style.left = `${cpx}px`;
     this.gazeCursor.style.top  = `${cpy}px`;
