@@ -744,8 +744,8 @@ class TemporalStabilizer {
     this._prevX = null; this._prevY = null;
     this._velX = 0;     this._velY = 0;
 
-    // Output
-    this.stable = { x: 0.5, y: 0.5 };
+    // Output — null until first real frame seeds it (FIX CENTER-LOCK)
+    this.stable = null;
   }
 
   /**
@@ -755,6 +755,14 @@ class TemporalStabilizer {
    * @returns {{ x, y }}
    */
   update(rx, ry, confidence = 1.0) {
+    // FIX CENTER-LOCK: Seed Kalman + EMA + stable from first real measurement
+    // instead of 0/0.5 defaults, preventing the one-frame-correct-then-center-stuck bug.
+    if (this._ex === null) {
+      this._kx.x = rx; this._ky.x = ry;   // seed Kalman state
+      this._ex = rx;   this._ey = ry;      // seed EMA
+      this.stable = { x: rx, y: ry };      // seed stable output
+    }
+
     // ── Layer A: Adaptive Kalman ──
     // FIX ACC-9: Increase R more aggressively at low confidence.
     // When confidence < 0.5 (blink/partial occlusion), increase R to 0.04
@@ -781,7 +789,7 @@ class TemporalStabilizer {
     const velScore = p2.clamp((velMag - 0.008) / 0.042, 0, 1);
     const alpha = p2.lerp(0.18, 0.70, velScore);
 
-    if (this._ex === null) { this._ex = kx; this._ey = ky; }
+    if (this._ex === null) { this._ex = kx; this._ey = ky; } // (already seeded above on first call)
     else {
       this._ex = p2.lerp(this._ex, kx, alpha);
       this._ey = p2.lerp(this._ey, ky, alpha);
@@ -810,7 +818,8 @@ class TemporalStabilizer {
     }
 
     // FIX STUCK-4: When confidence is very low (blink / face lost), hold last position.
-    if (confidence < 0.25) {
+    // FIX CENTER-LOCK: if stable is still null (very first frame), fall through instead.
+    if (confidence < 0.25 && this.stable !== null) {
       this._wx = [];
       this._wy = [];
       this._bypassCounter = 0;
@@ -866,7 +875,7 @@ class TemporalStabilizer {
     this._prevX = null; this._prevY = null;
     this._velX = 0;   this._velY = 0;
     this._bypassCounter = 0;
-    this.stable = { x:0.5, y:0.5 };
+    this.stable = null;  // FIX CENTER-LOCK: re-seed from first real frame after reset
   }
 }
 
