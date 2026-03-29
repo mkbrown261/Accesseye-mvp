@@ -246,8 +246,15 @@ class HeadPoseEstimator {
     const yaw     = p2.clamp(p2.deg(Math.atan(yawRaw * 1.8)), -50, 50);
 
     // Pitch: vertical offset of nose from eye midpoint, normalized
+    // FIX TOP-PULL: removed the hard-coded -10° offset that made neutral/frontal
+    // gaze report pitch ≈ -10° (falsely "looking up").  The offset was originally
+    // added to compensate for a nose-tip bias but it caused the _computeHeadPoseSignal
+    // to produce a small positive Y (down) contribution even when the user looks
+    // straight ahead, and — via the uncalibrated fallback — added noise to X at
+    // extreme upward gaze angles.  Remove the offset; the HeadPoseEstimator EMA
+    // provides sufficient smoothing without the artificial shift.
     const pitchRaw = (nose[1] - eyeMid[1]) / Math.max(eyeSpan, 1);
-    const pitch    = p2.clamp(p2.deg(Math.atan(pitchRaw * 1.5)) - 10, -40, 40);
+    const pitch    = p2.clamp(p2.deg(Math.atan(pitchRaw * 1.5)), -40, 40);
 
     // Roll: angle of eye line relative to horizontal
     const dX   = rEye[0] - lEye[0];
@@ -416,8 +423,13 @@ class HybridGazeEngine {
       const headY = lm[1].y;  // nose tip Y
       const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
       const hPit  = (headPoseResult?.pitch || 0) / 35;
+      // FIX TOP-PULL (fallback): reduced headX coefficient 1.2 → 0.7.
+      // When looking at the top of the screen the nose-tip X in camera space
+      // shifts slightly right as the head tilts back, adding a spurious +X.
+      // Reducing the coefficient limits that contribution without losing yaw
+      // compensation (hYaw * 0.2 still handles explicit head turns).
       screen = {
-        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
+        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 0.7 - hYaw * 0.2, 0.0, 1.0),
         // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
         // reach the full bottom of the screen before calibration remaps it.
         y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
@@ -513,8 +525,20 @@ class HybridGazeEngine {
     // Normalized iris displacement
     // X: iris offset from eye-corner midpoint, scaled by individual eye width
     //    BUT also bounded by IPD: if eye width collapses (blink), IPD keeps scale reasonable.
-    const lOX = lSpan > 0 ? (lIris.x - lMidX) / Math.max(lSpan, ipd * 0.35) : 0;
-    const rOX = rSpan > 0 ? (rIris.x - rMidX) / Math.max(rSpan, ipd * 0.35) : 0;
+    //
+    // FIX TOP-PULL: When the iris rolls upward (looking at top of screen) the
+    // MediaPipe iris ring points (468-472, 473-477) are no longer co-planar in
+    // the camera image, causing the per-eye centroid X to shift slightly toward
+    // the nose.  This asymmetric shift produces a false positive +X offset that
+    // the negation (-) then maps to a rightward screen displacement.
+    //
+    // Fix: use the EMA-smoothed IPD as the primary X divisor at all times
+    // (instead of the per-eye span).  IPD is computed from both iris centroids
+    // simultaneously, so any common-mode upward shift cancels out.  The
+    // per-eye span is retained as a minimum floor to prevent runaway scaling
+    // when one eye is partially occluded.
+    const lOX = (lIris.x - lMidX) / Math.max(ipd * 0.50, lSpan);
+    const rOX = (rIris.x - rMidX) / Math.max(ipd * 0.50, rSpan);
     // Y: iris offset from nose-bridge Y anchor, scaled by eye height
     const lOY = lH > 0 ? (lIris.y - noseBridgeY) / lH : 0;
     const rOY = rH > 0 ? (rIris.y - noseBridgeY) / rH : 0;
@@ -548,8 +572,19 @@ class HybridGazeEngine {
     }
 
     // Negate X to fix camera mirroring (camera-right = user-left)
-    const x = -(wL * lOX + wR * rOX);
-    const y =   wLY * lOY + wRY * rOY;
+    const rawX = -(wL * lOX + wR * rOX);
+    const y    =   wLY * lOY + wRY * rOY;
+
+    // FIX TOP-PULL (part 2): Attenuate the X signal when Y strongly indicates
+    // upward or downward gaze.  When both irises are far above the nose-bridge
+    // anchor (y << 0) the X estimate becomes noisy because the iris ring
+    // foreshortens vertically and the centroid drifts.  Apply a gentle gate:
+    // |y| > 0.25 (≈ looking above/below ~35% of eye height) → reduce X gain
+    // linearly to 80% at |y|=0.5, 65% at |y|=0.75.  This preserves left/right
+    // discrimination while suppressing the systematic rightward bias at top gaze.
+    const yMag  = Math.abs(y);
+    const xGate = yMag > 0.25 ? p2.clamp(1 - (yMag - 0.25) * 0.6, 0.65, 1.0) : 1.0;
+    const x     = rawX * xGate;
 
     // Confidence: eye span relative to face width, penalise asymmetry
     const avgSpan = (lSpan + rSpan) / 2;
