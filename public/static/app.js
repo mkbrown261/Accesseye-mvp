@@ -3001,7 +3001,9 @@ class AccessEyeApp {
       }
     }
 
-    const phase = p2orch?.active ? 'P2' + (window.app?.phase3?.active ? '+P3' : '') : 'P1';
+    const phase = p2orch?.active
+      ? ('P2' + (window.app?.phase3?.active ? '+P3' : '') + (p2orch._usingRageNet ? '+RAGE' : '+Hybrid'))
+      : 'P1';
 
     // Update DOM
     const set = (id, val) => { const el = $(`#${id}`); if (el) el.textContent = val; };

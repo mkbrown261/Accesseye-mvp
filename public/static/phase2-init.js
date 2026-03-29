@@ -290,7 +290,12 @@ class Phase2InitController {
             fixationAge: orch.saccade.fixationAge,
             stats:       orch.saccade.getStats()
           },
-          cameraFPS: orch.cameraFPS
+          cameraFPS:   orch.cameraFPS,
+          // RAGE-net status fields
+          usingRageNet:      orch._usingRageNet,
+          rageNetReady:      orch.rageNet?.ready,
+          rageNetWeights:    orch.rageNet?.modelWeightsLoaded,
+          rageNetLatency:    orch.rageNet?.lastLatency,
         }),
 
         /** Enable/disable AI intent prediction */
