@@ -584,6 +584,12 @@ class RageNetEngine {
     this._frameCount  = 0;
     this._skipFrames  = 1;   // run inference every N frames (1=every, 2=every other)
 
+    // Async inference state — fire-and-update pattern.
+    // processResults() returns the last known result immediately (non-blocking),
+    // while inference runs asynchronously and updates state on completion.
+    this._inferPending  = false;   // async inference is in flight
+    this._lastLm        = null;    // landmarks captured for current inference frame
+
     // Exported for Phase2Orchestrator compatibility
     this.rawGaze       = { x: 0.5, y: 0.5 };
     this.smoothGaze    = { x: 0.5, y: 0.5 };
@@ -648,6 +654,14 @@ class RageNetEngine {
    * Main inference entry point — compatible with HybridGazeEngine.processResults().
    * Called each frame by Phase2Orchestrator._processPhase2Face().
    *
+   * Uses a fire-and-update async pattern:
+   *   - Returns last-known gaze result IMMEDIATELY (non-blocking, keeps pipeline at camera FPS)
+   *   - Fires async inference in background
+   *   - State is updated when inference resolves (typically next 1–3 frames later)
+   *
+   * This prevents the full ResNet-18 inference (~200-500ms on CPU) from blocking the
+   * face-detection pipeline and causing fps: 2 stutter.
+   *
    * @param {Array} multiFaceLandmarks  MediaPipe FaceMesh output
    * @param {number} W  video width
    * @param {number} H  video height
@@ -661,36 +675,45 @@ class RageNetEngine {
     const lm = multiFaceLandmarks[0];
     if (!lm || lm.length < 478) return null;
 
-    // Frame-skip for performance (inference every _skipFrames frames)
     this._frameCount++;
-    if (this._frameCount % this._skipFrames !== 0) {
-      // Return last known result to keep pipeline flowing
-      return this._makePacket(this._lastGaze.x, this._lastGaze.y, this._confidence, lm);
+
+    // ── Fire async inference if none is in flight ──
+    // Don't queue multiple inferences — just kick one off per completed cycle.
+    if (!this._inferPending) {
+      const crops = this._cropExtractor.extract(this._videoEl, lm, W, H);
+      if (crops) {
+        this._inferPending = true;
+        const capturedLm = lm;
+        const capturedHp = headPoseResult;
+        this._model.predictAsync(crops.rightEye, crops.leftEye)
+          .then(raw => {
+            this._inferPending = false;
+            if (!raw) return;
+            const clamped   = { x: Math.max(0, Math.min(1, raw.x)), y: Math.max(0, Math.min(1, raw.y)) };
+            const corrected = this._driftCorrector.apply(clamped.x, clamped.y);
+            this._lastGaze   = corrected;
+            this._confidence = this._estimateConfidence(capturedLm, capturedHp);
+            // Sync exported fields
+            this.rawGaze       = corrected;
+            this.smoothGaze    = corrected;
+            this.confidence    = this._confidence;
+            this._irisOnlyGaze = corrected;
+            this._trueRawGaze  = clamped;
+          })
+          .catch(err => {
+            this._inferPending = false;
+            console.warn('[RAGE-net] Async predict error:', err);
+          });
+      }
     }
 
-    // ── Crop eyes from video frame ──
-    const crops = this._cropExtractor.extract(this._videoEl, lm, W, H);
-    if (!crops) return this._makePacket(this._lastGaze.x, this._lastGaze.y, 0.3, lm);
-
-    // ── RAGE-net inference (synchronous — <20ms on GPU) ──
-    const raw = this._model.predict(crops.rightEye, crops.leftEye);
-    if (!raw) return null;
-
-    // ── Apply implicit 1-point drift correction ──
-    const corrected = this._driftCorrector.apply(raw.x, raw.y);
-
-    // ── Update state ──
-    this._lastGaze   = corrected;
-    this._confidence = this._estimateConfidence(lm, headPoseResult);
-
-    // Sync exported fields for Phase2Orchestrator compatibility
-    this.rawGaze       = corrected;
-    this.smoothGaze    = corrected;
-    this.confidence    = this._confidence;
-    this._irisOnlyGaze = raw;        // pre-correction (for calibration layer compatibility)
-    this._trueRawGaze  = raw;
-
-    return this._makePacket(corrected.x, corrected.y, this._confidence, lm);
+    // ── Return last-known result immediately (non-blocking) ──
+    // On the very first frame (before any inference completes), _lastGaze is {0.5,0.5}.
+    // Use a minimum confidence of 0.3 so the TemporalStabilizer doesn't freeze
+    // (it holds last position when conf < 0.25 — we want it to pass through 0.5 centre
+    // gracefully on startup rather than locking there permanently).
+    const outConf = Math.max(this._confidence, 0.3);
+    return this._makePacket(this._lastGaze.x, this._lastGaze.y, outConf, lm);
   }
 
   /**
@@ -714,7 +737,10 @@ class RageNetEngine {
     this.rawGaze    = { x: 0.5, y: 0.5 };
     this.smoothGaze = { x: 0.5, y: 0.5 };
     this.confidence = 0;
-    this._frameCount = 0;
+    this._frameCount   = 0;
+    this._inferPending = false;
+    this._lastGaze     = { x: 0.5, y: 0.5 };
+    this._confidence   = 0;
   }
 
   // ─────────────────────────────────────────────
@@ -723,17 +749,36 @@ class RageNetEngine {
 
   /** Build a gaze packet compatible with Phase2Orchestrator downstream. */
   _makePacket(sx, sy, conf, lm) {
-    const iris = lm?.[468] ? { x: lm[468].x, y: lm[468].y } : { x: sx, y: sy };
+    // Estimate eye span from landmarks for GazeConfidenceScorer compatibility.
+    // lm[33]=left-outer, lm[133]=left-inner, lm[263]=right-outer, lm[362]=right-inner.
+    const lSpan = lm?.[33] && lm?.[133]
+      ? Math.abs(lm[133].x - lm[33].x) : 0.08;
+    const rSpan = lm?.[263] && lm?.[362]
+      ? Math.abs(lm[362].x - lm[263].x) : 0.08;
+
+    // iris: structured signal compatible with GazeConfidenceScorer._measureOcclusion /
+    //   _detectGlare. Fields: x, y (gaze coords), confidence, lSpan, rSpan.
+    // NOTE: for RAGE-net, x/y are the GAZE output [0,1], NOT landmark screen coords.
+    // Phase3 skips the iris-override path for rageNet===true packets, so this iris
+    // object is only used by GazeConfidenceScorer, never as a gaze source.
+    const iris = {
+      x:          sx,
+      y:          sy,
+      confidence: conf,
+      lSpan,
+      rSpan,
+    };
+
     return {
       screen:     { x: sx, y: sy },
       raw:        { x: sx, y: sy },
       confidence: conf,
       iris,
       timestamp:  performance.now(),
-      // Extra fields for debugging
-      rageNet:    true,
+      // Extra fields for debugging and Phase3 branching
+      rageNet:       true,
       weightsLoaded: this._model.weightsLoaded,
-      latencyMs:  this._model.lastLatency,
+      latencyMs:     this._model.lastLatency,
     };
   }
 
