@@ -334,6 +334,8 @@ class HybridGazeEngine {
     this._lHema    = null;   // left eye height EMA
     this._rHema    = null;   // right eye height EMA
     this._ipdEMA   = null;   // inter-pupil distance EMA (used for X norm)
+    this._lMidXEMA = null;   // left eye-corner midpoint X EMA (FIX TOP-PULL)
+    this._rMidXEMA = null;   // right eye-corner midpoint X EMA (FIX TOP-PULL)
     this.SPAN_ALPHA = 0.08;  // slow EMA — mostly stable at rest
     this.SPAN_MAX_DELTA = 0.15; // max ±15% change per frame (reject blinks/artefacts)
   }
@@ -488,8 +490,17 @@ class HybridGazeEngine {
     const rSpan = this._rSpanEMA;
 
     // Eye-corner midpoints (for X reference)
-    const lMidX = (lOuter.x + lInner.x) / 2;
-    const rMidX = (rOuter.x + rInner.x) / 2;
+    // FIX TOP-PULL: EMA-smooth the X reference points the same way spans are
+    // smoothed.  At upward gaze the eye-corner X positions shift slightly as
+    // the lid geometry changes, making lMidX/rMidX jitter and producing a
+    // false offset in lOX/rOX.  A lightweight EMA (α=0.15) removes per-frame
+    // jitter while tracking genuine head-turn shifts within ~6 frames.
+    const lMidXRaw = (lOuter.x + lInner.x) / 2;
+    const rMidXRaw = (rOuter.x + rInner.x) / 2;
+    this._lMidXEMA = this._lMidXEMA === null ? lMidXRaw : 0.15 * lMidXRaw + 0.85 * this._lMidXEMA;
+    this._rMidXEMA = this._rMidXEMA === null ? rMidXRaw : 0.15 * rMidXRaw + 0.85 * this._rMidXEMA;
+    const lMidX = this._lMidXEMA;
+    const rMidX = this._rMidXEMA;
 
     // ── PHASE-D: Nose-bridge Y anchor ──
     // Eye-corner midpoint Y drifts 2-4% when brows raise / face tilts.
@@ -525,20 +536,8 @@ class HybridGazeEngine {
     // Normalized iris displacement
     // X: iris offset from eye-corner midpoint, scaled by individual eye width
     //    BUT also bounded by IPD: if eye width collapses (blink), IPD keeps scale reasonable.
-    //
-    // FIX TOP-PULL: When the iris rolls upward (looking at top of screen) the
-    // MediaPipe iris ring points (468-472, 473-477) are no longer co-planar in
-    // the camera image, causing the per-eye centroid X to shift slightly toward
-    // the nose.  This asymmetric shift produces a false positive +X offset that
-    // the negation (-) then maps to a rightward screen displacement.
-    //
-    // Fix: use the EMA-smoothed IPD as the primary X divisor at all times
-    // (instead of the per-eye span).  IPD is computed from both iris centroids
-    // simultaneously, so any common-mode upward shift cancels out.  The
-    // per-eye span is retained as a minimum floor to prevent runaway scaling
-    // when one eye is partially occluded.
-    const lOX = (lIris.x - lMidX) / Math.max(ipd * 0.50, lSpan);
-    const rOX = (rIris.x - rMidX) / Math.max(ipd * 0.50, rSpan);
+    const lOX = lSpan > 0 ? (lIris.x - lMidX) / Math.max(lSpan, ipd * 0.35) : 0;
+    const rOX = rSpan > 0 ? (rIris.x - rMidX) / Math.max(rSpan, ipd * 0.35) : 0;
     // Y: iris offset from nose-bridge Y anchor, scaled by eye height
     const lOY = lH > 0 ? (lIris.y - noseBridgeY) / lH : 0;
     const rOY = rH > 0 ? (rIris.y - noseBridgeY) / rH : 0;
@@ -572,19 +571,8 @@ class HybridGazeEngine {
     }
 
     // Negate X to fix camera mirroring (camera-right = user-left)
-    const rawX = -(wL * lOX + wR * rOX);
-    const y    =   wLY * lOY + wRY * rOY;
-
-    // FIX TOP-PULL (part 2): Attenuate the X signal when Y strongly indicates
-    // upward or downward gaze.  When both irises are far above the nose-bridge
-    // anchor (y << 0) the X estimate becomes noisy because the iris ring
-    // foreshortens vertically and the centroid drifts.  Apply a gentle gate:
-    // |y| > 0.25 (≈ looking above/below ~35% of eye height) → reduce X gain
-    // linearly to 80% at |y|=0.5, 65% at |y|=0.75.  This preserves left/right
-    // discrimination while suppressing the systematic rightward bias at top gaze.
-    const yMag  = Math.abs(y);
-    const xGate = yMag > 0.25 ? p2.clamp(1 - (yMag - 0.25) * 0.6, 0.65, 1.0) : 1.0;
-    const x     = rawX * xGate;
+    const x = -(wL * lOX + wR * rOX);
+    const y =   wLY * lOY + wRY * rOY;
 
     // Confidence: eye span relative to face width, penalise asymmetry
     const avgSpan = (lSpan + rSpan) / 2;
