@@ -264,32 +264,87 @@ class RageNetModel {
   }
 
   /**
-   * Load trained weights from a URL (TF.js layers format model.json).
-   * Get the official weights from:
-   *   https://drive.google.com/drive/folders/1RHs7xGCD-k13N2YD2P0-54d0tmD7_XKy
-   * Convert with: tensorflowjs_converter --input_format=tf_saved_model rn_w_attention__tf_model/ output/
+   * Load trained weights from our custom sharded manifest.
+   * manifestUrl: URL to weights_manifest.json
    *
-   * @param {string} modelJsonUrl  URL to model.json
+   * The manifest has been reordered to exactly match TF.js getWeights() positional order.
+   * Positional loading is used — each manifest entry maps 1:1 to model.getWeights()[i].
    */
-  async loadWeights(modelJsonUrl) {
+  async loadWeights(manifestUrl) {
     if (!this._tf || !this._ready) {
       console.warn('[RAGE-net] Call init() before loadWeights()');
       return false;
     }
     try {
-      console.log(`%c[RAGE-net] Loading trained weights from ${modelJsonUrl}...`, 'color:#a78bfa');
-      const loaded = await this._tf.loadLayersModel(modelJsonUrl);
-      // Transfer weights layer by layer
-      const loadedWeights = loaded.getWeights();
-      const ourWeights    = this._model.getWeights();
-      if (loadedWeights.length === ourWeights.length) {
-        this._model.setWeights(loadedWeights);
+      const baseUrl = manifestUrl.replace(/weights_manifest\.json$/, '');
+      console.log(`%c[RAGE-net] Fetching weight manifest...`, 'color:#a78bfa');
+
+      const manifestResp = await fetch(manifestUrl);
+      if (!manifestResp.ok) throw new Error(`Manifest fetch failed: ${manifestResp.status}`);
+      const manifest = await manifestResp.json();
+      const entry = manifest.weightsManifest[0];
+      const shardPaths   = entry.paths;
+      const shardOffsets = entry.shardOffsets;
+      const weightsMeta  = entry.weights;
+
+      // Download all shards in parallel
+      console.log(`%c[RAGE-net] Downloading ${shardPaths.length} weight shards (~110 MB)...`, 'color:#a78bfa');
+      const shardBuffers = await Promise.all(
+        shardPaths.map(async (p, i) => {
+          const r = await fetch(baseUrl + p);
+          if (!r.ok) throw new Error(`Shard ${p} fetch failed: ${r.status}`);
+          const buf = await r.arrayBuffer();
+          console.log(`%c[RAGE-net] Shard ${i+1}/${shardPaths.length} ✓ (${(buf.byteLength/1048576).toFixed(1)} MB)`, 'color:#a78bfa;font-size:10px');
+          return { offset: shardOffsets[i], buffer: buf };
+        })
+      );
+
+      // Assemble flat ArrayBuffer from shards
+      const totalBytes = weightsMeta.reduce((acc, w) => Math.max(acc, w.byteOffset + w.nbytes), 0);
+      const flat = new Uint8Array(totalBytes);
+      for (const { offset, buffer } of shardBuffers) {
+        flat.set(new Uint8Array(buffer), offset);
+      }
+
+      const tf = this._tf;
+      const modelWeights = this._model.getWeights();
+
+      if (weightsMeta.length !== modelWeights.length) {
+        console.warn(`[RAGE-net] Weight count: manifest=${weightsMeta.length} vs model=${modelWeights.length}`);
+      }
+
+      // Build tensors from manifest in positional order (matches getWeights())
+      const minLen = Math.min(weightsMeta.length, modelWeights.length);
+      const toSet = [];
+
+      for (let i = 0; i < minLen; i++) {
+        const w = weightsMeta[i];
+        const floats = new Float32Array(flat.buffer, w.byteOffset, w.nbytes / 4);
+        // Validate shape matches before creating tensor
+        const mShape = w.shape;
+        const modelShape = modelWeights[i].shape;
+        if (mShape.length !== modelShape.length || !mShape.every((d, j) => d === modelShape[j])) {
+          console.warn(`[RAGE-net] Shape mismatch at [${i}]: manifest${JSON.stringify(mShape)} vs model${JSON.stringify(modelShape)} (${w.name})`);
+          toSet.push(modelWeights[i]); // keep existing weight
+        } else {
+          toSet.push(tf.tensor(Array.from(floats), mShape, w.dtype));
+        }
+      }
+
+      this._model.setWeights(toSet);
+      // Dispose created tensors (TF.js copies data on setWeights)
+      toSet.forEach(t => { try { t.dispose(); } catch(e){} });
+
+      const mismatches = toSet.length - minLen;
+      if (mismatches === 0) {
         this._weightsLoaded = true;
-        console.log('%c[RAGE-net] Trained weights loaded ✓', 'color:#00ff88;font-weight:bold');
+        console.log(`%c[RAGE-net] ✓ All ${minLen} weights loaded — ResNet-18 gaze model active`,
+          'color:#00ff88;font-weight:bold');
         return true;
       } else {
-        console.warn(`[RAGE-net] Weight count mismatch: loaded=${loadedWeights.length} vs expected=${ourWeights.length}`);
-        return false;
+        console.warn(`[RAGE-net] ${mismatches} weights had shape mismatches`);
+        this._weightsLoaded = minLen > modelWeights.length * 0.9;
+        return this._weightsLoaded;
       }
     } catch (e) {
       console.error('[RAGE-net] loadWeights failed:', e);
@@ -344,105 +399,143 @@ class RageNetModel {
 
   // ─────────────────────────────────────────────
   // Private: Build model graph in TFJS
+  // Full ResNet-18 matching the trained H5 weights:
+  //   Two separate ResNet-18 backbones (one per eye): 64→128→256→512 channels
+  //   GAP → 512 each; concat → 1024
+  //   Two cross-attention gates (dense+BN → sigmoid → multiply)
+  //   Fusion head: 1024→2048→1024→2
   // ─────────────────────────────────────────────
   _buildModel() {
     const tf = this._tf;
-    const layers = tf.layers;
+    const L  = tf.layers;
 
-    /* ResNet-18-Lite backbone (browser-efficient adaptation).
-       Same residual structure, reduced channel widths for <80ms latency.
-       Full ResNet-18 with 512-unit first_dense is ~45M ops, too slow at 60fps.
-       This lite variant: 16→32→64 channels, ~3M params, ~8M ops → ~12ms on modern GPU. */
-    const buildBackbone = (namePrefix) => {
-      const inp = layers.input({ shape: [RAGE.EYE_H, RAGE.EYE_W, 1], name: `${namePrefix}_in` });
+    /**
+     * Build one full ResNet-18 backbone.
+     * Matches architecture stored in res_net18_model_12 / res_net18_model_13.
+     * Layers (with bias): stem conv2d(64,3x3), then 8 residual blocks:
+     *   block1a: 64→64, stride 1
+     *   block1b: 64→64, stride 1
+     *   block2a: 64→128, stride 2, 1x1 shortcut
+     *   block2b: 128→128, stride 1
+     *   block3a: 128→256, stride 2, 1x1 shortcut
+     *   block3b: 256→256, stride 1
+     *   block4a: 256→512, stride 2, 1x1 shortcut
+     *   block4b: 512→512, stride 1
+     *   GAP → 512
+     */
+    const buildBackbone = (eyeName) => {
+      const inp = L.input({ shape: [RAGE.EYE_H, RAGE.EYE_W, 1], name: `${eyeName}_input` });
 
-      // Stem
-      let x = layers.conv2d({ filters: 16, kernelSize: 3, strides: 1, padding: 'same',
-        useBias: false, name: `${namePrefix}_stem_conv` }).apply(inp);
-      x = layers.batchNormalization({ name: `${namePrefix}_stem_bn` }).apply(x);
-      x = layers.activation('relu', { name: `${namePrefix}_stem_relu` }).apply(x);
+      // BN228-style per-channel input normalisation (shape [1])
+      let x = L.batchNormalization({ axis: -1, name: `${eyeName}_input_bn` }).apply(inp);
 
-      // Block 1: 16 → 16, no downsample
-      x = this._resBlock(x, 16, 1, `${namePrefix}_b1`);
+      // Stem: conv2d(64, 3x3, bias=true) + BN + ReLU
+      x = L.conv2d({ filters: 64, kernelSize: 3, strides: 1, padding: 'same',
+        useBias: true, name: `${eyeName}_stem` }).apply(x);
+      x = L.batchNormalization({ name: `${eyeName}_stem_bn` }).apply(x);
+      x = L.activation('relu', { name: `${eyeName}_stem_relu` }).apply(x);
 
-      // Block 2: 16 → 32, downsample
-      x = this._resBlock(x, 32, 2, `${namePrefix}_b2`);
-      x = this._resBlock(x, 32, 1, `${namePrefix}_b3`);
+      // Block group 1: 64 channels, stride 1, no shortcut needed (same channels)
+      x = this._resBlock(x, 64, 1, `${eyeName}_b1a`);
+      x = this._resBlock(x, 64, 1, `${eyeName}_b1b`);
 
-      // Block 3: 32 → 64, downsample
-      x = this._resBlock(x, 64, 2, `${namePrefix}_b4`);
-      x = this._resBlock(x, 64, 1, `${namePrefix}_b5`);
+      // Block group 2: 64→128, stride 2, 1x1 shortcut
+      x = this._resBlock(x, 128, 2, `${eyeName}_b2a`);
+      x = this._resBlock(x, 128, 1, `${eyeName}_b2b`);
 
-      // Global Average Pool + Flatten
-      x = layers.globalAveragePooling2d({ name: `${namePrefix}_gap` }).apply(x);
+      // Block group 3: 128→256, stride 2, 1x1 shortcut
+      x = this._resBlock(x, 256, 2, `${eyeName}_b3a`);
+      x = this._resBlock(x, 256, 1, `${eyeName}_b3b`);
 
-      return tf.model({ inputs: inp, outputs: x, name: `backbone_${namePrefix}` });
+      // Block group 4: 256→512, stride 2, 1x1 shortcut
+      x = this._resBlock(x, 512, 2, `${eyeName}_b4a`);
+      x = this._resBlock(x, 512, 1, `${eyeName}_b4b`);
+
+      // Global Average Pooling → 512-d vector
+      x = L.globalAveragePooling2d({ name: `${eyeName}_gap` }).apply(x);
+
+      return tf.model({ inputs: inp, outputs: x, name: `rn18_${eyeName}` });
     };
 
-    // Shared backbone pair (feature + attention)
-    const featBackbone = buildBackbone('feat');
-    const attnBackbone = buildBackbone('attn');
+    // Build one backbone per eye
+    const rightBackbone = buildBackbone('right');
+    const leftBackbone  = buildBackbone('left');
 
-    // ── Right eye branch ──
-    const rIn   = layers.input({ shape: [RAGE.EYE_H, RAGE.EYE_W, 1], name: 'right_eye' });
-    let rFeat   = featBackbone.apply(rIn);
-    rFeat       = layers.dense({ units: 128, activation: 'relu', name: 'r_feat_dense' }).apply(rFeat);
-    rFeat       = layers.batchNormalization({ name: 'r_feat_bn' }).apply(rFeat);
-    let rAttn   = attnBackbone.apply(rIn);
-    rAttn       = layers.dense({ units: 128, activation: 'sigmoid', name: 'r_attn_dense' }).apply(rAttn);
-    let rOut    = layers.multiply({ name: 'r_gate' }).apply([rFeat, rAttn]);
+    // Model inputs
+    const rIn = L.input({ shape: [RAGE.EYE_H, RAGE.EYE_W, 1], name: 'right_eye' });
+    const lIn = L.input({ shape: [RAGE.EYE_H, RAGE.EYE_W, 1], name: 'left_eye'  });
 
-    // ── Left eye branch ──
-    const lIn   = layers.input({ shape: [RAGE.EYE_H, RAGE.EYE_W, 1], name: 'left_eye' });
-    let lFeat   = featBackbone.apply(lIn);
-    lFeat       = layers.dense({ units: 128, activation: 'relu', name: 'l_feat_dense' }).apply(lFeat);
-    lFeat       = layers.batchNormalization({ name: 'l_feat_bn' }).apply(lFeat);
-    let lAttn   = attnBackbone.apply(lIn);
-    lAttn       = layers.dense({ units: 128, activation: 'sigmoid', name: 'l_attn_dense' }).apply(lAttn);
-    let lOut    = layers.multiply({ name: 'l_gate' }).apply([lFeat, lAttn]);
+    // Backbone features: 512 each
+    const rFeat = rightBackbone.apply(rIn);  // [B, 512]
+    const lFeat = leftBackbone.apply(lIn);   // [B, 512]
 
-    // ── Fusion + regression head ──
-    let fused = layers.concatenate({ name: 'fusion' }).apply([rOut, lOut]);
-    fused     = layers.dense({ units: 256, activation: 'relu', name: 'fc1' }).apply(fused);
-    fused     = layers.dense({ units: 128, activation: 'relu', name: 'fc2' }).apply(fused);
-    const out = layers.dense({ units: 2,   activation: 'sigmoid', name: 'gaze_xy' }).apply(fused);
+    // Concatenate: [B, 1024]
+    const merged = L.concatenate({ name: 'backbone_concat' }).apply([rFeat, lFeat]);
 
-    const model = tf.model({ inputs: [rIn, lIn], outputs: out, name: 'RAGE_net_lite' });
-    console.log(`%c[RAGE-net] Architecture built — ${model.countParams().toLocaleString()} params`,
+    // ── Cross-attention gate 1 (multiply_12) ──
+    // Feature path: dense_42(1024→512, relu) → BN264
+    let feat1 = L.dense({ units: 512, activation: 'relu',    name: 'dense_feat1' }).apply(merged);
+    feat1     = L.batchNormalization({ name: 'bn_feat1' }).apply(feat1);
+    // Attention path: dense_43(1024→512, sigmoid)
+    let attn1 = L.dense({ units: 512, activation: 'sigmoid', name: 'dense_attn1' }).apply(merged);
+    // Gated output: element-wise multiply
+    const gate1 = L.multiply({ name: 'gate1' }).apply([feat1, attn1]);  // [B, 512]
+
+    // ── Cross-attention gate 2 (multiply_13) ──
+    // Feature path: dense_44(1024→512, relu) → BN265
+    let feat2 = L.dense({ units: 512, activation: 'relu',    name: 'dense_feat2' }).apply(merged);
+    feat2     = L.batchNormalization({ name: 'bn_feat2' }).apply(feat2);
+    // Attention path: dense_45(1024→512, sigmoid)
+    let attn2 = L.dense({ units: 512, activation: 'sigmoid', name: 'dense_attn2' }).apply(merged);
+    const gate2 = L.multiply({ name: 'gate2' }).apply([feat2, attn2]);  // [B, 512]
+
+    // ── Fusion head ──  (matches dense_46/47/48)
+    let fused = L.concatenate({ name: 'gate_concat' }).apply([gate1, gate2]);  // [B, 1024]
+    fused     = L.dense({ units: 2048, activation: 'relu',    name: 'fc_2048' }).apply(fused);
+    fused     = L.dense({ units: 1024, activation: 'relu',    name: 'fc_1024' }).apply(fused);
+    const out = L.dense({ units: 2,    activation: 'sigmoid', name: 'gaze_out' }).apply(fused);
+
+    const model = tf.model({ inputs: [rIn, lIn], outputs: out, name: 'RAGE_net_full' });
+    console.log(`%c[RAGE-net] Full ResNet-18 architecture built — ${model.countParams().toLocaleString()} params`,
       'color:#a78bfa;font-size:11px');
     return model;
   }
 
-  /** Single residual block (adapted for TFJS layers API). */
+  /**
+   * Single residual block with bias convolutions (matching H5 weights).
+   * Main path: conv(3x3,bias) → BN → ReLU → conv(3x3,bias) → BN
+   * Shortcut:  1x1 conv(bias) → BN  (if stride>1 or channel mismatch)
+   * Output:    add(main, skip) → ReLU
+   */
   _resBlock(x, filters, stride, name) {
-    const layers = this._tf.layers;
-    const inCh   = x.shape[x.shape.length - 1];
+    const L   = this._tf.layers;
+    const inCh = x.shape[x.shape.length - 1];
 
     // Main path
-    let h = layers.conv2d({
+    let h = L.conv2d({
       filters, kernelSize: 3, strides: stride, padding: 'same',
-      useBias: false, name: `${name}_c1`
+      useBias: true, name: `${name}_c1`
     }).apply(x);
-    h = layers.batchNormalization({ name: `${name}_bn1` }).apply(h);
-    h = layers.activation('relu', { name: `${name}_r1` }).apply(h);
-    h = layers.conv2d({
+    h = L.batchNormalization({ name: `${name}_bn1` }).apply(h);
+    h = L.activation('relu', { name: `${name}_r1` }).apply(h);
+    h = L.conv2d({
       filters, kernelSize: 3, strides: 1, padding: 'same',
-      useBias: false, name: `${name}_c2`
+      useBias: true, name: `${name}_c2`
     }).apply(h);
-    h = layers.batchNormalization({ name: `${name}_bn2` }).apply(h);
+    h = L.batchNormalization({ name: `${name}_bn2` }).apply(h);
 
-    // Skip connection
+    // Skip connection (1x1 conv WITHOUT BN — matches H5 architecture)
     let skip = x;
     if (stride !== 1 || inCh !== filters) {
-      skip = layers.conv2d({
+      skip = L.conv2d({
         filters, kernelSize: 1, strides: stride, padding: 'same',
-        useBias: false, name: `${name}_skip`
+        useBias: true, name: `${name}_skip`
       }).apply(x);
-      skip = layers.batchNormalization({ name: `${name}_skip_bn` }).apply(skip);
+      // NO batchNorm on skip — H5 model uses raw shortcut conv only
     }
 
-    h = layers.add({ name: `${name}_add` }).apply([h, skip]);
-    h = layers.activation('relu', { name: `${name}_r2` }).apply(h);
+    h = L.add({ name: `${name}_add` }).apply([h, skip]);
+    h = L.activation('relu', { name: `${name}_r2` }).apply(h);
     return h;
   }
 
@@ -509,15 +602,24 @@ class RageNetEngine {
   get modelWeightsLoaded() { return this._model.weightsLoaded; }
   get lastLatency() { return this._model.lastLatency; }
 
-  /** Initialize the engine. Must be called once. */
+  /** Initialize the engine and load trained weights. Must be called once. */
   async init() {
     this._onStatus('Loading RAGE-net…');
     await this._model.init();
     this._ready = this._model.ready;
     if (this._ready) {
-      this._onStatus('RAGE-net ready (zero-shot mode)');
-      console.log('%c[RAGE-net Engine] Ready — zero-shot gaze tracking active',
-        'color:#00d4ff;font-weight:bold');
+      this._onStatus('RAGE-net model built — loading trained weights…');
+      // Load trained weights from jsDelivr CDN (GitHub-backed, no CORS issues)
+      const WEIGHTS_URL = 'https://cdn.jsdelivr.net/gh/mkbrown261/Accesseye-mvp@main/public/static/ragenet-weights/weights_manifest.json';
+      const loaded = await this._model.loadWeights(WEIGHTS_URL);
+      if (loaded) {
+        this._onStatus('RAGE-net ready ✓ (trained weights loaded)');
+        console.log('%c[RAGE-net Engine] Trained weights loaded — zero-shot tracking active',
+          'color:#00ff88;font-weight:bold');
+      } else {
+        this._onStatus('RAGE-net ready (random weights — accuracy limited)');
+        console.warn('[RAGE-net Engine] Weights load failed — running with random weights');
+      }
     } else {
       this._onStatus('RAGE-net init failed — check console');
     }
