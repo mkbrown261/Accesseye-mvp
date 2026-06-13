@@ -848,20 +848,14 @@ app.get('/', (c) => {
             <!-- Header -->
             <div class="p2-panel-header">
               <i class="fas fa-brain"></i>
-              Phase 2 — Gaze Engine
+              Phase 2 — Hybrid Engine
               <span class="p2-badge">ACTIVE</span>
             </div>
 
             <!-- Pipeline label -->
             <div class="p2-pipeline-row">
               <i class="fas fa-sitemap"></i>
-              <span id="p2-pipeline-label">Loading…</span>
-            </div>
-
-            <!-- RAGE-net Engine status row -->
-            <div class="p2-pipeline-row" style="margin-top:2px;font-size:0.68rem;color:#a78bfa;">
-              <i class="fas fa-network-wired" style="margin-right:4px;"></i>
-              Gaze Engine: <span id="p2-gaze-engine-label" style="margin-left:4px;color:var(--accent-cyan)">Initializing…</span>
+              <span id="p2-pipeline-label">Hybrid | 30FPS | Kalman+EMA+Window</span>
             </div>
 
             <!-- Inner two-column grid for all sections -->
@@ -1387,7 +1381,7 @@ app.get('/', (c) => {
             <i class="fas fa-crosshairs"></i> Run Gaze Calibration
           </button>
           <div style="font-size:11px;color:#546e7a;margin-top:6px;">
-            Optional with RAGE-net zero-shot mode — improves accuracy further.
+            Calibrate from any page — improves eye-tracking accuracy.
           </div>
         </div>
       </div>
@@ -1705,7 +1699,6 @@ eye.<span class="f">on</span>(<span class="s">'gesture'</span>, ({ type, confide
   <script src="/static/app.js"></script>
   <script src="/static/snap-engine.js"></script>
   <script src="/static/gesture-studio.js"></script>
-  <script src="/static/rage-net-engine.js"></script>
   <script src="/static/phase2-engine.js"></script>
   <script src="/static/phase2-init.js"></script>
   <script src="/static/phase3-engine.js"></script>

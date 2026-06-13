@@ -1469,35 +1469,21 @@ class Phase3Orchestrator {
         const packet = this._originalProcessResults(multiFaceLandmarks, W, H, headPoseResult);
         if (packet && packet.raw) {
           // PRECISION-2: Save the TRUE unfiltered iris raw gaze BEFORE OneEuro.
+          // CalibrationUI reads gazeEngine.rawGaze for samples — it must get the
+          // unfiltered iris position, not the smoothed output.
+          // We store it as _trueRawGaze so CalibrationUI can access it directly.
           this._trueRawGaze = { x: packet.raw.x, y: packet.raw.y };
-
-          // ── RAGE-net branch: packet.iris is a landmark position, NOT a gaze offset ──
-          // When using RAGE-net (packet.rageNet === true), packet.iris contains the
-          // raw MediaPipe landmark coordinate (~0.46, 0.46 screen-space), NOT a gaze
-          // offset like HybridGazeEngine produces. We must NOT use it as _irisOnlyGaze,
-          // or the One Euro filter will replace the real RAGE-net gaze output with the
-          // frozen landmark position → cursor stuck at ~0.495, 0.495 (screen center).
-          // For RAGE-net: apply One Euro directly to packet.raw (already [0,1] gaze),
-          // and skip the iris-override path entirely.
-          if (packet.rageNet) {
-            // Store the RAGE-net screen gaze as the "iris-only" signal for calibration UI.
-            this._irisOnlyGaze = { x: packet.raw.x, y: packet.raw.y };
-            this._trueRawGaze  = { x: packet.raw.x, y: packet.raw.y };
-            // Smooth the RAGE-net output through One Euro to reduce high-frequency noise.
-            const filtered = self.oneEuro.filter(packet.raw.x, packet.raw.y);
-            packet.raw   = filtered;
-            packet.screen = filtered;   // RAGE-net screen IS the gaze output (no calib)
-            this.rawGaze = filtered;
-            return packet;
-          }
-
-          // ── HybridGaze branch: normal iris-only extraction + One Euro ──
-          // PRECISION-5: packet.iris is the irisSignal from _computeIrisSignal.
+          // PRECISION-5: Also capture the iris-only signal (pre-fusion) for calibration.
+          // packet.iris is the irisSignal from _computeIrisSignal — pure iris, no head/pupil.
           if (packet.iris) {
             this._irisOnlyGaze = { x: packet.iris.x, y: packet.iris.y };
           }
 
           // Apply One Euro to iris-only gaze for the live display pipeline only.
+          // PRECISION-5: Filter the iris-only signal (not the fused raw) through OneEuro.
+          // The model was trained on iris-only — so the live display pipeline should also
+          // use iris-only as input to mapGaze.  Head-pose compensation is still present
+          // in the fused rawGaze used for other processing.
           const irisOnly = this._irisOnlyGaze || packet.raw;
           const filtered = self.oneEuro.filter(irisOnly.x, irisOnly.y);
           packet.raw   = filtered;
