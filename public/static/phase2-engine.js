@@ -8,8 +8,7 @@
  *
  *   P2.1  HighFPSCameraController   — 120/60/30 FPS auto-detect
  *   P2.2  HeadPoseEstimator         — 6-DOF solvePnP-style from landmarks
- *   P2.3  RageNetEngine             — RAGE-net (Kuric et al. 2025) zero-shot gaze
- *            (replaces HybridGazeEngine; HybridGazeEngine kept as fallback)
+ *   P2.3  HybridGazeEngine          — geometric + head-pose + binocular fusion
  *   P2.4  TemporalStabilizer        — Adaptive Kalman + EMA + sliding window
  *   P2.5  MicroSaccadeFilter        — 12px / 200ms fixation stability window
  *   P2.6  GazeConfidenceScorer      — brightness, occlusion, glare detection
@@ -17,16 +16,14 @@
  *   P2.8  IntentPredictionEngine    — OpenAI-backed behavioral model (server-side)
  *   P2.9  GazeBenchmark             — old vs new pipeline comparison
  *
- *  Architecture flow (RAGE-net path):
+ *  Architecture flow:
  *   Camera (120/60/30 FPS)
  *     ↓
- *   FaceMesh (refineLandmarks=true) — face box + landmarks only
+ *   FaceMesh (refineLandmarks=true)
  *     ↓
- *   HeadPoseEstimator (6-DOF euler angles) — confidence gating
+ *   HeadPoseEstimator (6-DOF euler angles)
  *     ↓
- *   RageNetEngine (eye crop → RAGE-net TF.js → [x,y] zero-shot)
- *     ↓
- *   ImplicitDriftCorrector (1-point micro offset from confirmed clicks)
+ *   HybridGazeEngine (iris + eyelid + head_pose fusion)
  *     ↓
  *   GazeConfidenceScorer (brightness/occlusion/glare)
  *     ↓
@@ -34,7 +31,7 @@
  *     ↓
  *   MicroSaccadeFilter (fixation stability)
  *     ↓
- *   DynamicCalibrationEngine (micro-updates; calibration bypass in zero-shot mode)
+ *   DynamicCalibrationEngine (polynomial + micro-updates)
  *     ↓
  *   IntentPredictionEngine (AI behavioral prediction)
  *     ↓
@@ -246,15 +243,8 @@ class HeadPoseEstimator {
     const yaw     = p2.clamp(p2.deg(Math.atan(yawRaw * 1.8)), -50, 50);
 
     // Pitch: vertical offset of nose from eye midpoint, normalized
-    // FIX TOP-PULL: removed the hard-coded -10° offset that made neutral/frontal
-    // gaze report pitch ≈ -10° (falsely "looking up").  The offset was originally
-    // added to compensate for a nose-tip bias but it caused the _computeHeadPoseSignal
-    // to produce a small positive Y (down) contribution even when the user looks
-    // straight ahead, and — via the uncalibrated fallback — added noise to X at
-    // extreme upward gaze angles.  Remove the offset; the HeadPoseEstimator EMA
-    // provides sufficient smoothing without the artificial shift.
     const pitchRaw = (nose[1] - eyeMid[1]) / Math.max(eyeSpan, 1);
-    const pitch    = p2.clamp(p2.deg(Math.atan(pitchRaw * 1.5)), -40, 40);
+    const pitch    = p2.clamp(p2.deg(Math.atan(pitchRaw * 1.5)) - 10, -40, 40);
 
     // Roll: angle of eye line relative to horizontal
     const dX   = rEye[0] - lEye[0];
@@ -334,8 +324,6 @@ class HybridGazeEngine {
     this._lHema    = null;   // left eye height EMA
     this._rHema    = null;   // right eye height EMA
     this._ipdEMA   = null;   // inter-pupil distance EMA (used for X norm)
-    this._lMidXEMA = null;   // left eye-corner midpoint X EMA (FIX TOP-PULL)
-    this._rMidXEMA = null;   // right eye-corner midpoint X EMA (FIX TOP-PULL)
     this.SPAN_ALPHA = 0.08;  // slow EMA — mostly stable at rest
     this.SPAN_MAX_DELTA = 0.15; // max ±15% change per frame (reject blinks/artefacts)
   }
@@ -425,13 +413,8 @@ class HybridGazeEngine {
       const headY = lm[1].y;  // nose tip Y
       const hYaw  = (headPoseResult?.yaw || 0) / 45;   // raw yaw (camera space)
       const hPit  = (headPoseResult?.pitch || 0) / 35;
-      // FIX TOP-PULL (fallback): reduced headX coefficient 1.2 → 0.7.
-      // When looking at the top of the screen the nose-tip X in camera space
-      // shifts slightly right as the head tilts back, adding a spurious +X.
-      // Reducing the coefficient limits that contribution without losing yaw
-      // compensation (hYaw * 0.2 still handles explicit head turns).
       screen = {
-        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 0.7 - hYaw * 0.2, 0.0, 1.0),
+        x: p2.clamp(0.5 + fusedX * 7.0 - (headX - 0.5) * 1.2 - hYaw * 0.2, 0.0, 1.0),
         // FIX BOTTOM-1: raised Y ceiling 0.99 → 1.00 so downward gaze can
         // reach the full bottom of the screen before calibration remaps it.
         y: p2.clamp(0.5 + fusedY * 7.0 + (headY - 0.5) * 1.3 + hPit * 0.2, 0.0, 1.0)
@@ -490,17 +473,8 @@ class HybridGazeEngine {
     const rSpan = this._rSpanEMA;
 
     // Eye-corner midpoints (for X reference)
-    // FIX TOP-PULL: EMA-smooth the X reference points the same way spans are
-    // smoothed.  At upward gaze the eye-corner X positions shift slightly as
-    // the lid geometry changes, making lMidX/rMidX jitter and producing a
-    // false offset in lOX/rOX.  A lightweight EMA (α=0.15) removes per-frame
-    // jitter while tracking genuine head-turn shifts within ~6 frames.
-    const lMidXRaw = (lOuter.x + lInner.x) / 2;
-    const rMidXRaw = (rOuter.x + rInner.x) / 2;
-    this._lMidXEMA = this._lMidXEMA === null ? lMidXRaw : 0.15 * lMidXRaw + 0.85 * this._lMidXEMA;
-    this._rMidXEMA = this._rMidXEMA === null ? rMidXRaw : 0.15 * rMidXRaw + 0.85 * this._rMidXEMA;
-    const lMidX = this._lMidXEMA;
-    const rMidX = this._rMidXEMA;
+    const lMidX = (lOuter.x + lInner.x) / 2;
+    const rMidX = (rOuter.x + rInner.x) / 2;
 
     // ── PHASE-D: Nose-bridge Y anchor ──
     // Eye-corner midpoint Y drifts 2-4% when brows raise / face tilts.
@@ -744,8 +718,8 @@ class TemporalStabilizer {
     this._prevX = null; this._prevY = null;
     this._velX = 0;     this._velY = 0;
 
-    // Output — null until first real frame seeds it (FIX CENTER-LOCK)
-    this.stable = null;
+    // Output
+    this.stable = { x: 0.5, y: 0.5 };
   }
 
   /**
@@ -755,14 +729,6 @@ class TemporalStabilizer {
    * @returns {{ x, y }}
    */
   update(rx, ry, confidence = 1.0) {
-    // FIX CENTER-LOCK: Seed Kalman + EMA + stable from first real measurement
-    // instead of 0/0.5 defaults, preventing the one-frame-correct-then-center-stuck bug.
-    if (this._ex === null) {
-      this._kx.x = rx; this._ky.x = ry;   // seed Kalman state
-      this._ex = rx;   this._ey = ry;      // seed EMA
-      this.stable = { x: rx, y: ry };      // seed stable output
-    }
-
     // ── Layer A: Adaptive Kalman ──
     // FIX ACC-9: Increase R more aggressively at low confidence.
     // When confidence < 0.5 (blink/partial occlusion), increase R to 0.04
@@ -789,7 +755,7 @@ class TemporalStabilizer {
     const velScore = p2.clamp((velMag - 0.008) / 0.042, 0, 1);
     const alpha = p2.lerp(0.18, 0.70, velScore);
 
-    if (this._ex === null) { this._ex = kx; this._ey = ky; } // (already seeded above on first call)
+    if (this._ex === null) { this._ex = kx; this._ey = ky; }
     else {
       this._ex = p2.lerp(this._ex, kx, alpha);
       this._ey = p2.lerp(this._ey, ky, alpha);
@@ -818,8 +784,7 @@ class TemporalStabilizer {
     }
 
     // FIX STUCK-4: When confidence is very low (blink / face lost), hold last position.
-    // FIX CENTER-LOCK: if stable is still null (very first frame), fall through instead.
-    if (confidence < 0.25 && this.stable !== null) {
+    if (confidence < 0.25) {
       this._wx = [];
       this._wy = [];
       this._bypassCounter = 0;
@@ -875,7 +840,7 @@ class TemporalStabilizer {
     this._prevX = null; this._prevY = null;
     this._velX = 0;   this._velY = 0;
     this._bypassCounter = 0;
-    this.stable = null;  // FIX CENTER-LOCK: re-seed from first real frame after reset
+    this.stable = { x:0.5, y:0.5 };
   }
 }
 
@@ -1855,32 +1820,7 @@ class Phase2Orchestrator {
     // ── Instantiate Phase 2 modules ──
     this.camera     = new HighFPSCameraController();
     this.headPose   = new HeadPoseEstimator();
-
-    // RAGE-NET INTEGRATION: Use RageNetEngine as the primary gaze engine.
-    // RageNetEngine is zero-shot (no calibration needed) and drop-in
-    // compatible with HybridGazeEngine.processResults() API.
-    // Falls back to HybridGazeEngine if RageNetEngine is unavailable.
-    const rageAvailable = (typeof window !== 'undefined' && window.RageNetEngine);
-    if (rageAvailable) {
-      this.rageNet    = new window.RageNetEngine({
-        onStatus: (msg) => {
-          console.log(`%c[Phase2] ${msg}`, 'color:#a78bfa;font-size:11px');
-          // Update Phase 2 status text in UI if element exists
-          const el = document.querySelector('#p2-gaze-engine-label');
-          if (el) el.textContent = msg;
-        }
-      });
-      this.hybridGaze = this.rageNet;   // alias for all downstream references
-      this._usingRageNet = true;
-      console.log('%c[Phase2] RAGE-net engine selected as primary gaze engine',
-        'color:#00d4ff;font-weight:bold');
-    } else {
-      // Fallback: HybridGazeEngine (geometric iris fusion)
-      this.rageNet    = null;
-      this.hybridGaze = new HybridGazeEngine(app.calibration, this.headPose);
-      this._usingRageNet = false;
-      console.warn('[Phase2] RageNetEngine not found — falling back to HybridGazeEngine');
-    }
+    this.hybridGaze = new HybridGazeEngine(app.calibration, this.headPose);
     // PHASE-B: TemporalStabilizer tuned for minimum lag.
     // kalmanR: 0.008 — slightly noisier but much more responsive
     // emaAlpha: 0.35 — resting floor raised from 0.18/0.22; a step response
@@ -1982,16 +1922,6 @@ class Phase2Orchestrator {
         );
         this.dynCalib.saveMicroData();
         this.intent.feedActivation(id, label, gesture);
-
-        // RAGE-net: feed implicit 1-point correction on every confirmed activation
-        if (this._usingRageNet && this.rageNet?.recordActivation) {
-          const W = window.visualViewport?.width  || window.innerWidth;
-          const H = window.visualViewport?.height || window.innerHeight;
-          this.rageNet.recordActivation(
-            this.app._lastScreenX, this.app._lastScreenY,
-            bbox.x + bbox.w / 2, bbox.y + bbox.h / 2
-          );
-        }
       }
     });
 
@@ -2047,42 +1977,8 @@ class Phase2Orchestrator {
 
     // IMPROVEMENT 1 (v14): Set FPS on stabilizer for velocity-threshold scaling.
     this.stabilizer.setFPS(this.cameraFPS);
-
-    // ── RAGE-net: initialize model + wire video element ──
-    if (this._usingRageNet && this.rageNet) {
-      this.rageNet.setVideoElement(videoEl);
-      // Kick off async model init (TF.js load + warmup); non-blocking
-      this.rageNet.init().then(ready => {
-        if (ready) {
-          const engineLabel = this._usingRageNet ? 'RAGE-net (zero-shot)' : 'HybridGaze';
-          this.app.log.add(`RAGE-net initialized — zero-shot gaze active`, 'success');
-          this.app.toast.show(
-            'RAGE-net Active',
-            `Zero-shot gaze tracking (${this.cameraFPS} FPS) — no calibration required.`,
-            'success', 'fas fa-eye', 4000
-          );
-          this._updatePhase2StatusUI();
-        } else {
-          // RAGE-net init failed — fall back to HybridGazeEngine
-          this._usingRageNet = false;
-          this.hybridGaze = new HybridGazeEngine(this.app.calibration, this.headPose);
-          this.app.log.add('RAGE-net init failed — fell back to HybridGazeEngine', 'warn');
-          this.app.toast.show('RAGE-net Unavailable', 'Falling back to hybrid gaze engine.', 'warn', 'fas fa-exclamation-triangle', 3000);
-        }
-      }).catch(err => {
-        console.error('[Phase2] RAGE-net init error:', err);
-        this._usingRageNet = false;
-        this.hybridGaze = new HybridGazeEngine(this.app.calibration, this.headPose);
-        this.app.log.add(`RAGE-net error: ${err.message} — fell back to HybridGaze`, 'warn');
-      });
-
-      const gazeLabel = 'RAGE-net (zero-shot, loading…)';
-      this.app.log.add(`Phase 2 activated | Camera: ${this.cameraFPS} FPS | ${gazeLabel} | saccadeThresh=${this.stabilizer.SACCADE_VEL_THRESHOLD.toFixed(4)}`, 'success');
-      this.app.toast.show('Phase 2 Active', `${gazeLabel} — initializing…`, 'info', 'fas fa-brain', 3000);
-    } else {
-      this.app.log.add(`Phase 2 activated | Camera: ${this.cameraFPS} FPS | HybridGaze ON | saccadeThresh=${this.stabilizer.SACCADE_VEL_THRESHOLD.toFixed(4)}`, 'success');
-      this.app.toast.show('Phase 2 Active', `Hybrid gaze engine running at ${this.cameraFPS} FPS`, 'success', 'fas fa-brain', 3000);
-    }
+    this.app.log.add(`Phase 2 activated | Camera: ${this.cameraFPS} FPS | Hybrid gaze ON | saccadeThresh=${this.stabilizer.SACCADE_VEL_THRESHOLD.toFixed(4)}`, 'success');
+    this.app.toast.show('Phase 2 Active', `Hybrid gaze engine running at ${this.cameraFPS} FPS`, 'success', 'fas fa-brain', 3000);
     this._updatePhase2StatusUI();
   }
 
@@ -2245,22 +2141,6 @@ class Phase2Orchestrator {
     // Show the in-page P2 status panel (inside demo-main)
     const panel = document.getElementById('p2-status-panel');
     if (panel) panel.style.display = 'block';
-
-    // RAGE-net: update gaze engine label in status panel
-    const engineLabel = document.querySelector('#p2-gaze-engine-label');
-    if (engineLabel) {
-      if (this._usingRageNet) {
-        const ready = this.rageNet?.ready;
-        const wt    = this.rageNet?.modelWeightsLoaded ? 'trained weights' : 'random-init';
-        engineLabel.textContent = ready
-          ? `RAGE-net (${wt}) — zero-shot`
-          : 'RAGE-net (initializing…)';
-        engineLabel.style.color = ready ? 'var(--accent-green)' : 'var(--accent-yellow)';
-      } else {
-        engineLabel.textContent = 'HybridGaze (geometric)';
-        engineLabel.style.color = 'var(--accent-cyan)';
-      }
-    }
   }
 
   _updatePhase2LiveUI(gaze, conf, hp, sacc, lat) {
@@ -2309,13 +2189,7 @@ class Phase2Orchestrator {
     const pipeEl = $('#p2-pipeline-label');
     if (pipeEl) {
       const fps = this.cameraFPS;
-      if (this._usingRageNet) {
-        const wt = this.rageNet?.modelWeightsLoaded ? 'trained' : 'random-init';
-        const rn = this.rageNet?.ready ? `RAGE-net(${wt})` : 'RAGE-net(loading…)';
-        pipeEl.textContent = `${rn} | ${fps}FPS | Kalman+EMA`;
-      } else {
-        pipeEl.textContent = `Hybrid | ${fps}FPS | Kalman+EMA+Window`;
-      }
+      pipeEl.textContent = `Hybrid | ${fps}FPS | Kalman+EMA+Window`;
     }
   }
 
@@ -2532,8 +2406,6 @@ class Phase2Orchestrator {
     this.hybridGaze.rawGaze    = { x: 0.5, y: 0.5 };
     this.hybridGaze.smoothGaze = { x: 0.5, y: 0.5 };
     this.hybridGaze.confidence = 0;
-    // RAGE-net: reset frame counter so skip logic starts clean on re-activation
-    if (this._usingRageNet && this.rageNet?.reset) this.rageNet.reset();
     // FIX RESTART-1: Restore _processPhase2Face to the ORIGINAL Phase 2 implementation.
     // Phase 3 wraps this method — on restart we must unwrap it so Phase 3 can
     // re-wrap a fresh copy on next activation (prevents double-wrapping / stale closures).
@@ -2609,5 +2481,5 @@ window.Phase2 = {
 };
 
 console.log('%c Phase 2 Engine Loaded ✅', 'color:#00ff88;font-weight:bold;font-size:13px;');
-console.log('%c Modules: RageNetEngine(primary) | HybridGaze(fallback) | HeadPose | TemporalStabilizer | SaccadeFilter | ConfidenceScorer | DynCalib | IntentAI | Benchmark',
+console.log('%c Modules: HybridGaze | HeadPose | TemporalStabilizer | SaccadeFilter | ConfidenceScorer | DynCalib | IntentAI | Benchmark',
             'color:#94a3b8;font-size:11px;');
